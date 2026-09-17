@@ -1,6 +1,7 @@
 pub mod error;
 pub mod graph;
 pub mod kubeconfig;
+pub mod session;
 pub mod store;
 
 pub fn run() {
