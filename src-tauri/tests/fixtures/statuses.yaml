@@ -1,0 +1,173 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: healthy, namespace: s }
+spec:
+  replicas: 3
+  selector: { matchLabels: { app: healthy } }
+  template:
+    metadata: { labels: { app: healthy } }
+    spec: { containers: [ { name: c, image: nginx:1.27 } ] }
+status: { replicas: 3, readyReplicas: 3, conditions: [ { type: Progressing, status: "True" } ] }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: rolling, namespace: s }
+spec:
+  replicas: 3
+  selector: { matchLabels: { app: rolling } }
+  template:
+    metadata: { labels: { app: rolling } }
+    spec: { containers: [ { name: c, image: nginx:1.28 } ] }
+status: { replicas: 3, readyReplicas: 2, conditions: [ { type: Progressing, status: "True" } ] }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: stuck, namespace: s }
+spec:
+  replicas: 3
+  selector: { matchLabels: { app: stuck } }
+  template:
+    metadata: { labels: { app: stuck } }
+    spec: { containers: [ { name: c, image: nginx:bad } ] }
+status: { replicas: 3, readyReplicas: 0, conditions: [ { type: Progressing, status: "False", reason: ProgressDeadlineExceeded } ] }
+---
+apiVersion: v1
+kind: Pod
+metadata: { name: running, namespace: s }
+spec: { containers: [ { name: c, image: nginx } ] }
+status:
+  phase: Running
+  containerStatuses: [ { name: c, ready: true, restartCount: 0, image: nginx, imageID: "", state: { running: { startedAt: "2026-09-17T10:00:00Z" } } } ]
+---
+apiVersion: v1
+kind: Pod
+metadata: { name: crashing, namespace: s }
+spec: { containers: [ { name: c, image: nginx } ] }
+status:
+  phase: Running
+  containerStatuses: [ { name: c, ready: false, restartCount: 14, image: nginx, imageID: "", state: { waiting: { reason: CrashLoopBackOff } } } ]
+---
+apiVersion: v1
+kind: Pod
+metadata: { name: pending, namespace: s }
+spec: { containers: [ { name: c, image: nginx } ] }
+status: { phase: Pending }
+---
+apiVersion: v1
+kind: Pod
+metadata: { name: notready, namespace: s }
+spec: { containers: [ { name: c, image: nginx }, { name: d, image: nginx } ] }
+status:
+  phase: Running
+  containerStatuses:
+    - { name: c, ready: true, restartCount: 0, image: nginx, imageID: "", state: { running: { startedAt: "2026-09-17T10:00:00Z" } } }
+    - { name: d, ready: false, restartCount: 2, image: nginx, imageID: "", state: { running: { startedAt: "2026-09-17T10:00:00Z" } } }
+---
+apiVersion: v1
+kind: Pod
+metadata: { name: oom, namespace: s }
+spec: { containers: [ { name: c, image: nginx } ] }
+status:
+  phase: Running
+  containerStatuses: [ { name: c, ready: false, restartCount: 3, image: nginx, imageID: "", state: { terminated: { reason: OOMKilled, exitCode: 137 } } } ]
+---
+apiVersion: v1
+kind: Service
+metadata: { name: matched, namespace: s }
+spec: { type: ClusterIP, selector: { app: running }, ports: [ { port: 80, targetPort: 8080 } ] }
+---
+apiVersion: v1
+kind: Pod
+metadata: { name: running-labelled, namespace: s, labels: { app: running } }
+spec: { containers: [ { name: c, image: nginx } ] }
+status: { phase: Running, containerStatuses: [ { name: c, ready: true, restartCount: 0, image: nginx, imageID: "", state: { running: { startedAt: "2026-09-17T10:00:00Z" } } } ] }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: orphan, namespace: s }
+spec: { type: NodePort, selector: { app: nothing }, ports: [ { port: 443, targetPort: https } ] }
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata: { name: multi, namespace: s }
+spec:
+  rules:
+    - { host: a.example.com, http: { paths: [ { path: /, pathType: Prefix, backend: { service: { name: matched, port: { number: 80 } } } } ] } }
+    - { host: b.example.com, http: { paths: [ { path: /, pathType: Prefix, backend: { service: { name: matched, port: { number: 80 } } } } ] } }
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: cfg, namespace: s }
+data: { a: "1", b: "2", c: "3" }
+---
+apiVersion: v1
+kind: Secret
+metadata: { name: tls, namespace: s }
+type: kubernetes.io/tls
+data: { tls.crt: "YQ==", tls.key: "Yg==" }
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: { name: data, namespace: s }
+spec: { accessModes: [ ReadWriteOnce ], storageClassName: fast, resources: { requests: { storage: 10Gi } } }
+status: { phase: Bound }
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: { name: waiting, namespace: s }
+spec: { accessModes: [ ReadWriteOnce ], resources: { requests: { storage: 1Gi } } }
+status: { phase: Pending }
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata: { name: pv-1 }
+spec: { capacity: { storage: 10Gi }, persistentVolumeReclaimPolicy: Retain, accessModes: [ ReadWriteOnce ] }
+---
+apiVersion: batch/v1
+kind: Job
+metadata: { name: ok-job, namespace: s }
+spec: { completions: 2, template: { spec: { containers: [ { name: c, image: busybox } ], restartPolicy: Never } } }
+status: { succeeded: 2, conditions: [ { type: Complete, status: "True" } ] }
+---
+apiVersion: batch/v1
+kind: Job
+metadata: { name: failed-job, namespace: s }
+spec: { completions: 1, template: { spec: { containers: [ { name: c, image: busybox } ], restartPolicy: Never } } }
+status: { failed: 1, conditions: [ { type: Failed, status: "True" } ] }
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata: { name: nightly, namespace: s }
+spec: { schedule: "0 2 * * *", suspend: true, jobTemplate: { spec: { template: { spec: { containers: [ { name: c, image: busybox } ], restartPolicy: Never } } } } }
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata: { name: web-hpa, namespace: s }
+spec: { minReplicas: 2, maxReplicas: 10, scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: healthy } }
+status: { currentReplicas: 3, desiredReplicas: 3, conditions: [ { type: ScalingLimited, status: "True", reason: TooFewReplicas } ] }
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata: { name: web-sa, namespace: s }
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata: { name: db, namespace: s }
+spec:
+  replicas: 3
+  serviceName: db
+  selector: { matchLabels: { app: db } }
+  template:
+    metadata: { labels: { app: db } }
+    spec: { containers: [ { name: c, image: postgres:16 } ] }
+status: { replicas: 3, readyReplicas: 3 }
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata: { name: agent, namespace: s }
+spec:
+  selector: { matchLabels: { app: agent } }
+  template:
+    metadata: { labels: { app: agent } }
+    spec: { containers: [ { name: c, image: agent:2 } ] }
+status: { desiredNumberScheduled: 4, numberReady: 3, currentNumberScheduled: 4, numberMisscheduled: 0 }
