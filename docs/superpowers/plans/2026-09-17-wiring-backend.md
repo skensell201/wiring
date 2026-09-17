@@ -3100,7 +3100,8 @@ Behaviour:
 - After that, any change marks the graph dirty; a rebuild happens `debounce` after the **first** dirty event (trailing edge with a fixed deadline, so a flood of events cannot starve it). `graph_delta` is emitted only if the delta is non-empty.
 - `ReducerMsg::Rebuild` (from `set_expanded_groups`) forces a rebuild immediately.
 - Every `tick`, if any kind has been in error for longer than `degraded_after`, emits `connection_state: degraded` (once). When all kinds have recovered, emits `connected` and a fresh `graph_snapshot`.
-- Fatal failures are reported as `connection_error` and the kind is added to `denied_kinds` (shared with `Session` so the frontend can ask).
+- Fatal failures are reported as `connection_error` carrying the event's own `error` (kind `Forbidden` for RBAC, `Internal` for a panicked watcher); the kind is added to `denied_kinds` (shared with `Session` so the frontend can ask).
+- `StoreEvent::Restarted(kind)` (a watcher re-listed after a 410 Gone / long outage): the reducer snapshots the keys of that kind as *stale*; every following `Applied` of that kind un-marks its key; at the next `InitDone(kind)` any key still marked stale is removed from the store (objects deleted during the outage). Everything else stays live during the re-list.
 
 - [ ] **Step 1: Write the failing tests** (bottom of `src-tauri/src/session/reducer.rs`)
 
@@ -3108,6 +3109,7 @@ Behaviour:
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::ErrorKind;
     use crate::session::emitter::{ChannelEmitter, ConnectionState, OutEvent};
     use crate::store::Kind;
     use k8s_openapi::api::core::v1::{ConfigMap, Pod};
@@ -3198,6 +3200,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn restart_sweeps_objects_missing_from_the_relist() {
+        let (emitter, mut rx) = ChannelEmitter::new();
+        let shared = Shared::default();
+        let (tx, _h) = spawn_reducer(fast_config(&[Kind::Pod]), shared.clone(), Arc::new(emitter));
+        tx.send(ReducerMsg::Store(StoreEvent::Applied(pod("a")))).await.unwrap();
+        tx.send(ReducerMsg::Store(StoreEvent::Applied(pod("b")))).await.unwrap();
+        tx.send(ReducerMsg::Store(StoreEvent::InitDone(Kind::Pod))).await.unwrap();
+        assert!(matches!(next(&mut rx).await, OutEvent::GraphSnapshot(g) if g.nodes.len() == 2));
+        // Watcher re-lists; only "a" still exists on the server.
+        tx.send(ReducerMsg::Store(StoreEvent::Restarted(Kind::Pod))).await.unwrap();
+        tx.send(ReducerMsg::Store(StoreEvent::Applied(pod("a")))).await.unwrap();
+        tx.send(ReducerMsg::Store(StoreEvent::InitDone(Kind::Pod))).await.unwrap();
+        match next(&mut rx).await {
+            OutEvent::GraphDelta(d) => assert_eq!(d.removed_nodes, vec!["Pod/n/b"]),
+            other => panic!("expected delta removing b, got {other:?}"),
+        }
+        assert_eq!(shared.store.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn fatal_internal_failure_keeps_its_error_kind() {
+        let (emitter, mut rx) = ChannelEmitter::new();
+        let shared = Shared::default();
+        let (tx, _h) = spawn_reducer(fast_config(&[Kind::Pod]), shared.clone(), Arc::new(emitter));
+        tx.send(ReducerMsg::Store(StoreEvent::Failed { kind: Kind::Pod, error: AppError::internal("Pod watcher panicked"), fatal: true })).await.unwrap();
+        match next(&mut rx).await {
+            OutEvent::ConnectionError(e) => assert_eq!(e.kind, ErrorKind::Internal),
+            other => panic!("expected connection error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
     async fn rebuild_message_forces_immediate_rebuild() {
         let (emitter, mut rx) = ChannelEmitter::new();
         let shared = Shared::default();
@@ -3230,9 +3264,9 @@ use tokio::task::JoinHandle;
 
 use super::emitter::{ConnectionState, Emitter, OutEvent};
 use super::watch::StoreEvent;
-use crate::error::{AppError, ErrorKind};
+use crate::error::AppError;
 use crate::graph::{build, diff, BuildOptions, Graph, NodeId};
-use crate::store::{Kind, Object, Store};
+use crate::store::{Kind, Object, ObjectKey, Store};
 
 #[derive(Debug)]
 pub enum ReducerMsg {
@@ -3292,6 +3326,8 @@ pub fn spawn_reducer(config: ReducerConfig, shared: Shared, emitter: Arc<dyn Emi
 
 async fn run(config: ReducerConfig, shared: Shared, emitter: Arc<dyn Emitter>, mut rx: mpsc::Receiver<ReducerMsg>) {
     let mut init_pending: HashSet<Kind> = config.kinds.iter().copied().collect();
+    // Keys not yet re-confirmed since the last `Restarted` of their kind.
+    let mut stale: HashMap<Kind, HashSet<ObjectKey>> = HashMap::new();
     let mut initialised = false;
     let mut flush_at: Option<Instant> = None;
     let mut errored_since: HashMap<Kind, Instant> = HashMap::new();
@@ -3317,7 +3353,7 @@ async fn run(config: ReducerConfig, shared: Shared, emitter: Arc<dyn Emitter>, m
                         }
                     }
                     ReducerMsg::Store(ev) => {
-                        let changed = apply(&shared, ev, &mut init_pending, &mut errored_since, &emitter);
+                        let changed = apply(&shared, ev, &mut init_pending, &mut stale, &mut errored_since, &emitter);
                         if !initialised && init_pending.is_empty() {
                             initialised = true;
                             flush_at = None;
@@ -3362,6 +3398,7 @@ fn apply(
     shared: &Shared,
     ev: StoreEvent,
     init_pending: &mut HashSet<Kind>,
+    stale: &mut HashMap<Kind, HashSet<ObjectKey>>,
     errored_since: &mut HashMap<Kind, Instant>,
     emitter: &Arc<dyn Emitter>,
 ) -> bool {
@@ -3369,16 +3406,34 @@ fn apply(
         StoreEvent::Applied(obj) => {
             let kind = obj.kind();
             errored_since.remove(&kind);
+            if let Some(keys) = stale.get_mut(&kind) {
+                keys.remove(&obj.key());
+            }
             upsert_if_changed(&shared.store, obj)
         }
         StoreEvent::Deleted(key) => {
             errored_since.remove(&key.kind);
             shared.store.lock().unwrap().remove(&key).is_some()
         }
+        StoreEvent::Restarted(kind) => {
+            let keys: HashSet<ObjectKey> = shared.store.lock().unwrap().iter_kind(kind).map(|o| o.key()).collect();
+            stale.insert(kind, keys);
+            false
+        }
         StoreEvent::InitDone(kind) => {
             errored_since.remove(&kind);
             init_pending.remove(&kind);
-            false
+            // Sweep whatever the re-list did not confirm.
+            match stale.remove(&kind) {
+                Some(keys) if !keys.is_empty() => {
+                    let mut store = shared.store.lock().unwrap();
+                    for key in &keys {
+                        store.remove(key);
+                    }
+                    true
+                }
+                _ => false,
+            }
         }
         StoreEvent::Recovered(kind) => {
             errored_since.remove(&kind);
@@ -3388,9 +3443,10 @@ fn apply(
             if fatal {
                 init_pending.remove(&kind);
                 errored_since.remove(&kind);
+                stale.remove(&kind);
                 shared.denied_kinds.lock().unwrap().insert(kind);
                 emitter.emit(OutEvent::ConnectionError(AppError::new(
-                    ErrorKind::Forbidden,
+                    error.kind,
                     format!("{}: {}", kind.as_str(), error.message),
                 )));
             } else {
@@ -3423,7 +3479,7 @@ Add `pub mod reducer;` to `src-tauri/src/session/mod.rs`.
 - [ ] **Step 4: Run tests**
 
 Run: `cd /Users/skensel/WORKING/AI/wiring/src-tauri && cargo test session::reducer 2>&1 | tail -8`
-Expected: `test result: ok. 5 passed`.
+Expected: `test result: ok. 7 passed`.
 
 - [ ] **Step 5: Commit**
 
