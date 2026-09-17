@@ -93,7 +93,7 @@ Commands (frontend → backend):
 | `connect` | `context` | `{ serverVersion, namespaces[] }` |
 | `select_namespace` | `namespace, expandedGroups[]` | `()` — graph arrives via event |
 | `set_expanded_groups` | `expandedGroups[]` | `()` — rebuild + delta via event |
-| `get_object` | `nodeId` | `{ yaml, summary: Record<string,string>, related: NodeId[] }` |
+| `get_object` | `nodeId` | `{ yaml, summary: [string, string][] (ordered key/value rows), related: NodeId[] }` |
 | `watch_events` | `nodeId \| null` | `()` — starts/stops the per-object Events watcher |
 
 Events (backend → frontend):
