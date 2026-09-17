@@ -50,4 +50,16 @@ describe("startup", () => {
     expect(useAppStore.getState().pickerOpen).toBe(true);
     expect(invoke).not.toHaveBeenCalledWith("connect", expect.anything());
   });
+
+  it("opens the picker when connecting the remembered context fails", async () => {
+    mem.set("lastContext", "prod");
+    vi.mocked(invoke).mockImplementationOnce(async (cmd: string) => {
+      if (cmd === "list_contexts") return [{ name: "prod", cluster: "c", user: "u", namespace: "payments", sourceFile: "/k" }];
+      return null;
+    });
+    vi.mocked(invoke).mockImplementationOnce(async () => { throw new Error("connect failed"); });
+    await startup();
+    expect(useAppStore.getState().pickerOpen).toBe(true);
+    expect(invoke).not.toHaveBeenCalledWith("select_namespace", expect.anything());
+  });
 });

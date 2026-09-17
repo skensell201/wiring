@@ -10,9 +10,15 @@ import { Toasts } from "./shared/ui/Toasts";
 
 export function App() {
   useEffect(() => {
+    let active = true;
     let stop: (() => void) | undefined;
-    void wireEvents().then((s) => { stop = s; }).then(startup);
-    return () => stop?.();
+    void (async () => {
+      const s = await wireEvents();
+      if (!active) { s(); return; }
+      stop = s;
+      await startup();
+    })();
+    return () => { active = false; stop?.(); };
   }, []);
 
   return (

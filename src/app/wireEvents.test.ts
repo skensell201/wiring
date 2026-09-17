@@ -45,6 +45,17 @@ describe("wireEvents", () => {
     expect(s.nodes.size).toBe(0);
   });
 
+  it("a disconnected state keeps toasts raised beforehand", async () => {
+    await wireEvents();
+    useAppStore.setState({ ...useAppStore.getState(), connection: { ...initialState().connection, context: "prod", state: "connected" } });
+    hoisted.handlers!.connection_error({ kind: "auth", message: "token expired" });
+    hoisted.handlers!.connection_state("disconnected");
+    const s = useAppStore.getState();
+    expect(s.connection.state).toBe("disconnected");
+    expect(s.toasts).toHaveLength(1);
+    expect(s.toasts[0]).toMatchObject({ kind: "auth", message: "token expired" });
+  });
+
   it("refreshes denied kinds when a per-kind forbidden error arrives", async () => {
     const { invoke } = await import("../shared/ipc/tauri");
     vi.mocked(invoke).mockImplementation(async (cmd: string) => (cmd === "denied_kinds" ? ["Secret"] : null));

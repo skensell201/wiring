@@ -12,7 +12,7 @@ export function wireEvents(): Promise<() => void> {
     connection_state: (state) => {
       s().setConnectionState(state);
       if (state === "disconnected") {
-        useAppStore.setState({ ...initialState(), contexts: s().contexts, hiddenKinds: s().hiddenKinds, pickerOpen: true });
+        useAppStore.setState({ ...initialState(), contexts: s().contexts, hiddenKinds: s().hiddenKinds, toasts: s().toasts, pickerOpen: true });
       }
     },
     connection_error: (err) => {
