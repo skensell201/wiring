@@ -38,15 +38,16 @@ describe("layout", () => {
   });
 
   it("orders a column by the position of its predecessors (barycenter)", () => {
-    // Two deployments; the pods of the *second* deployment must sit below the first's pods.
+    // Two deployments; deployment a's pods sort alphabetically AFTER deployment b's pods
+    // (z* vs m*), so this only passes if barycenter ordering actually drives row order.
     const nodes = [
       n("Deployment/p/a", "Deployment"), n("Deployment/p/b", "Deployment"),
-      n("Pod/p/b1", "Pod"), n("Pod/p/a1", "Pod"), n("Pod/p/b2", "Pod"), n("Pod/p/a2", "Pod"),
+      n("Pod/p/m1", "Pod"), n("Pod/p/z1", "Pod"), n("Pod/p/m2", "Pod"), n("Pod/p/z2", "Pod"),
     ];
-    const edges = [e("Deployment/p/a", "Pod/p/a1"), e("Deployment/p/a", "Pod/p/a2"), e("Deployment/p/b", "Pod/p/b1"), e("Deployment/p/b", "Pod/p/b2")];
+    const edges = [e("Deployment/p/a", "Pod/p/z1"), e("Deployment/p/a", "Pod/p/z2"), e("Deployment/p/b", "Pod/p/m1"), e("Deployment/p/b", "Pod/p/m2")];
     const pos = layout(nodes, edges);
     const y = (id: string) => pos.get(id)!.y;
-    expect(Math.max(y("Pod/p/a1"), y("Pod/p/a2"))).toBeLessThan(Math.min(y("Pod/p/b1"), y("Pod/p/b2")));
+    expect(Math.max(y("Pod/p/z1"), y("Pod/p/z2"))).toBeLessThan(Math.min(y("Pod/p/m1"), y("Pod/p/m2")));
   });
 
   it("is deterministic regardless of input order and puts orphans last", () => {
