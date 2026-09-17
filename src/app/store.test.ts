@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import graphFixture from "../shared/ipc/fixtures/graph.json";
-import type { Graph, GraphDelta, GraphNode } from "../shared/ipc/types";
+import type { Graph, GraphDelta, GraphNode, Kind } from "../shared/ipc/types";
 
 vi.mock("../shared/ipc/tauri", () => ({
   invoke: vi.fn(async (cmd: string) => {
@@ -13,7 +13,7 @@ vi.mock("../shared/ipc/tauri", () => ({
 }));
 
 import { invoke } from "../shared/ipc/tauri";
-import { applyDelta, applySnapshot, initialState, useAppStore } from "./store";
+import { applyDelta, applySnapshot, disconnectedState, initialState, useAppStore, type AppState } from "./store";
 
 const node = (id: string, over: Partial<GraphNode> = {}): GraphNode => ({
   id, kind: "Pod", namespace: "p", name: id.split("/").pop()!, status: "ok", badges: ["Running"], group: null, ...over,
@@ -103,11 +103,40 @@ describe("actions", () => {
     expect(c.state).toBe("connected");
   });
 
-  it("connect failure becomes a toast and leaves the connection untouched", async () => {
+  it("connect failure becomes a toast and leaves the app disconnected", async () => {
+    // The backend tears the previous session down before dialling the new context, so a failed
+    // connect from a connected state must not pretend the old connection is still alive.
+    useAppStore.setState({
+      ...applySnapshot(initialState(), { nodes: [node("Pod/p/a")], edges: [] }),
+      connection: { ...initialState().connection, state: "connected", context: "staging", namespace: "payments" },
+      toasts: [{ id: 1, kind: "info", message: "earlier" }],
+    });
     vi.mocked(invoke).mockRejectedValueOnce({ kind: "auth", message: "exec plugin missing" });
-    await useAppStore.getState().connect("prod");
-    expect(useAppStore.getState().connection.context).toBeNull();
-    expect(useAppStore.getState().toasts[0]).toMatchObject({ kind: "auth", message: "exec plugin missing" });
+    expect(await useAppStore.getState().connect("prod")).toBe(false);
+    const s = useAppStore.getState();
+    expect(s.connection).toEqual(initialState().connection);
+    expect(s.nodes.size).toBe(0);
+    expect(s.pickerOpen).toBe(true);
+    expect(s.toasts).toHaveLength(2);
+    expect(s.toasts[0]).toMatchObject({ message: "earlier" });
+    expect(s.toasts[1]).toMatchObject({ kind: "auth", message: "exec plugin missing" });
+  });
+
+  it("disconnectedState keeps contexts, hidden kinds and toasts and opens the picker", () => {
+    const s = {
+      ...applySnapshot(initialState(), { nodes: [node("Pod/p/a")], edges: [] }),
+      contexts: [{ name: "prod", cluster: "c", user: "u", namespace: null, sourceFile: "/k" }],
+      hiddenKinds: new Set<Kind>(["Secret"]),
+      toasts: [{ id: 1, kind: "info" as const, message: "kept" }],
+      connection: { ...initialState().connection, state: "connected" as const, context: "prod", busy: true },
+    };
+    const d = disconnectedState(s as AppState);
+    expect(d.contexts).toBe(s.contexts);
+    expect(d.hiddenKinds).toBe(s.hiddenKinds);
+    expect(d.toasts).toBe(s.toasts);
+    expect(d.pickerOpen).toBe(true);
+    expect(d.connection).toEqual(initialState().connection);
+    expect(d.nodes.size).toBe(0);
   });
 
   it("disconnect failure is toasted and state is reset", async () => {

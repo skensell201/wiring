@@ -81,6 +81,12 @@ export function initialState(): Omit<AppState, keyof Actions> {
   };
 }
 
+/** The state after the session is gone: graph, selection and connection reset, the context list,
+ *  kind filters and toasts kept, and the picker opened so the user can choose where to go next. */
+export function disconnectedState(s: AppState): Omit<AppState, keyof Actions> {
+  return { ...initialState(), contexts: s.contexts, hiddenKinds: s.hiddenKinds, toasts: s.toasts, pickerOpen: true };
+}
+
 type Actions = Pick<AppState,
   | "applySnapshot" | "applyDelta" | "setObjectEvents" | "setConnectionState" | "loadContexts" | "addKubeconfig" | "connect"
   | "reconnect" | "disconnect" | "selectNamespace" | "select" | "setHovered" | "toggleGroup" | "toggleKind" | "setSearch" | "toast"
@@ -150,7 +156,9 @@ export const useAppStore = create<AppState>()((set, get) => ({
       });
       return true;
     } catch (e) {
-      set((s) => ({ connection: { ...s.connection, busy: false } }));
+      // The backend tears the previous session down before dialling, so a failed connect leaves
+      // the app disconnected whatever it was before.
+      set(disconnectedState(get()));
       get().toast(toAppError(e));
       return false;
     }
@@ -169,7 +177,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
     } catch (e) {
       get().toast(toAppError(e));
     } finally {
-      set({ ...initialState(), contexts: get().contexts, hiddenKinds: get().hiddenKinds, toasts: get().toasts, pickerOpen: true });
+      set(disconnectedState(get()));
     }
   },
 

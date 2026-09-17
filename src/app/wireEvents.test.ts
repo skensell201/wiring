@@ -56,6 +56,21 @@ describe("wireEvents", () => {
     expect(s.toasts[0]).toMatchObject({ kind: "auth", message: "token expired" });
   });
 
+  it("a disconnected state while a connect is in flight does not reset the store", async () => {
+    // connect() tears the old session down first; the resulting "disconnected" belongs to the
+    // reconnect in progress, whose outcome connect() itself will write.
+    await wireEvents();
+    useAppStore.setState({ ...useAppStore.getState(), connection: { ...initialState().connection, context: "prod", state: "connected", busy: true } });
+    hoisted.handlers!.graph_snapshot({ nodes: [node], edges: [] });
+    hoisted.handlers!.connection_state("disconnected");
+    const s = useAppStore.getState();
+    expect(s.connection.state).toBe("disconnected");
+    expect(s.connection.context).toBe("prod");
+    expect(s.connection.busy).toBe(true);
+    expect(s.nodes.size).toBe(1);
+    expect(s.pickerOpen).toBe(false);
+  });
+
   it("refreshes denied kinds when a per-kind forbidden error arrives", async () => {
     const { invoke } = await import("../shared/ipc/tauri");
     vi.mocked(invoke).mockImplementation(async (cmd: string) => (cmd === "denied_kinds" ? ["Secret"] : null));

@@ -1,6 +1,6 @@
 import { commands } from "../shared/ipc/commands";
 import { listenAll } from "../shared/ipc/events";
-import { initialState, useAppStore } from "./store";
+import { disconnectedState, useAppStore } from "./store";
 
 /** Subscribe backend events to the store. Returns an unsubscribe function. */
 export function wireEvents(): Promise<() => void> {
@@ -11,9 +11,9 @@ export function wireEvents(): Promise<() => void> {
     object_events: ({ nodeId, events }) => s().setObjectEvents(nodeId, events),
     connection_state: (state) => {
       s().setConnectionState(state);
-      if (state === "disconnected") {
-        useAppStore.setState({ ...initialState(), contexts: s().contexts, hiddenKinds: s().hiddenKinds, toasts: s().toasts, pickerOpen: true });
-      }
+      // A connect in flight tears the old session down first; that "disconnected" is its own to
+      // resolve (success writes the new connection, failure resets), so leave the store alone.
+      if (state === "disconnected" && !s().connection.busy) useAppStore.setState(disconnectedState(s()));
     },
     connection_error: (err) => {
       s().toast(err);
