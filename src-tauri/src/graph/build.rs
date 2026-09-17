@@ -75,7 +75,12 @@ fn hide_single_replicasets(nodes: &mut HashMap<NodeId, Node>, edges: &mut Vec<Ed
         *edges = edges
             .drain(..)
             .filter(|e| !(e.source == dep && e.target == *rs))
-            .map(|e| if e.source == *rs { Edge::new(dep.clone(), e.target, e.relation) } else { e })
+            .map(|e| {
+                let source = if e.source == *rs { dep.clone() } else { e.source };
+                let target = if e.target == *rs { dep.clone() } else { e.target };
+                Edge::new(source, target, e.relation)
+            })
+            .filter(|e| e.source != e.target)
             .collect();
     }
 }
@@ -189,6 +194,7 @@ mod tests {
             vec![
                 "ConfigMap/g/api-cfg->PodGroup/g/Deployment/api:envFrom",
                 "Deployment/g/api->PodGroup/g/Deployment/api:owns",
+                "HorizontalPodAutoscaler/g/rs-hpa->Deployment/g/api:scales",
                 "Service/g/api->PodGroup/g/Deployment/api:selects",
             ]
         );
@@ -222,5 +228,23 @@ mod tests {
         let mut sorted = ids.clone();
         sorted.sort();
         assert_eq!(ids, sorted);
+    }
+
+    #[test]
+    fn every_edge_endpoint_exists() {
+        let expanded = BuildOptions { expanded_groups: ["PodGroup/g/Deployment/api".to_string()].into_iter().collect(), ..Default::default() };
+        for (fixture, opts) in [
+            ("deployment-basic", BuildOptions::default()),
+            ("relations", BuildOptions::default()),
+            ("podgroup", BuildOptions::default()),
+            ("podgroup", expanded),
+        ] {
+            let s = Store::from_fixture(fixture).unwrap();
+            let g = build(&s, &opts);
+            for e in &g.edges {
+                assert!(g.node(&e.source).is_some(), "{fixture}: edge {} has dangling source", e.id);
+                assert!(g.node(&e.target).is_some(), "{fixture}: edge {} has dangling target", e.id);
+            }
+        }
     }
 }

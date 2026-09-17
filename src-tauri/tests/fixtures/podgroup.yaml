@@ -39,6 +39,11 @@ spec:
     spec: { containers: [ { name: c, image: api:1 } ] }
 status: { replicas: 0 }
 ---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata: { name: rs-hpa, namespace: g }
+spec: { minReplicas: 1, maxReplicas: 9, scaleTargetRef: { apiVersion: apps/v1, kind: ReplicaSet, name: api-new } }
+---
 apiVersion: v1
 kind: Service
 metadata: { name: api, namespace: g }
