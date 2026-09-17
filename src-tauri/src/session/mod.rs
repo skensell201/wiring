@@ -22,7 +22,7 @@ use tokio::task::JoinHandle;
 use crate::error::{AppError, AppResult, ErrorKind};
 use crate::graph::{status::summary, Graph, NodeId};
 use crate::store::{Kind, Store};
-use emitter::{Emitter, K8sEvent, ObjectEvents, OutEvent};
+use emitter::{ClosableEmitter, Emitter, K8sEvent, ObjectEvents, OutEvent};
 use reducer::{spawn_reducer, ReducerConfig, ReducerMsg};
 use shared::Shared;
 use watch::{app_error_from_kube, spawn_all};
@@ -104,7 +104,11 @@ pub struct Session {
     context: String,
     namespace: Option<String>,
     shared: Shared,
+    /// Session-lifetime emitter: connection state, and the parent of `ns_emitter`.
     emitter: Arc<dyn Emitter>,
+    /// Emitter for the current namespace's reducer and events watcher; closed on every
+    /// namespace switch so aborted tasks cannot leak stale events.
+    ns_emitter: ClosableEmitter,
     reducer_tx: Option<mpsc::Sender<ReducerMsg>>,
     tasks: Vec<JoinHandle<()>>,
     events_task: Option<JoinHandle<()>>,
@@ -155,6 +159,7 @@ impl Session {
             context: context.to_string(),
             namespace: None,
             shared: Shared::default(),
+            ns_emitter: ClosableEmitter::new(emitter.clone()),
             emitter,
             reducer_tx: None,
             tasks: vec![],
@@ -189,8 +194,9 @@ impl Session {
         self.shared = Shared::default();
         *self.shared.expanded_groups() = expanded_groups;
         self.namespace = Some(namespace.to_string());
+        self.ns_emitter = ClosableEmitter::new(self.emitter.clone());
 
-        let (reducer_tx, reducer_task) = spawn_reducer(ReducerConfig::default(), self.shared.clone(), self.emitter.clone());
+        let (reducer_tx, reducer_task) = spawn_reducer(ReducerConfig::default(), self.shared.clone(), Arc::new(self.ns_emitter.clone()));
         let (store_tx, mut store_rx) = mpsc::channel(4096);
         // Bridge StoreEvent -> ReducerMsg so watchers do not know about the reducer.
         let bridge_tx = reducer_tx.clone();
@@ -250,7 +256,7 @@ impl Session {
             Some(ns) => Api::namespaced(self.client.clone(), ns),
             None => Api::all(self.client.clone()),
         };
-        let emitter = self.emitter.clone();
+        let emitter = self.ns_emitter.clone();
         let node_id = node_id.to_string();
         self.events_task = Some(tokio::spawn(async move {
             let cfg = watcher::Config::default().fields(&format!("involvedObject.uid={uid}"));
@@ -281,6 +287,9 @@ impl Session {
     }
 
     fn stop_watchers(&mut self) {
+        // Close before aborting: an abort only lands at the task's next `.await`, and a
+        // reducer mid-rebuild would otherwise still emit one snapshot of the old namespace.
+        self.ns_emitter.close();
         for t in self.tasks.drain(..) {
             t.abort();
         }

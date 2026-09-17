@@ -1,5 +1,8 @@
 //! Backend -> frontend push events, abstracted so tests need no Tauri.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
@@ -63,6 +66,38 @@ pub trait Emitter: Send + Sync + 'static {
     fn emit(&self, event: OutEvent);
 }
 
+/// An emitter that can be switched off. One is created per namespace session: aborting
+/// the reducer/watcher tasks only takes effect at their next `.await`, so a task can still
+/// push one stale snapshot or delta of the old namespace after the switch. Closing the
+/// emitter first makes those late events vanish instead of reaching the frontend.
+#[derive(Clone)]
+pub struct ClosableEmitter {
+    inner: Arc<dyn Emitter>,
+    closed: Arc<AtomicBool>,
+}
+
+impl ClosableEmitter {
+    pub fn new(inner: Arc<dyn Emitter>) -> Self {
+        Self {
+            inner,
+            closed: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    /// Drop every event emitted from now on, on every clone of this emitter.
+    pub fn close(&self) {
+        self.closed.store(true, Ordering::SeqCst);
+    }
+}
+
+impl Emitter for ClosableEmitter {
+    fn emit(&self, event: OutEvent) {
+        if !self.closed.load(Ordering::SeqCst) {
+            self.inner.emit(event);
+        }
+    }
+}
+
 /// Test emitter: collects events on an unbounded channel.
 pub struct ChannelEmitter {
     tx: mpsc::UnboundedSender<OutEvent>,
@@ -94,6 +129,18 @@ mod tests {
         let (name, payload) = OutEvent::ConnectionState(ConnectionState::Degraded).into_parts();
         assert_eq!(name, "connection_state");
         assert_eq!(payload, serde_json::json!("degraded"));
+    }
+
+    #[test]
+    fn closable_emitter_drops_events_after_close() {
+        let (inner, mut rx) = ChannelEmitter::new();
+        let emitter = ClosableEmitter::new(Arc::new(inner));
+        emitter.emit(OutEvent::ConnectionState(ConnectionState::Connected));
+        assert_eq!(rx.try_recv().unwrap(), OutEvent::ConnectionState(ConnectionState::Connected));
+        emitter.close();
+        emitter.emit(OutEvent::ConnectionState(ConnectionState::Degraded));
+        emitter.emit(OutEvent::GraphSnapshot(Graph::default()));
+        assert!(rx.try_recv().is_err(), "events after close must be dropped");
     }
 
     #[tokio::test]
