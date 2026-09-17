@@ -11,7 +11,7 @@ use std::sync::Arc;
 use futures::StreamExt;
 use k8s_openapi::api::core::v1::{Event as CoreEvent, Namespace};
 use kube::api::{Api, ListParams};
-use kube::config::{KubeConfigOptions, Kubeconfig};
+use kube::config::{KubeConfigOptions, Kubeconfig, KubeconfigError};
 use kube::runtime::watcher::{self, watcher, Event};
 use kube::runtime::WatchStreamExt;
 use kube::{Client, Config};
@@ -43,6 +43,33 @@ pub struct ObjectDetails {
     pub related: Vec<NodeId>,
 }
 
+/// Map a kubeconfig-loading error to an `ErrorKind` by variant, rather than lumping everything
+/// under `Auth`. These variants never embed raw file content, so `e.to_string()` is safe to
+/// show as-is.
+fn app_error_from_kubeconfig(e: &KubeconfigError) -> AppError {
+    let kind = match e {
+        // Context/cluster could not be found by name.
+        KubeconfigError::CurrentContextNotSet | KubeconfigError::LoadContext(_) | KubeconfigError::LoadClusterOfContext(_) => {
+            ErrorKind::NotFound
+        }
+        // Cert/key loading and parsing — these are what actually authenticate the client.
+        KubeconfigError::LoadCertificateAuthority(_)
+        | KubeconfigError::LoadClientCertificate(_)
+        | KubeconfigError::LoadClientKey(_)
+        | KubeconfigError::ParseCertificates(_) => ErrorKind::Auth,
+        // Everything else: malformed/unreadable kubeconfig data or config shape issues.
+        KubeconfigError::KindMismatch
+        | KubeconfigError::ApiVersionMismatch
+        | KubeconfigError::FindPath
+        | KubeconfigError::ReadConfig(..)
+        | KubeconfigError::Parse(_)
+        | KubeconfigError::MissingClusterUrl
+        | KubeconfigError::ParseClusterUrl(_)
+        | KubeconfigError::ParseProxyUrl(_) => ErrorKind::Internal,
+    };
+    AppError::new(kind, e.to_string())
+}
+
 pub struct Session {
     client: Client,
     context: String,
@@ -59,7 +86,7 @@ impl Session {
         let options = KubeConfigOptions { context: Some(context.to_string()), cluster: None, user: None };
         let config = Config::from_custom_kubeconfig(kubeconfig, &options)
             .await
-            .map_err(|e| AppError::new(ErrorKind::Auth, e.to_string()))?;
+            .map_err(|e| app_error_from_kubeconfig(&e))?;
         let client = Client::try_from(config).map_err(|e| AppError::new(ErrorKind::Internal, e.to_string()))?;
 
         let version = client.apiserver_version().await.map_err(|e| app_error_from_kube(&e))?;
@@ -158,7 +185,10 @@ impl Session {
                 .and_then(|o| o.uid().map(str::to_owned))
                 .ok_or_else(|| AppError::new(ErrorKind::NotFound, format!("{node_id} not in store")))?
         };
-        let api: Api<CoreEvent> = match ns.as_deref().or(self.namespace.as_deref()) {
+        // Cluster-scoped objects (e.g. PersistentVolume) have no namespace of their own; the
+        // `involvedObject.uid` field selector below already narrows the watch to that one
+        // object, so falling back to the browsed namespace here would just miss their events.
+        let api: Api<CoreEvent> = match ns.as_deref() {
             Some(ns) => Api::namespaced(self.client.clone(), ns),
             None => Api::all(self.client.clone()),
         };
@@ -339,5 +369,40 @@ mod tests {
         assert_eq!(list.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(), vec!["new", "old"]);
         assert_eq!(list[0].type_, "Warning");
         assert_eq!(list[0].count, 3);
+    }
+
+    #[test]
+    fn events_fall_back_to_event_time_and_sort_missing_last() {
+        use k8s_openapi::api::core::v1::Event;
+        use k8s_openapi::apimachinery::pkg::apis::meta::v1::{MicroTime, ObjectMeta, Time};
+        let base = |name: &str| Event {
+            metadata: ObjectMeta { name: Some(name.into()), ..Default::default() },
+            type_: Some("Normal".into()),
+            reason: Some("Scheduled".into()),
+            message: Some("ok".into()),
+            count: Some(1),
+            ..Default::default()
+        };
+        let event_time_only = Event {
+            event_time: Some(MicroTime("2026-09-17T11:00:00Z".parse().expect("rfc3339 timestamp"))),
+            ..base("has-event-time")
+        };
+        let last_timestamp_only = Event {
+            last_timestamp: Some(Time("2026-09-17T10:00:00Z".parse().expect("rfc3339 timestamp"))),
+            ..base("has-last-timestamp")
+        };
+        let no_timestamp = base("no-timestamp");
+
+        let mut map = std::collections::BTreeMap::new();
+        map.insert("has-event-time".to_string(), event_time_only);
+        map.insert("has-last-timestamp".to_string(), last_timestamp_only);
+        map.insert("no-timestamp".to_string(), no_timestamp);
+
+        let list = events_to_list(&map);
+        assert_eq!(
+            list.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(),
+            vec!["has-event-time", "has-last-timestamp", "no-timestamp"]
+        );
+        assert!(list[0].last_timestamp.is_some(), "event-time fallback should populate last_timestamp");
     }
 }
