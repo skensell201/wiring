@@ -175,7 +175,7 @@ If one owner (ReplicaSet, StatefulSet, DaemonSet, Job) has **more than 5** pods,
 
 ### 5.4 Layout
 
-Layout is a deterministic layered layout implemented in `src/features/graph/layout.ts`: one column per non-empty layer (layers listed below), rows ordered by the barycenter of already-placed neighbours (two sweeps, id tie-breaks, orphans last). Edges spanning more than one column are routed through thin dummy slots in the intermediate columns (Sugiyama-style), bundled per source and target column, so an edge never passes behind a card; the frontend draws them as cubic Bézier chains through the slot centres (`edgePath.ts`). It runs synchronously on the main thread (≤ a few hundred nodes) and is stable across deltas; React Flow animates position changes.
+Layout is a deterministic layered layout implemented in `src/features/graph/layout.ts`: one column per non-empty layer (layers listed below), rows ordered by the barycenter of already-placed neighbours (two sweeps, id tie-breaks, orphans last). Edges spanning more than one column are routed through thin dummy slots in the intermediate columns (Sugiyama-style), bundled per source and target column, so an edge never passes behind a card; the frontend draws them as cubic Bézier chains through the slot centres (`edgePath.ts`). It runs synchronously on the main thread (≤ a few hundred nodes) and is stable across deltas.
 
 ```
 0: HPA
@@ -187,7 +187,7 @@ Layout is a deterministic layered layout implemented in `src/features/graph/layo
 6: Pod, PodGroup
 ```
 
-On every delta the whole layout is recomputed; React Flow animates node position changes over 300 ms. Nodes hidden by kind filters are excluded from layout so the remaining graph tightens.
+On every delta the whole layout is recomputed and nodes move to their new positions instantly. Nodes hidden by kind filters are excluded from layout so the remaining graph tightens.
 
 ## 6. Data flow
 
@@ -196,7 +196,7 @@ On every delta the whole layout is recomputed; React Flow animates node position
 2. No kubeconfig found → empty state with instructions and an "Add kubeconfig file…" button.
 
 ### 6.2 Connect
-`connect(context)` → on success the header shows cluster name and version; on failure `connection_error` is shown as a toast and the picker stays open.
+`connect(context)` → on success the header shows the context name and the server version; on failure `connection_error` is shown as a toast and the picker stays open.
 
 ### 6.3 Namespace and live graph
 `select_namespace(ns)` → session starts watchers → `graph_snapshot` → thereafter `graph_delta` every ≤150 ms when something changed. The frontend applies deltas to its node/edge maps, re-runs layout, and preserves selection if the selected node still exists.
@@ -251,7 +251,7 @@ Layout (chosen from three mockups; see `.superpowers/brainstorm/` for the origin
 
 **Node card** (medium density): kind icon (gradient square with a letter, or a colored dot for Pod), kind label (uppercase, muted), name (white), then a row of 0–2 pill badges. Selected: ember outline + soft glow. Hovering a node brightens its edges and dims the rest. Edges: 1.5 px, `accent-current` gradient, smooth bezier; `owns` edges solid, all others dashed.
 
-**Canvas**: dot grid on `bg-void`, subtle violet radial glow, React Flow controls and minimap bottom-right, pan/zoom with mouse and trackpad. Double-click on a PodGroup expands it (double-click zoom is disabled).
+**Canvas**: dot grid on `bg-void`, React Flow controls bottom-left and minimap bottom-right, pan/zoom with mouse and trackpad. Double-click on a PodGroup expands it (double-click zoom is disabled).
 
 **Bottom panel**: tabs Overview · YAML · Events; header shows name and kind; Events tab marks `Warning` rows with `status-warn`. Empty selection: "Select a node to see details".
 
