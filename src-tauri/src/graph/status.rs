@@ -136,13 +136,9 @@ fn job(j: &Job) -> (Status, Badges) {
         .and_then(|s| s.conditions.as_ref())
         .map(|cs| condition_is(cs.iter().map(|c| (c.type_.as_str(), c.status.as_str())), "Failed", "True"))
         .unwrap_or(false);
-    let status = if failed {
-        Status::Err
-    } else if succeeded < completions {
-        Status::Warn
-    } else {
-        Status::Ok
-    };
+    // Spec §5.1: err if condition `Failed=True`. A Job still running toward its
+    // completion count (succeeded < completions, not failed) is `Ok`, not a warning.
+    let status = if failed { Status::Err } else { Status::Ok };
     (status, vec![ready_desired(succeeded, completions)])
 }
 
@@ -183,9 +179,19 @@ fn pod(p: &Pod) -> (Status, Badges) {
         })
     });
 
-    let label = reason.clone().unwrap_or_else(|| phase.clone());
-    let status = if phase == "Failed" || reason.as_deref().is_some_and(|r| POD_ERR_REASONS.contains(&r)) {
+    let is_err = phase == "Failed" || reason.as_deref().is_some_and(|r| POD_ERR_REASONS.contains(&r));
+    // A pod being deleted (graceful termination in progress) is a warning, not the plain
+    // phase/reason label — but an err reason (e.g. still crashing while terminating) wins.
+    let terminating = p.metadata.deletion_timestamp.is_some();
+    let label = if terminating && !is_err {
+        "Terminating".to_string()
+    } else {
+        reason.clone().unwrap_or_else(|| phase.clone())
+    };
+    let status = if is_err {
         Status::Err
+    } else if terminating {
+        Status::Warn
     } else if phase == "Succeeded" {
         Status::Ok
     } else if phase == "Pending" || phase == "Unknown" || !all_ready {
@@ -488,6 +494,10 @@ mod tests {
             (Status::Err, vec!["OOMKilled".into(), "↻ 3".into()])
         );
         assert_eq!(describe_named(&s, Kind::Pod, "sidecar-done"), (Status::Ok, vec!["Running".into()]));
+        assert_eq!(
+            describe_named(&s, Kind::Pod, "terminating"),
+            (Status::Warn, vec!["Terminating".into()])
+        );
     }
 
     #[test]
@@ -526,6 +536,7 @@ mod tests {
         );
         assert_eq!(describe_named(&s, Kind::Job, "ok-job"), (Status::Ok, vec!["2/2".into()]));
         assert_eq!(describe_named(&s, Kind::Job, "failed-job"), (Status::Err, vec!["0/1".into()]));
+        assert_eq!(describe_named(&s, Kind::Job, "running-job"), (Status::Ok, vec!["1/3".into()]));
         assert_eq!(
             describe_named(&s, Kind::CronJob, "nightly"),
             (Status::Warn, vec!["0 2 * * *".into()])

@@ -1,3 +1,7 @@
+//! The graph types shipped to the frontend: `Node`/`Edge`/`Graph`/`GraphDelta`, plus the
+//! `Status`/`Relation` enums and `GroupInfo` used by PodGroup nodes. Pure data — no
+//! Kubernetes types leak in here; `graph::build` and `graph::status` do that translation.
+
 use serde::{Deserialize, Serialize};
 
 use crate::store::Kind;

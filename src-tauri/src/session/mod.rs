@@ -11,7 +11,7 @@ use std::sync::Arc;
 use futures::StreamExt;
 use k8s_openapi::api::core::v1::{Event as CoreEvent, Namespace};
 use kube::api::{Api, ListParams};
-use kube::config::{KubeConfigOptions, Kubeconfig, KubeconfigError};
+use kube::config::{KubeConfigOptions, Kubeconfig};
 use kube::runtime::watcher::{self, watcher, Event};
 use kube::runtime::WatchStreamExt;
 use kube::{Client, Config};
@@ -25,7 +25,7 @@ use crate::store::{Kind, Store};
 use emitter::{ClosableEmitter, Emitter, K8sEvent, ObjectEvents, OutEvent};
 use reducer::{spawn_reducer, ReducerConfig, ReducerMsg};
 use shared::Shared;
-use watch::{app_error_from_kube, spawn_all};
+use watch::spawn_all;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -41,33 +41,6 @@ pub struct ObjectDetails {
     pub yaml: String,
     pub summary: Vec<(String, String)>,
     pub related: Vec<NodeId>,
-}
-
-/// Map a kubeconfig-loading error to an `ErrorKind` by variant, rather than lumping everything
-/// under `Auth`. These variants never embed raw file content, so `e.to_string()` is safe to
-/// show as-is.
-fn app_error_from_kubeconfig(e: &KubeconfigError) -> AppError {
-    let kind = match e {
-        // Context/cluster could not be found by name.
-        KubeconfigError::CurrentContextNotSet | KubeconfigError::LoadContext(_) | KubeconfigError::LoadClusterOfContext(_) => {
-            ErrorKind::NotFound
-        }
-        // Cert/key loading and parsing — these are what actually authenticate the client.
-        KubeconfigError::LoadCertificateAuthority(_)
-        | KubeconfigError::LoadClientCertificate(_)
-        | KubeconfigError::LoadClientKey(_)
-        | KubeconfigError::ParseCertificates(_) => ErrorKind::Auth,
-        // Everything else: malformed/unreadable kubeconfig data or config shape issues.
-        KubeconfigError::KindMismatch
-        | KubeconfigError::ApiVersionMismatch
-        | KubeconfigError::FindPath
-        | KubeconfigError::ReadConfig(..)
-        | KubeconfigError::Parse(_)
-        | KubeconfigError::MissingClusterUrl
-        | KubeconfigError::ParseClusterUrl(_)
-        | KubeconfigError::ParseProxyUrl(_) => ErrorKind::Internal,
-    };
-    AppError::new(kind, e.to_string())
 }
 
 fn find_context<'a>(kubeconfig: &'a Kubeconfig, context: &str) -> Option<&'a kube::config::Context> {
@@ -96,7 +69,7 @@ fn namespaces_or_fallback(listed: Result<Vec<String>, kube::Error>, context_name
     match listed {
         Ok(namespaces) => Ok(namespaces),
         Err(e) => {
-            let err = app_error_from_kube(&e);
+            let err = AppError::from(&e);
             if err.kind != ErrorKind::Forbidden {
                 return Err(err);
             }
@@ -109,7 +82,7 @@ fn namespaces_or_fallback(listed: Result<Vec<String>, kube::Error>, context_name
 /// Map a client error, naming the exec plugin on `Auth` failures so the user learns which
 /// binary is missing or broken (spec §8) — kube's own message only carries the OS error.
 fn app_error_from_client(e: &kube::Error, exec_command: Option<&str>) -> AppError {
-    let mut err = app_error_from_kube(e);
+    let mut err = AppError::from(e);
     if err.kind == ErrorKind::Auth {
         if let Some(cmd) = exec_command {
             err.message.push_str(&format!(" (exec plugin: {cmd})"));
@@ -120,8 +93,6 @@ fn app_error_from_client(e: &kube::Error, exec_command: Option<&str>) -> AppErro
 
 pub struct Session {
     client: Client,
-    context: String,
-    namespace: Option<String>,
     shared: Shared,
     /// Session-lifetime emitter: connection state, and the parent of `ns_emitter`.
     emitter: Arc<dyn Emitter>,
@@ -144,7 +115,7 @@ impl Session {
         let context_namespace = find_context(&kubeconfig, context).and_then(|c| c.namespace.clone());
         let config = Config::from_custom_kubeconfig(kubeconfig, &options)
             .await
-            .map_err(|e| app_error_from_kubeconfig(&e))?;
+            .map_err(|e| AppError::from(&e))?;
         // `Client::try_from` runs the exec plugin synchronously (it can block for seconds),
         // so keep it off the async runtime threads.
         let client = tokio::task::spawn_blocking(move || Client::try_from(config))
@@ -167,14 +138,12 @@ impl Session {
             server_version: version.git_version,
             namespaces,
         };
-        Ok((Session::new(client, context, emitter), info))
+        Ok((Session::new(client, emitter), info))
     }
 
-    fn new(client: Client, context: &str, emitter: Arc<dyn Emitter>) -> Session {
+    fn new(client: Client, emitter: Arc<dyn Emitter>) -> Session {
         Session {
             client,
-            context: context.to_string(),
-            namespace: None,
             shared: Shared::default(),
             ns_emitter: ClosableEmitter::new(emitter.clone()),
             emitter,
@@ -191,14 +160,6 @@ impl Session {
         self.emitter.emit(OutEvent::ConnectionState(emitter::ConnectionState::Connected));
     }
 
-    pub fn context(&self) -> &str {
-        &self.context
-    }
-
-    pub fn namespace(&self) -> Option<&str> {
-        self.namespace.as_deref()
-    }
-
     pub fn denied_kinds(&self) -> Vec<Kind> {
         let mut v: Vec<Kind> = self.shared.denied_kinds().iter().copied().collect();
         v.sort();
@@ -210,7 +171,6 @@ impl Session {
         self.stop_watchers();
         self.shared = Shared::default();
         *self.shared.expanded_groups() = expanded_groups;
-        self.namespace = Some(namespace.to_string());
         self.ns_emitter = ClosableEmitter::new(self.emitter.clone());
 
         let (reducer_tx, reducer_task) = spawn_reducer(ReducerConfig::default(), self.shared.clone(), Arc::new(self.ns_emitter.clone()));
@@ -447,7 +407,7 @@ mod tests {
         use crate::session::emitter::{ChannelEmitter, ConnectionState};
         let (emitter, mut rx) = ChannelEmitter::new();
         let client = Client::try_from(Config::new("https://127.0.0.1:1".parse().unwrap())).unwrap();
-        let session = Session::new(client, "ctx", Arc::new(emitter));
+        let session = Session::new(client, Arc::new(emitter));
         assert!(rx.try_recv().is_err(), "constructing a session must not emit anything");
         session.announce_connected();
         assert_eq!(rx.try_recv().unwrap(), OutEvent::ConnectionState(ConnectionState::Connected));

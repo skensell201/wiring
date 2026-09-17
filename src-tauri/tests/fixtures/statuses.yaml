@@ -82,6 +82,14 @@ status:
     - { name: init-like, ready: false, restartCount: 0, image: busybox, imageID: "", state: { terminated: { reason: Completed, exitCode: 0 } } }
 ---
 apiVersion: v1
+kind: Pod
+metadata: { name: terminating, namespace: s, deletionTimestamp: "2026-09-17T12:00:00Z" }
+spec: { containers: [ { name: c, image: nginx } ] }
+status:
+  phase: Running
+  containerStatuses: [ { name: c, ready: true, restartCount: 0, image: nginx, imageID: "", state: { running: { startedAt: "2026-09-17T10:00:00Z" } } } ]
+---
+apiVersion: v1
 kind: Service
 metadata: { name: matched, namespace: s }
 spec: { type: ClusterIP, selector: { app: running }, ports: [ { port: 80, targetPort: 8080 } ] }
@@ -144,6 +152,12 @@ kind: Job
 metadata: { name: failed-job, namespace: s }
 spec: { completions: 1, template: { spec: { containers: [ { name: c, image: busybox } ], restartPolicy: Never } } }
 status: { failed: 1, conditions: [ { type: Failed, status: "True" } ] }
+---
+apiVersion: batch/v1
+kind: Job
+metadata: { name: running-job, namespace: s }
+spec: { completions: 3, template: { spec: { containers: [ { name: c, image: busybox } ], restartPolicy: Never } } }
+status: { succeeded: 1 }
 ---
 apiVersion: batch/v1
 kind: CronJob

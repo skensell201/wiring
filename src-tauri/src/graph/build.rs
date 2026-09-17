@@ -104,6 +104,26 @@ fn hide_single_replicasets(nodes: &mut HashMap<NodeId, Node>, edges: &mut Vec<Ed
     }
 }
 
+/// PodGroup badges: `×N` plus the ok/warn/err breakdown, omitted when every member is
+/// `Unknown` (the breakdown would otherwise join into an empty string).
+fn group_badges(info: &GroupInfo) -> Vec<String> {
+    let mut badges = vec![format!("×{}", info.count)];
+    let mut counts = vec![];
+    if info.ok > 0 {
+        counts.push(format!("{} ok", info.ok));
+    }
+    if info.warn > 0 {
+        counts.push(format!("{} warn", info.warn));
+    }
+    if info.err > 0 {
+        counts.push(format!("{} err", info.err));
+    }
+    if !counts.is_empty() {
+        badges.push(counts.join(" · "));
+    }
+    badges
+}
+
 /// Collapse pods with the same immediate owner into a PodGroup node.
 fn collapse_pod_groups(nodes: &mut HashMap<NodeId, Node>, edges: &mut Vec<Edge>, opts: &BuildOptions) {
     // owner id -> member pod ids
@@ -158,16 +178,7 @@ fn collapse_pod_groups(nodes: &mut HashMap<NodeId, Node>, edges: &mut Vec<Edge>,
         if info.count == 0 {
             continue;
         }
-        let mut counts = vec![];
-        if info.ok > 0 {
-            counts.push(format!("{} ok", info.ok));
-        }
-        if info.warn > 0 {
-            counts.push(format!("{} warn", info.warn));
-        }
-        if info.err > 0 {
-            counts.push(format!("{} err", info.err));
-        }
+        let badges = group_badges(&info);
         nodes.insert(
             group_id.clone(),
             Node {
@@ -176,7 +187,7 @@ fn collapse_pod_groups(nodes: &mut HashMap<NodeId, Node>, edges: &mut Vec<Edge>,
                 namespace: owner_ns,
                 name: owner_name,
                 status: worst,
-                badges: vec![format!("×{}", info.count), counts.join(" · ")],
+                badges,
                 group: Some(info),
             },
         );
@@ -203,6 +214,28 @@ mod tests {
 
     fn edge_ids(g: &Graph) -> Vec<&str> {
         g.edges.iter().map(|e| e.id.as_str()).collect()
+    }
+
+    #[test]
+    fn group_badges_omits_empty_breakdown() {
+        assert_eq!(
+            group_badges(&GroupInfo {
+                count: 3,
+                ok: 0,
+                warn: 0,
+                err: 0
+            }),
+            vec!["×3".to_string()]
+        );
+        assert_eq!(
+            group_badges(&GroupInfo {
+                count: 7,
+                ok: 6,
+                warn: 0,
+                err: 1
+            }),
+            vec!["×7".to_string(), "6 ok · 1 err".to_string()]
+        );
     }
 
     #[test]

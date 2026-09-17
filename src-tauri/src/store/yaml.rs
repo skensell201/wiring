@@ -52,7 +52,10 @@ impl Store {
         Ok(store)
     }
 
-    /// Load `tests/fixtures/<name>.yaml` relative to the crate root.
+    /// Load `tests/fixtures/<name>.yaml` relative to the crate root. Test-only: every call
+    /// site is an inline `#[cfg(test)]` unit test, and the `tests/` integration binaries
+    /// build their own fixtures inline (they cannot see `#[cfg(test)]` items anyway).
+    #[cfg(test)]
     pub fn from_fixture(name: &str) -> Result<Store, String> {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/fixtures")

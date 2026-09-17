@@ -70,25 +70,6 @@ into_object! {
     k8s_openapi::api::autoscaling::v2::HorizontalPodAutoscaler => HorizontalPodAutoscaler,
 }
 
-fn app_error_from_status(code: u16, message: &str) -> AppError {
-    let kind = match code {
-        401 => ErrorKind::Auth,
-        403 => ErrorKind::Forbidden,
-        404 => ErrorKind::NotFound,
-        _ => ErrorKind::Internal,
-    };
-    AppError::new(kind, message)
-}
-
-pub fn app_error_from_kube(e: &kube::Error) -> AppError {
-    match e {
-        kube::Error::Api(resp) => app_error_from_status(resp.code, &resp.message),
-        kube::Error::Auth(e) => AppError::new(ErrorKind::Auth, e.to_string()),
-        kube::Error::HyperError(_) | kube::Error::Service(_) => AppError::new(ErrorKind::Network, e.to_string()),
-        other => AppError::new(ErrorKind::Internal, other.to_string()),
-    }
-}
-
 /// Decide whether a watcher error ends the watcher for good (spec §8).
 ///
 /// - 403: no RBAC for this kind — it is dropped and reported via `denied_kinds`.
@@ -100,7 +81,7 @@ pub fn app_error_from_kube(e: &kube::Error) -> AppError {
 fn classify(kind: Kind, e: &watcher::Error) -> StoreEvent {
     let (error, fatal) = match e {
         watcher::Error::InitialListFailed(k) | watcher::Error::WatchStartFailed(k) | watcher::Error::WatchFailed(k) => {
-            let app = app_error_from_kube(k);
+            let app = AppError::from(k);
             let fatal = match app.kind {
                 ErrorKind::Forbidden | ErrorKind::Auth => true,
                 ErrorKind::NotFound => matches!(e, watcher::Error::InitialListFailed(_)),
@@ -109,7 +90,7 @@ fn classify(kind: Kind, e: &watcher::Error) -> StoreEvent {
             (app, fatal)
         }
         watcher::Error::WatchError(resp) => {
-            let app = app_error_from_status(resp.code, &resp.message);
+            let app = crate::error::from_status(resp.code, &resp.message);
             let fatal = matches!(app.kind, ErrorKind::Forbidden | ErrorKind::Auth);
             (app, fatal)
         }
@@ -419,27 +400,6 @@ mod tests {
             }
             other => panic!("unexpected event: {other:?}"),
         }
-    }
-
-    #[test]
-    fn app_error_from_kube_maps_status_codes() {
-        let case = |code: u16, expected: ErrorKind| {
-            let status = kube::core::Status {
-                code,
-                message: "x".into(),
-                reason: "y".into(),
-                ..Default::default()
-            };
-            let err = kube::Error::Api(Box::new(status));
-            assert_eq!(app_error_from_kube(&err).kind, expected, "code {code}");
-        };
-        case(401, ErrorKind::Auth);
-        case(403, ErrorKind::Forbidden);
-        case(404, ErrorKind::NotFound);
-        case(500, ErrorKind::Internal);
-        // kube::Error::HyperError / ::Service wrap hyper::Error / tower::BoxError, which have
-        // no public constructor for a synthetic instance outside of a real transport failure,
-        // so the Network-mapping branch isn't covered by a standalone case here.
     }
 
     #[test]

@@ -133,8 +133,8 @@ fn object_events() {
                 reason: "BackOff".into(),
                 message: "Back-off restarting failed container".into(),
                 count: 14,
-                first_timestamp: Some("2026-09-17T10:00:00+00:00".into()),
-                last_timestamp: Some("2026-09-17T10:20:00+00:00".into()),
+                first_timestamp: Some("2026-09-17T10:00:00Z".into()),
+                last_timestamp: Some("2026-09-17T10:20:00Z".into()),
             }],
         },
     );
