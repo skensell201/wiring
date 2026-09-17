@@ -83,7 +83,11 @@ pub struct Session {
 
 impl Session {
     pub async fn connect(kubeconfig: Kubeconfig, context: &str, emitter: Arc<dyn Emitter>) -> AppResult<(Session, ConnectInfo)> {
-        let options = KubeConfigOptions { context: Some(context.to_string()), cluster: None, user: None };
+        let options = KubeConfigOptions {
+            context: Some(context.to_string()),
+            cluster: None,
+            user: None,
+        };
         let config = Config::from_custom_kubeconfig(kubeconfig, &options)
             .await
             .map_err(|e| app_error_from_kubeconfig(&e))?;
@@ -99,7 +103,11 @@ impl Session {
             .filter_map(|n| n.metadata.name)
             .collect::<Vec<_>>();
 
-        let info = ConnectInfo { context: context.to_string(), server_version: version.git_version, namespaces };
+        let info = ConnectInfo {
+            context: context.to_string(),
+            server_version: version.git_version,
+            namespaces,
+        };
         let session = Session {
             client,
             context: context.to_string(),
@@ -156,7 +164,9 @@ impl Session {
     pub async fn set_expanded_groups(&mut self, expanded_groups: HashSet<NodeId>) -> AppResult<()> {
         *self.shared.expanded_groups() = expanded_groups;
         if let Some(tx) = &self.reducer_tx {
-            tx.send(ReducerMsg::Rebuild).await.map_err(|_| AppError::internal("reducer stopped"))?;
+            tx.send(ReducerMsg::Rebuild)
+                .await
+                .map_err(|_| AppError::internal("reducer stopped"))?;
         }
         Ok(())
     }
@@ -214,7 +224,10 @@ impl Session {
                         continue;
                     }
                 }
-                emitter.emit(OutEvent::ObjectEvents(ObjectEvents { node_id: node_id.clone(), events: events_to_list(&events) }));
+                emitter.emit(OutEvent::ObjectEvents(ObjectEvents {
+                    node_id: node_id.clone(),
+                    events: events_to_list(&events),
+                }));
             }
         }));
         Ok(())
@@ -248,7 +261,9 @@ pub fn parse_node_id(id: &str) -> AppResult<(Kind, Option<String>, String)> {
     let (Some(kind), Some(ns), Some(name)) = (parts.next(), parts.next(), parts.next()) else {
         return Err(AppError::new(ErrorKind::NotFound, format!("malformed node id `{id}`")));
     };
-    let kind = if kind == "PodGroup" { Kind::PodGroup } else {
+    let kind = if kind == "PodGroup" {
+        Kind::PodGroup
+    } else {
         Kind::parse(kind).ok_or_else(|| AppError::new(ErrorKind::NotFound, format!("unknown kind in `{id}`")))?
     };
     let ns = if ns.is_empty() { None } else { Some(ns.to_string()) };
@@ -267,8 +282,15 @@ pub fn object_details(store: &Store, graph: &Graph, node_id: &str) -> AppResult<
         r
     };
     if kind == Kind::PodGroup {
-        let node = graph.node(node_id).ok_or_else(|| AppError::new(ErrorKind::NotFound, format!("{node_id} not in graph")))?;
-        let info = node.group.clone().unwrap_or(crate::graph::GroupInfo { count: 0, ok: 0, warn: 0, err: 0 });
+        let node = graph
+            .node(node_id)
+            .ok_or_else(|| AppError::new(ErrorKind::NotFound, format!("{node_id} not in graph")))?;
+        let info = node.group.clone().unwrap_or(crate::graph::GroupInfo {
+            count: 0,
+            ok: 0,
+            warn: 0,
+            err: 0,
+        });
         let summary = vec![
             ("Owner".to_string(), name),
             ("Namespace".to_string(), ns.unwrap_or_default()),
@@ -277,13 +299,21 @@ pub fn object_details(store: &Store, graph: &Graph, node_id: &str) -> AppResult<
             ("Warning".to_string(), info.warn.to_string()),
             ("Error".to_string(), info.err.to_string()),
         ];
-        return Ok(ObjectDetails { yaml: String::new(), summary, related });
+        return Ok(ObjectDetails {
+            yaml: String::new(),
+            summary,
+            related,
+        });
     }
     let obj = store
         .find(kind, ns.as_deref(), &name)
         .ok_or_else(|| AppError::new(ErrorKind::NotFound, format!("{node_id} not in store")))?;
     let yaml = serde_yaml_ng::to_string(&obj.to_json_value()).map_err(|e| AppError::internal(e.to_string()))?;
-    Ok(ObjectDetails { yaml, summary: summary(obj), related })
+    Ok(ObjectDetails {
+        yaml,
+        summary: summary(obj),
+        related,
+    })
 }
 
 pub fn events_to_list(events: &BTreeMap<String, CoreEvent>) -> Vec<K8sEvent> {
@@ -291,7 +321,11 @@ pub fn events_to_list(events: &BTreeMap<String, CoreEvent>) -> Vec<K8sEvent> {
         .values()
         .map(|e| {
             // k8s-openapi 0.28 wraps `jiff::Timestamp`; its Display is RFC 3339 ("...Z").
-            let last = e.last_timestamp.as_ref().map(|t| t.0.to_string()).or_else(|| e.event_time.as_ref().map(|t| t.0.to_string()));
+            let last = e
+                .last_timestamp
+                .as_ref()
+                .map(|t| t.0.to_string())
+                .or_else(|| e.event_time.as_ref().map(|t| t.0.to_string()));
             let ev = K8sEvent {
                 name: e.metadata.name.clone().unwrap_or_default(),
                 type_: e.type_.clone().unwrap_or_else(|| "Normal".into()),
@@ -315,9 +349,18 @@ mod tests {
 
     #[test]
     fn parses_node_ids() {
-        assert_eq!(parse_node_id("Pod/payments/web-1").unwrap(), (Kind::Pod, Some("payments".to_string()), "web-1".to_string()));
-        assert_eq!(parse_node_id("PersistentVolume//pv-1").unwrap(), (Kind::PersistentVolume, None, "pv-1".to_string()));
-        assert_eq!(parse_node_id("PodGroup/g/Deployment/api").unwrap(), (Kind::PodGroup, Some("g".to_string()), "Deployment/api".to_string()));
+        assert_eq!(
+            parse_node_id("Pod/payments/web-1").unwrap(),
+            (Kind::Pod, Some("payments".to_string()), "web-1".to_string())
+        );
+        assert_eq!(
+            parse_node_id("PersistentVolume//pv-1").unwrap(),
+            (Kind::PersistentVolume, None, "pv-1".to_string())
+        );
+        assert_eq!(
+            parse_node_id("PodGroup/g/Deployment/api").unwrap(),
+            (Kind::PodGroup, Some("g".to_string()), "Deployment/api".to_string())
+        );
         assert!(parse_node_id("garbage").is_err());
         assert!(parse_node_id("Node/x/y").is_err());
     }
@@ -355,7 +398,10 @@ mod tests {
         use k8s_openapi::api::core::v1::Event;
         use k8s_openapi::apimachinery::pkg::apis::meta::v1::{ObjectMeta, Time};
         let mk = |name: &str, ts: &str| Event {
-            metadata: ObjectMeta { name: Some(name.into()), ..Default::default() },
+            metadata: ObjectMeta {
+                name: Some(name.into()),
+                ..Default::default()
+            },
             type_: Some("Warning".into()),
             reason: Some("BackOff".into()),
             message: Some("restarting".into()),
@@ -377,7 +423,10 @@ mod tests {
         use k8s_openapi::api::core::v1::Event;
         use k8s_openapi::apimachinery::pkg::apis::meta::v1::{MicroTime, ObjectMeta, Time};
         let base = |name: &str| Event {
-            metadata: ObjectMeta { name: Some(name.into()), ..Default::default() },
+            metadata: ObjectMeta {
+                name: Some(name.into()),
+                ..Default::default()
+            },
             type_: Some("Normal".into()),
             reason: Some("Scheduled".into()),
             message: Some("ok".into()),
@@ -404,6 +453,9 @@ mod tests {
             list.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(),
             vec!["has-event-time", "has-last-timestamp", "no-timestamp"]
         );
-        assert!(list[0].last_timestamp.is_some(), "event-time fallback should populate last_timestamp");
+        assert!(
+            list[0].last_timestamp.is_some(),
+            "event-time fallback should populate last_timestamp"
+        );
     }
 }

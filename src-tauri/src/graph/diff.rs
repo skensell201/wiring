@@ -44,7 +44,15 @@ mod tests {
     use crate::store::{Kind, Object, Store};
 
     fn node(id: &str, status: Status) -> Node {
-        Node { id: id.into(), kind: Kind::Pod, namespace: Some("n".into()), name: id.into(), status, badges: vec![], group: None }
+        Node {
+            id: id.into(),
+            kind: Kind::Pod,
+            namespace: Some("n".into()),
+            name: id.into(),
+            status,
+            badges: vec![],
+            group: None,
+        }
     }
 
     fn graph(nodes: Vec<Node>, edges: Vec<Edge>) -> Graph {
@@ -114,7 +122,9 @@ mod tests {
         let added_node_ids: Vec<&str> = d.added_nodes.iter().map(|n| n.id.as_str()).collect();
         assert!(added_node_ids.contains(&"ReplicaSet/payments/web-7f9c"));
         assert!(added_node_ids.contains(&"ReplicaSet/payments/web-new"));
-        assert!(d.removed_edges.contains(&"Deployment/payments/web->Pod/payments/web-7f9c-aaaaa:owns".to_string()));
+        assert!(d
+            .removed_edges
+            .contains(&"Deployment/payments/web->Pod/payments/web-7f9c-aaaaa:owns".to_string()));
         let added_edge_ids: Vec<&str> = d.added_edges.iter().map(|e| e.id.as_str()).collect();
         assert!(added_edge_ids.contains(&"ReplicaSet/payments/web-7f9c->Pod/payments/web-7f9c-aaaaa:owns"));
         assert!(added_edge_ids.contains(&"Deployment/payments/web->ReplicaSet/payments/web-7f9c:owns"));

@@ -11,7 +11,12 @@ use wiring_lib::session::emitter::{ChannelEmitter, OutEvent};
 use wiring_lib::session::Session;
 
 fn kubectl(context: &str, args: &[&str]) {
-    let status = Command::new("kubectl").arg("--context").arg(context).args(args).status().expect("kubectl on PATH");
+    let status = Command::new("kubectl")
+        .arg("--context")
+        .arg(context)
+        .args(args)
+        .status()
+        .expect("kubectl on PATH");
     assert!(status.success(), "kubectl {args:?} failed");
 }
 
@@ -30,7 +35,10 @@ async fn graph_snapshot_reflects_applied_fixture() {
 
     let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
     let graph = loop {
-        let ev = tokio::time::timeout_at(deadline, rx.recv()).await.expect("snapshot before deadline").expect("emitter open");
+        let ev = tokio::time::timeout_at(deadline, rx.recv())
+            .await
+            .expect("snapshot before deadline")
+            .expect("emitter open");
         match ev {
             OutEvent::GraphSnapshot(g) => break g,
             OutEvent::ConnectionError(e) => panic!("connection error: {e:?}"),
@@ -42,8 +50,17 @@ async fn graph_snapshot_reflects_applied_fixture() {
     assert!(ids.contains(&"Deployment/wiring-smoke/web"), "{ids:?}");
     assert!(ids.contains(&"Service/wiring-smoke/web"), "{ids:?}");
     assert!(ids.contains(&"ConfigMap/wiring-smoke/web-cfg"), "{ids:?}");
-    assert!(graph.edges.iter().any(|e| e.id.starts_with("Deployment/wiring-smoke/web->Pod/wiring-smoke/")), "owner edges pass through hidden RS");
-    assert!(graph.edges.iter().any(|e| e.source == "ConfigMap/wiring-smoke/web-cfg" && e.relation == wiring_lib::graph::Relation::EnvFrom));
+    assert!(
+        graph
+            .edges
+            .iter()
+            .any(|e| e.id.starts_with("Deployment/wiring-smoke/web->Pod/wiring-smoke/")),
+        "owner edges pass through hidden RS"
+    );
+    assert!(graph
+        .edges
+        .iter()
+        .any(|e| e.source == "ConfigMap/wiring-smoke/web-cfg" && e.relation == wiring_lib::graph::Relation::EnvFrom));
 
     // Details for the deployment must render YAML + summary.
     let details = session.get_object("Deployment/wiring-smoke/web").unwrap();
@@ -54,7 +71,10 @@ async fn graph_snapshot_reflects_applied_fixture() {
     kubectl(&context, &["-n", "wiring-smoke", "scale", "deployment/web", "--replicas=1"]);
     let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
     loop {
-        let ev = tokio::time::timeout_at(deadline, rx.recv()).await.expect("delta before deadline").expect("emitter open");
+        let ev = tokio::time::timeout_at(deadline, rx.recv())
+            .await
+            .expect("delta before deadline")
+            .expect("emitter open");
         if let OutEvent::GraphDelta(d) = ev {
             if d.removed_nodes.iter().any(|id| id.starts_with("Pod/wiring-smoke/")) {
                 break;

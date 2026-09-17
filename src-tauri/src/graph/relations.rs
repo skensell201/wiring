@@ -21,7 +21,9 @@ fn edge_from_named(store: &Store, kind: Kind, ns: Option<&str>, name: &str, to: 
 pub fn owner_edges(store: &Store) -> Vec<Edge> {
     let mut edges = vec![];
     for child in store.iter() {
-        let Some(refs) = child.meta().owner_references.as_ref() else { continue };
+        let Some(refs) = child.meta().owner_references.as_ref() else {
+            continue;
+        };
         for r in refs {
             let Some(kind) = Kind::parse(&r.kind) else { continue };
             if let Some(e) = edge_from_named(store, kind, child.namespace(), &r.name, child, Relation::Owns) {
@@ -37,7 +39,9 @@ pub fn service_edges(store: &Store) -> Vec<Edge> {
     let mut edges = vec![];
     for svc in store.iter_kind(Kind::Service) {
         let Object::Service(s) = svc else { continue };
-        let Some(selector) = s.spec.as_ref().and_then(|s| s.selector.as_ref()) else { continue };
+        let Some(selector) = s.spec.as_ref().and_then(|s| s.selector.as_ref()) else {
+            continue;
+        };
         for pod in store.iter_kind(Kind::Pod).filter(|p| p.namespace() == svc.namespace()) {
             if selector_matches(selector, pod.meta().labels.as_ref()) {
                 edges.push(Edge::new(id_of(svc), id_of(pod), Relation::Selects));
@@ -54,7 +58,12 @@ pub fn ingress_edges(store: &Store) -> Vec<Edge> {
         let Object::Ingress(i) = ing else { continue };
         let Some(spec) = i.spec.as_ref() else { continue };
         let mut names: Vec<String> = vec![];
-        if let Some(name) = spec.default_backend.as_ref().and_then(|b| b.service.as_ref()).map(|s| s.name.clone()) {
+        if let Some(name) = spec
+            .default_backend
+            .as_ref()
+            .and_then(|b| b.service.as_ref())
+            .map(|s| s.name.clone())
+        {
             names.push(name);
         }
         for rule in spec.rules.as_deref().unwrap_or_default() {
@@ -143,7 +152,9 @@ pub fn pv_edges(store: &Store) -> Vec<Edge> {
     let mut edges = vec![];
     for pvc in store.iter_kind(Kind::PersistentVolumeClaim) {
         let Object::PersistentVolumeClaim(p) = pvc else { continue };
-        let Some(vol) = p.spec.as_ref().and_then(|s| s.volume_name.as_deref()) else { continue };
+        let Some(vol) = p.spec.as_ref().and_then(|s| s.volume_name.as_deref()) else {
+            continue;
+        };
         if let Some(e) = edge_from_named(store, Kind::PersistentVolume, None, vol, pvc, Relation::Binds) {
             edges.push(e);
         }
@@ -157,7 +168,9 @@ pub fn hpa_edges(store: &Store) -> Vec<Edge> {
     for hpa in store.iter_kind(Kind::HorizontalPodAutoscaler) {
         let Object::HorizontalPodAutoscaler(h) = hpa else { continue };
         let spec = &h.spec;
-        let Some(kind) = Kind::parse(&spec.scale_target_ref.kind) else { continue };
+        let Some(kind) = Kind::parse(&spec.scale_target_ref.kind) else {
+            continue;
+        };
         if let Some(target) = store.find(kind, hpa.namespace(), &spec.scale_target_ref.name) {
             edges.push(Edge::new(id_of(hpa), id_of(target), Relation::Scales));
         }
@@ -214,7 +227,10 @@ mod tests {
         let s = Store::from_fixture("relations").unwrap();
         assert_eq!(
             ids(&ingress_edges(&s)),
-            vec!["Ingress/r/web-ing->Service/r/fallback:routes", "Ingress/r/web-ing->Service/r/web-svc:routes"]
+            vec![
+                "Ingress/r/web-ing->Service/r/fallback:routes",
+                "Ingress/r/web-ing->Service/r/web-svc:routes"
+            ]
         );
     }
 
@@ -246,16 +262,26 @@ mod tests {
     #[test]
     fn pv_and_hpa_edges() {
         let s = Store::from_fixture("relations").unwrap();
-        assert_eq!(ids(&pv_edges(&s)), vec!["PersistentVolume//pv-data->PersistentVolumeClaim/r/data-pvc:binds"]);
-        assert_eq!(ids(&hpa_edges(&s)), vec!["HorizontalPodAutoscaler/r/web-hpa->Deployment/r/web:scales"]);
+        assert_eq!(
+            ids(&pv_edges(&s)),
+            vec!["PersistentVolume//pv-data->PersistentVolumeClaim/r/data-pvc:binds"]
+        );
+        assert_eq!(
+            ids(&hpa_edges(&s)),
+            vec!["HorizontalPodAutoscaler/r/web-hpa->Deployment/r/web:scales"]
+        );
     }
 
     #[test]
     fn all_edges_is_the_union() {
         let s = Store::from_fixture("relations").unwrap();
         let all = all_edges(&s);
-        let expected = owner_edges(&s).len() + service_edges(&s).len() + ingress_edges(&s).len()
-            + pod_input_edges(&s).len() + pv_edges(&s).len() + hpa_edges(&s).len();
+        let expected = owner_edges(&s).len()
+            + service_edges(&s).len()
+            + ingress_edges(&s).len()
+            + pod_input_edges(&s).len()
+            + pv_edges(&s).len()
+            + hpa_edges(&s).len();
         assert_eq!(all.len(), expected);
     }
 }

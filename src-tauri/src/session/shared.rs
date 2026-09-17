@@ -42,7 +42,10 @@ impl Shared {
     }
 
     fn build_options(&self) -> BuildOptions {
-        BuildOptions { expanded_groups: self.expanded_groups().clone(), ..Default::default() }
+        BuildOptions {
+            expanded_groups: self.expanded_groups().clone(),
+            ..Default::default()
+        }
     }
 
     /// Rebuild from the store; returns (new graph, delta vs previous).

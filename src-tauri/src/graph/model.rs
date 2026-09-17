@@ -84,7 +84,12 @@ impl Edge {
     pub fn new(source: impl Into<NodeId>, target: impl Into<NodeId>, relation: Relation) -> Edge {
         let source = source.into();
         let target = target.into();
-        Edge { id: format!("{source}->{target}:{}", relation.as_str()), source, target, relation }
+        Edge {
+            id: format!("{source}->{target}:{}", relation.as_str()),
+            source,
+            target,
+            relation,
+        }
     }
 }
 

@@ -194,12 +194,10 @@ fn upsert_if_changed(shared: &Shared, obj: Object) -> bool {
     let mut store = shared.store();
     let key = obj.key();
     let same = match store.get(&key) {
-        Some(existing) => {
-            match (existing.meta().resource_version.as_ref(), obj.meta().resource_version.as_ref()) {
-                (Some(a), Some(b)) if a == b => true,
-                _ => existing.to_json_value() == obj.to_json_value(),
-            }
-        }
+        Some(existing) => match (existing.meta().resource_version.as_ref(), obj.meta().resource_version.as_ref()) {
+            (Some(a), Some(b)) if a == b => true,
+            _ => existing.to_json_value() == obj.to_json_value(),
+        },
         None => false,
     };
     if same {
@@ -221,18 +219,40 @@ mod tests {
     use tokio::time::timeout;
 
     fn cm(name: &str) -> Object {
-        Object::ConfigMap(ConfigMap { metadata: ObjectMeta { name: Some(name.into()), namespace: Some("n".into()), ..Default::default() }, ..Default::default() })
+        Object::ConfigMap(ConfigMap {
+            metadata: ObjectMeta {
+                name: Some(name.into()),
+                namespace: Some("n".into()),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
     }
     fn pod(name: &str) -> Object {
-        Object::Pod(Pod { metadata: ObjectMeta { name: Some(name.into()), namespace: Some("n".into()), ..Default::default() }, ..Default::default() })
+        Object::Pod(Pod {
+            metadata: ObjectMeta {
+                name: Some(name.into()),
+                namespace: Some("n".into()),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
     }
 
     fn fast_config(kinds: &[Kind]) -> ReducerConfig {
-        ReducerConfig { kinds: kinds.to_vec(), debounce: Duration::from_millis(20), degraded_after: Duration::from_millis(50), tick: Duration::from_millis(10) }
+        ReducerConfig {
+            kinds: kinds.to_vec(),
+            debounce: Duration::from_millis(20),
+            degraded_after: Duration::from_millis(50),
+            tick: Duration::from_millis(10),
+        }
     }
 
     async fn next(rx: &mut tokio::sync::mpsc::UnboundedReceiver<OutEvent>) -> OutEvent {
-        timeout(Duration::from_secs(2), rx.recv()).await.expect("event in time").expect("channel open")
+        timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .expect("event in time")
+            .expect("channel open")
     }
 
     // All 7 tests run on tokio's paused virtual clock (`start_paused = true`): every
@@ -286,7 +306,13 @@ mod tests {
         let (emitter, mut rx) = ChannelEmitter::new();
         let shared = Shared::default();
         let (tx, _h) = spawn_reducer(fast_config(&[Kind::Secret, Kind::Pod]), shared.clone(), Arc::new(emitter));
-        tx.send(ReducerMsg::Store(StoreEvent::Failed { kind: Kind::Secret, error: AppError::new(ErrorKind::Forbidden, "no"), fatal: true })).await.unwrap();
+        tx.send(ReducerMsg::Store(StoreEvent::Failed {
+            kind: Kind::Secret,
+            error: AppError::new(ErrorKind::Forbidden, "no"),
+            fatal: true,
+        }))
+        .await
+        .unwrap();
         tx.send(ReducerMsg::Store(StoreEvent::InitDone(Kind::Pod))).await.unwrap();
         assert!(matches!(next(&mut rx).await, OutEvent::ConnectionError(_)));
         assert!(matches!(next(&mut rx).await, OutEvent::GraphSnapshot(_)));
@@ -300,7 +326,13 @@ mod tests {
         let (tx, _h) = spawn_reducer(fast_config(&[Kind::Pod]), shared.clone(), Arc::new(emitter));
         tx.send(ReducerMsg::Store(StoreEvent::InitDone(Kind::Pod))).await.unwrap();
         assert!(matches!(next(&mut rx).await, OutEvent::GraphSnapshot(_)));
-        tx.send(ReducerMsg::Store(StoreEvent::Failed { kind: Kind::Pod, error: AppError::new(ErrorKind::Network, "eof"), fatal: false })).await.unwrap();
+        tx.send(ReducerMsg::Store(StoreEvent::Failed {
+            kind: Kind::Pod,
+            error: AppError::new(ErrorKind::Network, "eof"),
+            fatal: false,
+        }))
+        .await
+        .unwrap();
         assert_eq!(next(&mut rx).await, OutEvent::ConnectionState(ConnectionState::Degraded));
         tx.send(ReducerMsg::Store(StoreEvent::Recovered(Kind::Pod))).await.unwrap();
         assert_eq!(next(&mut rx).await, OutEvent::ConnectionState(ConnectionState::Connected));
@@ -332,7 +364,13 @@ mod tests {
         let (emitter, mut rx) = ChannelEmitter::new();
         let shared = Shared::default();
         let (tx, _h) = spawn_reducer(fast_config(&[Kind::Pod]), shared.clone(), Arc::new(emitter));
-        tx.send(ReducerMsg::Store(StoreEvent::Failed { kind: Kind::Pod, error: AppError::internal("Pod watcher panicked"), fatal: true })).await.unwrap();
+        tx.send(ReducerMsg::Store(StoreEvent::Failed {
+            kind: Kind::Pod,
+            error: AppError::internal("Pod watcher panicked"),
+            fatal: true,
+        }))
+        .await
+        .unwrap();
         match next(&mut rx).await {
             OutEvent::ConnectionError(e) => assert_eq!(e.kind, ErrorKind::Internal),
             other => panic!("expected connection error, got {other:?}"),

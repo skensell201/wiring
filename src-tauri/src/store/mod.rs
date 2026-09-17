@@ -8,9 +8,7 @@ use std::collections::HashMap;
 use k8s_openapi::api::apps::v1::{DaemonSet, Deployment, ReplicaSet, StatefulSet};
 use k8s_openapi::api::autoscaling::v2::HorizontalPodAutoscaler;
 use k8s_openapi::api::batch::v1::{CronJob, Job};
-use k8s_openapi::api::core::v1::{
-    ConfigMap, PersistentVolume, PersistentVolumeClaim, Pod, Secret, Service, ServiceAccount,
-};
+use k8s_openapi::api::core::v1::{ConfigMap, PersistentVolume, PersistentVolumeClaim, Pod, Secret, Service, ServiceAccount};
 use k8s_openapi::api::networking::v1::Ingress;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use serde::{Deserialize, Serialize};
@@ -95,8 +93,16 @@ pub struct ObjectKey {
 impl ObjectKey {
     /// Normalizes `namespace` to `None` for cluster-scoped kinds, regardless of what was passed in.
     pub fn new(kind: Kind, namespace: Option<&str>, name: &str) -> ObjectKey {
-        let namespace = if kind.is_cluster_scoped() { None } else { namespace.map(str::to_owned) };
-        ObjectKey { kind, namespace, name: name.to_owned() }
+        let namespace = if kind.is_cluster_scoped() {
+            None
+        } else {
+            namespace.map(str::to_owned)
+        };
+        ObjectKey {
+            kind,
+            namespace,
+            name: name.to_owned(),
+        }
     }
 }
 
@@ -244,7 +250,11 @@ mod tests {
 
     fn pod(ns: &str, name: &str) -> Object {
         Object::Pod(Pod {
-            metadata: ObjectMeta { name: Some(name.into()), namespace: Some(ns.into()), ..Default::default() },
+            metadata: ObjectMeta {
+                name: Some(name.into()),
+                namespace: Some(ns.into()),
+                ..Default::default()
+            },
             ..Default::default()
         })
     }
@@ -260,7 +270,14 @@ mod tests {
     #[test]
     fn object_key_uses_kind_namespace_name() {
         let key = pod("payments", "web-1").key();
-        assert_eq!(key, ObjectKey { kind: Kind::Pod, namespace: Some("payments".into()), name: "web-1".into() });
+        assert_eq!(
+            key,
+            ObjectKey {
+                kind: Kind::Pod,
+                namespace: Some("payments".into()),
+                name: "web-1".into()
+            }
+        );
     }
 
     #[test]
@@ -280,7 +297,11 @@ mod tests {
     #[test]
     fn cluster_scoped_keys_ignore_namespace() {
         let pv = Object::PersistentVolume(PersistentVolume {
-            metadata: ObjectMeta { name: Some("pv-1".into()), namespace: None, ..Default::default() },
+            metadata: ObjectMeta {
+                name: Some("pv-1".into()),
+                namespace: None,
+                ..Default::default()
+            },
             ..Default::default()
         });
         let mut store = Store::default();
@@ -288,7 +309,11 @@ mod tests {
         assert!(store.find(Kind::PersistentVolume, Some("some-ns"), "pv-1").is_some());
 
         let pv_with_ns = Object::PersistentVolume(PersistentVolume {
-            metadata: ObjectMeta { name: Some("pv-2".into()), namespace: Some("x".into()), ..Default::default() },
+            metadata: ObjectMeta {
+                name: Some("pv-2".into()),
+                namespace: Some("x".into()),
+                ..Default::default()
+            },
             ..Default::default()
         });
         assert_eq!(pv_with_ns.key().namespace, None);

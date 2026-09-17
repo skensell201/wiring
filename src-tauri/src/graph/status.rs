@@ -26,8 +26,18 @@ pub fn describe(obj: &Object, store: &Store) -> (Status, Badges) {
         Object::Pod(p) => pod(p),
         Object::Service(s) => service(s, store),
         Object::Ingress(i) => ingress(i),
-        Object::ConfigMap(c) => (Status::Ok, vec![keys_badge(c.data.as_ref().map_or(0, |d| d.len()) + c.binary_data.as_ref().map_or(0, |d| d.len()))]),
-        Object::Secret(s) => (Status::Ok, vec![keys_badge(s.data.as_ref().map_or(0, |d| d.len()) + s.string_data.as_ref().map_or(0, |d| d.len()))]),
+        Object::ConfigMap(c) => (
+            Status::Ok,
+            vec![keys_badge(
+                c.data.as_ref().map_or(0, |d| d.len()) + c.binary_data.as_ref().map_or(0, |d| d.len()),
+            )],
+        ),
+        Object::Secret(s) => (
+            Status::Ok,
+            vec![keys_badge(
+                s.data.as_ref().map_or(0, |d| d.len()) + s.string_data.as_ref().map_or(0, |d| d.len()),
+            )],
+        ),
         Object::PersistentVolumeClaim(p) => pvc(p),
         Object::PersistentVolume(p) => pv(p),
         Object::ServiceAccount(_) => (Status::Ok, vec![]),
@@ -70,7 +80,12 @@ fn deployment(d: &Deployment) -> (Status, Badges) {
         .map(|cs| condition_is(cs.iter().map(|c| (c.type_.as_str(), c.status.as_str())), "Progressing", "False"))
         .unwrap_or(false);
     let mut badges = vec![ready_desired(ready, desired)];
-    if let Some(img) = d.spec.as_ref().and_then(|s| s.template.spec.as_ref()).and_then(|ps| first_image(&ps.containers)) {
+    if let Some(img) = d
+        .spec
+        .as_ref()
+        .and_then(|s| s.template.spec.as_ref())
+        .and_then(|ps| first_image(&ps.containers))
+    {
         badges.push(img);
     }
     (workload_status(ready, desired, progressing_false), badges)
@@ -80,7 +95,12 @@ fn statefulset(s: &StatefulSet) -> (Status, Badges) {
     let desired = s.spec.as_ref().and_then(|s| s.replicas).unwrap_or(1);
     let ready = s.status.as_ref().and_then(|s| s.ready_replicas).unwrap_or(0);
     let mut badges = vec![ready_desired(ready, desired)];
-    if let Some(img) = s.spec.as_ref().and_then(|s| s.template.spec.as_ref()).and_then(|ps| first_image(&ps.containers)) {
+    if let Some(img) = s
+        .spec
+        .as_ref()
+        .and_then(|s| s.template.spec.as_ref())
+        .and_then(|ps| first_image(&ps.containers))
+    {
         badges.push(img);
     }
     (workload_status(ready, desired, false), badges)
@@ -91,7 +111,12 @@ fn daemonset(d: &DaemonSet) -> (Status, Badges) {
     let desired = st.map(|s| s.desired_number_scheduled).unwrap_or(0);
     let ready = st.map(|s| s.number_ready).unwrap_or(0);
     let mut badges = vec![ready_desired(ready, desired)];
-    if let Some(img) = d.spec.as_ref().and_then(|s| s.template.spec.as_ref()).and_then(|ps| first_image(&ps.containers)) {
+    if let Some(img) = d
+        .spec
+        .as_ref()
+        .and_then(|s| s.template.spec.as_ref())
+        .and_then(|ps| first_image(&ps.containers))
+    {
         badges.push(img);
     }
     (workload_status(ready, desired, false), badges)
@@ -111,7 +136,13 @@ fn job(j: &Job) -> (Status, Badges) {
         .and_then(|s| s.conditions.as_ref())
         .map(|cs| condition_is(cs.iter().map(|c| (c.type_.as_str(), c.status.as_str())), "Failed", "True"))
         .unwrap_or(false);
-    let status = if failed { Status::Err } else if succeeded < completions { Status::Warn } else { Status::Ok };
+    let status = if failed {
+        Status::Err
+    } else if succeeded < completions {
+        Status::Warn
+    } else {
+        Status::Ok
+    };
     (status, vec![ready_desired(succeeded, completions)])
 }
 
@@ -143,11 +174,13 @@ fn pod(p: &Pod) -> (Status, Badges) {
     // A waiting/terminated reason is more informative than the phase.
     let reason = statuses.iter().find_map(|c| {
         let state = c.state.as_ref()?;
-        state
-            .waiting
-            .as_ref()
-            .and_then(|w| w.reason.clone())
-            .or_else(|| state.terminated.as_ref().and_then(|t| t.reason.clone()).filter(|r| r != "Completed"))
+        state.waiting.as_ref().and_then(|w| w.reason.clone()).or_else(|| {
+            state
+                .terminated
+                .as_ref()
+                .and_then(|t| t.reason.clone())
+                .filter(|r| r != "Completed")
+        })
     });
 
     let label = reason.clone().unwrap_or_else(|| phase.clone());
@@ -198,7 +231,11 @@ fn service(s: &Service, store: &Store) -> (Status, Badges) {
                 .iter_kind(crate::store::Kind::Pod)
                 .filter(|p| p.namespace() == ns)
                 .any(|p| selector_matches(sel, p.meta().labels.as_ref()));
-            if any { Status::Ok } else { Status::Warn }
+            if any {
+                Status::Ok
+            } else {
+                Status::Warn
+            }
         }
     };
     (status, badges)
@@ -258,7 +295,10 @@ fn hpa(h: &HorizontalPodAutoscaler) -> (Status, Badges) {
         .and_then(|s| s.conditions.as_ref())
         .map(|cs| condition_is(cs.iter().map(|c| (c.type_.as_str(), c.status.as_str())), "ScalingLimited", "True"))
         .unwrap_or(false);
-    (if limited { Status::Warn } else { Status::Ok }, vec![format!("{min}–{max}"), current.to_string()])
+    (
+        if limited { Status::Warn } else { Status::Ok },
+        vec![format!("{min}–{max}"), current.to_string()],
+    )
 }
 
 fn labels_string(labels: Option<&BTreeMap<String, String>>) -> String {
@@ -300,44 +340,100 @@ pub fn summary(obj: &Object) -> SummaryRows {
             rows.push(("Selector".into(), labels_string(spec.and_then(|s| s.selector.as_ref()))));
             let ports = spec
                 .and_then(|s| s.ports.as_ref())
-                .map(|ps| ps.iter().map(|p| format!("{}/{}", p.port, p.protocol.clone().unwrap_or_else(|| "TCP".into()))).collect::<Vec<_>>().join(", "))
+                .map(|ps| {
+                    ps.iter()
+                        .map(|p| format!("{}/{}", p.port, p.protocol.clone().unwrap_or_else(|| "TCP".into())))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                })
                 .unwrap_or_default();
             rows.push(("Ports".into(), ports));
         }
         Object::Deployment(d) => {
             let st = d.status.as_ref();
-            rows.push(("Replicas".into(), format!("{} desired / {} ready / {} available",
-                d.spec.as_ref().and_then(|s| s.replicas).unwrap_or(1),
-                st.and_then(|s| s.ready_replicas).unwrap_or(0),
-                st.and_then(|s| s.available_replicas).unwrap_or(0))));
-            rows.push(("Strategy".into(), d.spec.as_ref().and_then(|s| s.strategy.as_ref()).and_then(|s| s.type_.clone()).unwrap_or_default()));
+            rows.push((
+                "Replicas".into(),
+                format!(
+                    "{} desired / {} ready / {} available",
+                    d.spec.as_ref().and_then(|s| s.replicas).unwrap_or(1),
+                    st.and_then(|s| s.ready_replicas).unwrap_or(0),
+                    st.and_then(|s| s.available_replicas).unwrap_or(0)
+                ),
+            ));
+            rows.push((
+                "Strategy".into(),
+                d.spec
+                    .as_ref()
+                    .and_then(|s| s.strategy.as_ref())
+                    .and_then(|s| s.type_.clone())
+                    .unwrap_or_default(),
+            ));
             if let Some(cs) = st.and_then(|s| s.conditions.as_ref()) {
-                rows.extend(cs.iter().map(|c| (format!("Condition {}", c.type_), format!("{} {}", c.status, c.reason.clone().unwrap_or_default()))));
+                rows.extend(cs.iter().map(|c| {
+                    (
+                        format!("Condition {}", c.type_),
+                        format!("{} {}", c.status, c.reason.clone().unwrap_or_default()),
+                    )
+                }));
             }
         }
         Object::Ingress(i) => {
-            rows.push(("Class".into(), i.spec.as_ref().and_then(|s| s.ingress_class_name.clone()).unwrap_or_default()));
-            for r in i.spec.as_ref().and_then(|s| s.rules.as_ref()).map(|r| r.as_slice()).unwrap_or_default() {
+            rows.push((
+                "Class".into(),
+                i.spec.as_ref().and_then(|s| s.ingress_class_name.clone()).unwrap_or_default(),
+            ));
+            for r in i
+                .spec
+                .as_ref()
+                .and_then(|s| s.rules.as_ref())
+                .map(|r| r.as_slice())
+                .unwrap_or_default()
+            {
                 let backends = r
                     .http
                     .as_ref()
-                    .map(|h| h.paths.iter().map(|p| format!("{} → {}", p.path.clone().unwrap_or_else(|| "/".into()), p.backend.service.as_ref().map(|s| s.name.clone()).unwrap_or_default())).collect::<Vec<_>>().join("; "))
+                    .map(|h| {
+                        h.paths
+                            .iter()
+                            .map(|p| {
+                                format!(
+                                    "{} → {}",
+                                    p.path.clone().unwrap_or_else(|| "/".into()),
+                                    p.backend.service.as_ref().map(|s| s.name.clone()).unwrap_or_default()
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                            .join("; ")
+                    })
                     .unwrap_or_default();
                 rows.push((format!("Host {}", r.host.clone().unwrap_or_else(|| "*".into())), backends));
             }
         }
         Object::PersistentVolumeClaim(p) => {
             rows.push(("Phase".into(), p.status.as_ref().and_then(|s| s.phase.clone()).unwrap_or_default()));
-            rows.push(("Volume".into(), p.spec.as_ref().and_then(|s| s.volume_name.clone()).unwrap_or_default()));
+            rows.push((
+                "Volume".into(),
+                p.spec.as_ref().and_then(|s| s.volume_name.clone()).unwrap_or_default(),
+            ));
         }
         Object::HorizontalPodAutoscaler(h) => {
             if let Some(cs) = h.status.as_ref().and_then(|s| s.conditions.as_ref()) {
-                rows.extend(cs.iter().map(|c| (format!("Condition {}", c.type_), format!("{} {}", c.status, c.reason.clone().unwrap_or_default()))));
+                rows.extend(cs.iter().map(|c| {
+                    (
+                        format!("Condition {}", c.type_),
+                        format!("{} {}", c.status, c.reason.clone().unwrap_or_default()),
+                    )
+                }));
             }
         }
         Object::Job(j) => {
             if let Some(cs) = j.status.as_ref().and_then(|s| s.conditions.as_ref()) {
-                rows.extend(cs.iter().map(|c| (format!("Condition {}", c.type_), format!("{} {}", c.status, c.reason.clone().unwrap_or_default()))));
+                rows.extend(cs.iter().map(|c| {
+                    (
+                        format!("Condition {}", c.type_),
+                        format!("{} {}", c.status, c.reason.clone().unwrap_or_default()),
+                    )
+                }));
             }
         }
         _ => {}
@@ -358,44 +454,86 @@ mod tests {
     #[test]
     fn deployment_statuses() {
         let s = Store::from_fixture("statuses").unwrap();
-        assert_eq!(describe_named(&s, Kind::Deployment, "healthy"), (Status::Ok, vec!["3/3".into(), "nginx:1.27".into()]));
+        assert_eq!(
+            describe_named(&s, Kind::Deployment, "healthy"),
+            (Status::Ok, vec!["3/3".into(), "nginx:1.27".into()])
+        );
         assert_eq!(describe_named(&s, Kind::Deployment, "rolling").0, Status::Warn);
         assert_eq!(describe_named(&s, Kind::Deployment, "stuck").0, Status::Err);
-        assert_eq!(describe_named(&s, Kind::StatefulSet, "db"), (Status::Ok, vec!["3/3".into(), "postgres:16".into()]));
-        assert_eq!(describe_named(&s, Kind::DaemonSet, "agent"), (Status::Warn, vec!["3/4".into(), "agent:2".into()]));
+        assert_eq!(
+            describe_named(&s, Kind::StatefulSet, "db"),
+            (Status::Ok, vec!["3/3".into(), "postgres:16".into()])
+        );
+        assert_eq!(
+            describe_named(&s, Kind::DaemonSet, "agent"),
+            (Status::Warn, vec!["3/4".into(), "agent:2".into()])
+        );
     }
 
     #[test]
     fn pod_statuses() {
         let s = Store::from_fixture("statuses").unwrap();
         assert_eq!(describe_named(&s, Kind::Pod, "running"), (Status::Ok, vec!["Running".into()]));
-        assert_eq!(describe_named(&s, Kind::Pod, "crashing"), (Status::Err, vec!["CrashLoopBackOff".into(), "↻ 14".into()]));
+        assert_eq!(
+            describe_named(&s, Kind::Pod, "crashing"),
+            (Status::Err, vec!["CrashLoopBackOff".into(), "↻ 14".into()])
+        );
         assert_eq!(describe_named(&s, Kind::Pod, "pending"), (Status::Warn, vec!["Pending".into()]));
-        assert_eq!(describe_named(&s, Kind::Pod, "notready"), (Status::Warn, vec!["Running".into(), "↻ 2".into()]));
-        assert_eq!(describe_named(&s, Kind::Pod, "oom"), (Status::Err, vec!["OOMKilled".into(), "↻ 3".into()]));
+        assert_eq!(
+            describe_named(&s, Kind::Pod, "notready"),
+            (Status::Warn, vec!["Running".into(), "↻ 2".into()])
+        );
+        assert_eq!(
+            describe_named(&s, Kind::Pod, "oom"),
+            (Status::Err, vec!["OOMKilled".into(), "↻ 3".into()])
+        );
         assert_eq!(describe_named(&s, Kind::Pod, "sidecar-done"), (Status::Ok, vec!["Running".into()]));
     }
 
     #[test]
     fn service_warns_when_selector_matches_nothing() {
         let s = Store::from_fixture("statuses").unwrap();
-        assert_eq!(describe_named(&s, Kind::Service, "matched"), (Status::Ok, vec!["ClusterIP".into(), "80→8080".into()]));
-        assert_eq!(describe_named(&s, Kind::Service, "orphan"), (Status::Warn, vec!["NodePort".into(), "443→https".into()]));
+        assert_eq!(
+            describe_named(&s, Kind::Service, "matched"),
+            (Status::Ok, vec!["ClusterIP".into(), "80→8080".into()])
+        );
+        assert_eq!(
+            describe_named(&s, Kind::Service, "orphan"),
+            (Status::Warn, vec!["NodePort".into(), "443→https".into()])
+        );
     }
 
     #[test]
     fn config_storage_and_batch_badges() {
         let s = Store::from_fixture("statuses").unwrap();
-        assert_eq!(describe_named(&s, Kind::Ingress, "multi"), (Status::Ok, vec!["a.example.com +1".into()]));
+        assert_eq!(
+            describe_named(&s, Kind::Ingress, "multi"),
+            (Status::Ok, vec!["a.example.com +1".into()])
+        );
         assert_eq!(describe_named(&s, Kind::ConfigMap, "cfg"), (Status::Ok, vec!["3 keys".into()]));
         assert_eq!(describe_named(&s, Kind::Secret, "tls"), (Status::Ok, vec!["2 keys".into()]));
-        assert_eq!(describe_named(&s, Kind::PersistentVolumeClaim, "data"), (Status::Ok, vec!["10Gi".into(), "fast".into()]));
-        assert_eq!(describe_named(&s, Kind::PersistentVolumeClaim, "waiting"), (Status::Warn, vec!["1Gi".into()]));
-        assert_eq!(describe_named(&s, Kind::PersistentVolume, "pv-1"), (Status::Ok, vec!["10Gi".into(), "Retain".into()]));
+        assert_eq!(
+            describe_named(&s, Kind::PersistentVolumeClaim, "data"),
+            (Status::Ok, vec!["10Gi".into(), "fast".into()])
+        );
+        assert_eq!(
+            describe_named(&s, Kind::PersistentVolumeClaim, "waiting"),
+            (Status::Warn, vec!["1Gi".into()])
+        );
+        assert_eq!(
+            describe_named(&s, Kind::PersistentVolume, "pv-1"),
+            (Status::Ok, vec!["10Gi".into(), "Retain".into()])
+        );
         assert_eq!(describe_named(&s, Kind::Job, "ok-job"), (Status::Ok, vec!["2/2".into()]));
         assert_eq!(describe_named(&s, Kind::Job, "failed-job"), (Status::Err, vec!["0/1".into()]));
-        assert_eq!(describe_named(&s, Kind::CronJob, "nightly"), (Status::Warn, vec!["0 2 * * *".into()]));
-        assert_eq!(describe_named(&s, Kind::HorizontalPodAutoscaler, "web-hpa"), (Status::Warn, vec!["2–10".into(), "3".into()]));
+        assert_eq!(
+            describe_named(&s, Kind::CronJob, "nightly"),
+            (Status::Warn, vec!["0 2 * * *".into()])
+        );
+        assert_eq!(
+            describe_named(&s, Kind::HorizontalPodAutoscaler, "web-hpa"),
+            (Status::Warn, vec!["2–10".into(), "3".into()])
+        );
         assert_eq!(describe_named(&s, Kind::ServiceAccount, "web-sa"), (Status::Ok, vec![]));
     }
 

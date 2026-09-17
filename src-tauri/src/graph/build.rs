@@ -16,7 +16,10 @@ pub struct BuildOptions {
 
 impl Default for BuildOptions {
     fn default() -> Self {
-        Self { expanded_groups: HashSet::new(), group_threshold: 5 }
+        Self {
+            expanded_groups: HashSet::new(),
+            group_threshold: 5,
+        }
     }
 }
 
@@ -32,7 +35,15 @@ pub fn build(store: &Store, opts: &BuildOptions) -> Graph {
         let id = node_id(obj.kind(), obj.namespace(), obj.name());
         nodes.insert(
             id.clone(),
-            Node { id, kind: obj.kind(), namespace: obj.namespace().map(str::to_owned), name: obj.name().to_owned(), status, badges, group: None },
+            Node {
+                id,
+                kind: obj.kind(),
+                namespace: obj.namespace().map(str::to_owned),
+                name: obj.name().to_owned(),
+                status,
+                badges,
+                group: None,
+            },
         );
     }
 
@@ -47,7 +58,10 @@ pub fn build(store: &Store, opts: &BuildOptions) -> Graph {
     // Re-pointing in `hide_single_replicasets`/`collapse_pod_groups` can leave duplicate edge ids
     // (e.g. two re-pointed edges now sharing source/target/relation); `normalize()`'s dedup is
     // load-bearing here, not cosmetic.
-    let mut graph = Graph { nodes: nodes.into_values().collect(), edges };
+    let mut graph = Graph {
+        nodes: nodes.into_values().collect(),
+        edges,
+    };
     graph.normalize();
     graph
 }
@@ -109,11 +123,21 @@ fn collapse_pod_groups(nodes: &mut HashMap<NodeId, Node>, edges: &mut Vec<Edge>,
             let o = &nodes[&owner_id];
             (o.namespace.clone(), o.kind, o.name.clone())
         };
-        let group_id = format!("PodGroup/{}/{}/{}", owner_ns.as_deref().unwrap_or(""), owner_kind.as_str(), owner_name);
+        let group_id = format!(
+            "PodGroup/{}/{}/{}",
+            owner_ns.as_deref().unwrap_or(""),
+            owner_kind.as_str(),
+            owner_name
+        );
         if opts.expanded_groups.contains(&group_id) {
             continue;
         }
-        let mut info = GroupInfo { count: 0, ok: 0, warn: 0, err: 0 };
+        let mut info = GroupInfo {
+            count: 0,
+            ok: 0,
+            warn: 0,
+            err: 0,
+        };
         let mut worst = Status::Unknown;
         for pod_id in &pods {
             // A pod can carry more than one ownerReference (owner_edges walks all of them), so
@@ -135,9 +159,15 @@ fn collapse_pod_groups(nodes: &mut HashMap<NodeId, Node>, edges: &mut Vec<Edge>,
             continue;
         }
         let mut counts = vec![];
-        if info.ok > 0 { counts.push(format!("{} ok", info.ok)); }
-        if info.warn > 0 { counts.push(format!("{} warn", info.warn)); }
-        if info.err > 0 { counts.push(format!("{} err", info.err)); }
+        if info.ok > 0 {
+            counts.push(format!("{} ok", info.ok));
+        }
+        if info.warn > 0 {
+            counts.push(format!("{} warn", info.warn));
+        }
+        if info.err > 0 {
+            counts.push(format!("{} err", info.err));
+        }
         nodes.insert(
             group_id.clone(),
             Node {
@@ -200,7 +230,15 @@ mod tests {
         assert!(g.nodes.iter().all(|n| n.kind != Kind::Pod), "pods collapsed");
         let group = g.node("PodGroup/g/Deployment/api").expect("group node");
         assert_eq!(group.status, Status::Err);
-        assert_eq!(group.group, Some(GroupInfo { count: 7, ok: 6, warn: 0, err: 1 }));
+        assert_eq!(
+            group.group,
+            Some(GroupInfo {
+                count: 7,
+                ok: 6,
+                warn: 0,
+                err: 1
+            })
+        );
         assert_eq!(group.badges, vec!["×7", "6 ok · 1 err"]);
         assert_eq!(
             edge_ids(&g),
@@ -216,7 +254,10 @@ mod tests {
     #[test]
     fn expanded_group_shows_individual_pods() {
         let s = Store::from_fixture("podgroup").unwrap();
-        let opts = BuildOptions { expanded_groups: ["PodGroup/g/Deployment/api".to_string()].into_iter().collect(), ..Default::default() };
+        let opts = BuildOptions {
+            expanded_groups: ["PodGroup/g/Deployment/api".to_string()].into_iter().collect(),
+            ..Default::default()
+        };
         let g = build(&s, &opts);
         assert!(g.node("PodGroup/g/Deployment/api").is_none());
         assert_eq!(g.nodes.iter().filter(|n| n.kind == Kind::Pod).count(), 7);
@@ -226,9 +267,15 @@ mod tests {
     #[test]
     fn threshold_is_strictly_greater_than() {
         let s = Store::from_fixture("podgroup").unwrap();
-        let opts = BuildOptions { group_threshold: 7, ..Default::default() };
+        let opts = BuildOptions {
+            group_threshold: 7,
+            ..Default::default()
+        };
         let g = build(&s, &opts);
-        assert!(g.node("PodGroup/g/Deployment/api").is_none(), "7 pods with threshold 7 stay expanded");
+        assert!(
+            g.node("PodGroup/g/Deployment/api").is_none(),
+            "7 pods with threshold 7 stay expanded"
+        );
     }
 
     #[test]
@@ -250,12 +297,18 @@ mod tests {
         assert!(g.node("ReplicaSet/x/web-a").is_some(), "web-a must stay visible mid-rollout");
         assert!(g.node("ReplicaSet/x/web-b").is_some(), "web-b must stay visible mid-rollout");
         assert!(g.edges.iter().any(|e| e.id == "Deployment/x/web->ReplicaSet/x/web-a:owns"));
-        assert!(g.edges.iter().any(|e| e.id == "ReplicaSet/x/web-a->Pod/x/web-a-1:owns"), "no pass-through when >1 RS remains");
+        assert!(
+            g.edges.iter().any(|e| e.id == "ReplicaSet/x/web-a->Pod/x/web-a-1:owns"),
+            "no pass-through when >1 RS remains"
+        );
     }
 
     #[test]
     fn every_edge_endpoint_exists() {
-        let expanded = BuildOptions { expanded_groups: ["PodGroup/g/Deployment/api".to_string()].into_iter().collect(), ..Default::default() };
+        let expanded = BuildOptions {
+            expanded_groups: ["PodGroup/g/Deployment/api".to_string()].into_iter().collect(),
+            ..Default::default()
+        };
         for (fixture, opts) in [
             ("deployment-basic", BuildOptions::default()),
             ("relations", BuildOptions::default()),

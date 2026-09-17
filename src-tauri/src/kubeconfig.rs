@@ -122,7 +122,9 @@ mod tests {
     fn kubeconfig_file(dir: &std::path::Path, name: &str, contexts: &[(&str, &str, &str)]) -> PathBuf {
         let mut yaml = String::from("apiVersion: v1\nkind: Config\nclusters:\n  - name: c1\n    cluster: { server: https://127.0.0.1:6443 }\nusers:\n  - name: u1\n    user: { token: abc }\ncontexts:\n");
         for (ctx, cluster, user) in contexts {
-            yaml.push_str(&format!("  - name: {ctx}\n    context: {{ cluster: {cluster}, user: {user}, namespace: default }}\n"));
+            yaml.push_str(&format!(
+                "  - name: {ctx}\n    context: {{ cluster: {cluster}, user: {user}, namespace: default }}\n"
+            ));
         }
         yaml.push_str(&format!("current-context: {}\n", contexts[0].0));
         let path = dir.join(name);

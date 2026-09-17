@@ -102,14 +102,18 @@ fn session_mut(guard: &mut Option<Session>) -> AppResult<&mut Session> {
 pub async fn select_namespace(state: State<'_, AppState>, namespace: String, expanded_groups: Vec<String>) -> AppResult<()> {
     let mut guard = state.session.lock().await;
     let session = session_mut(&mut guard)?;
-    session.select_namespace(&namespace, expanded_groups.into_iter().collect::<HashSet<_>>()).await
+    session
+        .select_namespace(&namespace, expanded_groups.into_iter().collect::<HashSet<_>>())
+        .await
 }
 
 #[tauri::command]
 pub async fn set_expanded_groups(state: State<'_, AppState>, expanded_groups: Vec<String>) -> AppResult<()> {
     let mut guard = state.session.lock().await;
     let session = session_mut(&mut guard)?;
-    session.set_expanded_groups(expanded_groups.into_iter().collect::<HashSet<_>>()).await
+    session
+        .set_expanded_groups(expanded_groups.into_iter().collect::<HashSet<_>>())
+        .await
 }
 
 #[tauri::command]
