@@ -2,4 +2,5 @@
 
 pub mod emitter;
 pub mod reducer;
+pub mod shared;
 pub mod watch;

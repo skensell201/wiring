@@ -28,5 +28,5 @@ k8s-openapi = { version = "0.28", features = ["v1_36"] }
 dirs = "6"
 
 [dev-dependencies]
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "process"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "process", "test-util"] }
 tempfile = "3"

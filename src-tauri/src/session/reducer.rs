@@ -1,17 +1,22 @@
 //! Consumes StoreEvents, keeps the Store and last Graph, emits snapshots/deltas.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::sync::Arc;
+use std::time::Duration;
 
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
+// `tokio::time::Instant`, not `std::time::Instant`: under `#[tokio::test(start_paused = true)]`
+// only the tokio clock is virtual, so debounce/degraded-after timing must be read from it too —
+// a `std::time::Instant::now()` read here would silently use real wall-clock time and never
+// observe the paused advances the tests rely on.
+use tokio::time::Instant;
 
 use super::emitter::{ConnectionState, Emitter, OutEvent};
+use super::shared::Shared;
 use super::watch::StoreEvent;
 use crate::error::AppError;
-use crate::graph::{build, diff, BuildOptions, Graph, NodeId};
-use crate::store::{Kind, Object, ObjectKey, Store};
+use crate::store::{Kind, Object, ObjectKey};
 
 // `StoreEvent` carries a full k8s-openapi `Object` (see watch.rs); event volume is bounded
 // by watcher throughput, so boxing here would only add indirection without a real benefit.
@@ -42,30 +47,6 @@ impl Default for ReducerConfig {
     }
 }
 
-/// State shared between the reducer task and `Session` (for get_object etc.).
-#[derive(Default, Clone)]
-pub struct Shared {
-    pub store: Arc<Mutex<Store>>,
-    pub graph: Arc<Mutex<Graph>>,
-    pub expanded_groups: Arc<Mutex<HashSet<NodeId>>>,
-    pub denied_kinds: Arc<Mutex<HashSet<Kind>>>,
-}
-
-impl Shared {
-    fn build_options(&self) -> BuildOptions {
-        BuildOptions { expanded_groups: self.expanded_groups.lock().unwrap().clone(), ..Default::default() }
-    }
-
-    /// Rebuild from the store; returns (new graph, delta vs previous).
-    fn rebuild(&self) -> (Graph, crate::graph::GraphDelta) {
-        let new = build(&self.store.lock().unwrap(), &self.build_options());
-        let mut last = self.graph.lock().unwrap();
-        let delta = diff(&last, &new);
-        *last = new.clone();
-        (new, delta)
-    }
-}
-
 pub fn spawn_reducer(config: ReducerConfig, shared: Shared, emitter: Arc<dyn Emitter>) -> (mpsc::Sender<ReducerMsg>, JoinHandle<()>) {
     let (tx, rx) = mpsc::channel(1024);
     let handle = tokio::spawn(run(config, shared, emitter, rx));
@@ -86,7 +67,7 @@ async fn run(config: ReducerConfig, shared: Shared, emitter: Arc<dyn Emitter>, m
     loop {
         let flush = async move {
             match flush_at {
-                Some(at) => tokio::time::sleep_until(at.into()).await,
+                Some(at) => tokio::time::sleep_until(at).await,
                 None => std::future::pending::<()>().await,
             }
         };
@@ -157,14 +138,14 @@ fn apply(
             if let Some(keys) = stale.get_mut(&kind) {
                 keys.remove(&obj.key());
             }
-            upsert_if_changed(&shared.store, obj)
+            upsert_if_changed(shared, obj)
         }
         StoreEvent::Deleted(key) => {
             errored_since.remove(&key.kind);
-            shared.store.lock().unwrap().remove(&key).is_some()
+            shared.store().remove(&key).is_some()
         }
         StoreEvent::Restarted(kind) => {
-            let keys: HashSet<ObjectKey> = shared.store.lock().unwrap().iter_kind(kind).map(|o| o.key()).collect();
+            let keys: HashSet<ObjectKey> = shared.store().iter_kind(kind).map(|o| o.key()).collect();
             stale.insert(kind, keys);
             false
         }
@@ -174,7 +155,7 @@ fn apply(
             // Sweep whatever the re-list did not confirm.
             match stale.remove(&kind) {
                 Some(keys) if !keys.is_empty() => {
-                    let mut store = shared.store.lock().unwrap();
+                    let mut store = shared.store();
                     for key in &keys {
                         store.remove(key);
                     }
@@ -192,7 +173,7 @@ fn apply(
                 init_pending.remove(&kind);
                 errored_since.remove(&kind);
                 stale.remove(&kind);
-                shared.denied_kinds.lock().unwrap().insert(kind);
+                shared.denied_kinds().insert(kind);
                 emitter.emit(OutEvent::ConnectionError(AppError::new(
                     error.kind,
                     format!("{}: {}", kind.as_str(), error.message),
@@ -205,15 +186,22 @@ fn apply(
     }
 }
 
-/// Skip no-op updates (resourceVersion bumps without content change still count as changed —
-/// the graph diff filters those out cheaply).
-fn upsert_if_changed(store: &Arc<Mutex<Store>>, obj: Object) -> bool {
-    let mut store = store.lock().unwrap();
+/// Skip no-op updates. A real API server always sets `metadata.resourceVersion` and bumps it
+/// on every write, so two observations of the same key with equal resource versions must have
+/// identical content — skip the (more expensive) full JSON comparison in that case. Falls back
+/// to the JSON compare when either side lacks a resourceVersion (e.g. in tests).
+fn upsert_if_changed(shared: &Shared, obj: Object) -> bool {
+    let mut store = shared.store();
     let key = obj.key();
-    let same = store
-        .get(&key)
-        .map(|existing| existing.to_json_value() == obj.to_json_value())
-        .unwrap_or(false);
+    let same = match store.get(&key) {
+        Some(existing) => {
+            match (existing.meta().resource_version.as_ref(), obj.meta().resource_version.as_ref()) {
+                (Some(a), Some(b)) if a == b => true,
+                _ => existing.to_json_value() == obj.to_json_value(),
+            }
+        }
+        None => false,
+    };
     if same {
         return false;
     }
@@ -247,7 +235,12 @@ mod tests {
         timeout(Duration::from_secs(2), rx.recv()).await.expect("event in time").expect("channel open")
     }
 
-    #[tokio::test]
+    // All 7 tests run on tokio's paused virtual clock (`start_paused = true`): every
+    // `tokio::time::sleep`/`interval`/`timeout` inside the reducer and in these tests advances
+    // an in-process virtual clock instead of real wall time, so debounce/degraded-after/tick
+    // timing is exact and these tests can't flake under CI scheduling jitter.
+
+    #[tokio::test(start_paused = true)]
     async fn snapshot_only_after_all_kinds_init_done() {
         let (emitter, mut rx) = ChannelEmitter::new();
         let shared = Shared::default();
@@ -265,7 +258,7 @@ mod tests {
         handle.await.unwrap();
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn changes_after_snapshot_are_debounced_into_one_delta() {
         let (emitter, mut rx) = ChannelEmitter::new();
         let shared = Shared::default();
@@ -285,10 +278,10 @@ mod tests {
         tx.send(ReducerMsg::Store(StoreEvent::Applied(pod("a")))).await.unwrap();
         tokio::time::sleep(Duration::from_millis(80)).await;
         assert!(rx.try_recv().is_err());
-        assert_eq!(shared.graph.lock().unwrap().nodes.len(), 2);
+        assert_eq!(shared.graph().nodes.len(), 2);
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn fatal_failure_counts_as_init_done_and_reports_error() {
         let (emitter, mut rx) = ChannelEmitter::new();
         let shared = Shared::default();
@@ -297,10 +290,10 @@ mod tests {
         tx.send(ReducerMsg::Store(StoreEvent::InitDone(Kind::Pod))).await.unwrap();
         assert!(matches!(next(&mut rx).await, OutEvent::ConnectionError(_)));
         assert!(matches!(next(&mut rx).await, OutEvent::GraphSnapshot(_)));
-        assert!(shared.denied_kinds.lock().unwrap().contains(&Kind::Secret));
+        assert!(shared.denied_kinds().contains(&Kind::Secret));
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn prolonged_error_degrades_then_recovers_with_snapshot() {
         let (emitter, mut rx) = ChannelEmitter::new();
         let shared = Shared::default();
@@ -314,7 +307,7 @@ mod tests {
         assert!(matches!(next(&mut rx).await, OutEvent::GraphSnapshot(_)));
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn restart_sweeps_objects_missing_from_the_relist() {
         let (emitter, mut rx) = ChannelEmitter::new();
         let shared = Shared::default();
@@ -331,10 +324,10 @@ mod tests {
             OutEvent::GraphDelta(d) => assert_eq!(d.removed_nodes, vec!["Pod/n/b"]),
             other => panic!("expected delta removing b, got {other:?}"),
         }
-        assert_eq!(shared.store.lock().unwrap().len(), 1);
+        assert_eq!(shared.store().len(), 1);
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn fatal_internal_failure_keeps_its_error_kind() {
         let (emitter, mut rx) = ChannelEmitter::new();
         let shared = Shared::default();
@@ -346,14 +339,14 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn rebuild_message_forces_immediate_rebuild() {
         let (emitter, mut rx) = ChannelEmitter::new();
         let shared = Shared::default();
         let (tx, _h) = spawn_reducer(fast_config(&[Kind::Pod]), shared.clone(), Arc::new(emitter));
         tx.send(ReducerMsg::Store(StoreEvent::InitDone(Kind::Pod))).await.unwrap();
         assert!(matches!(next(&mut rx).await, OutEvent::GraphSnapshot(_)));
-        shared.store.lock().unwrap().upsert(pod("x")); // simulate an external change
+        shared.store().upsert(pod("x")); // simulate an external change
         tx.send(ReducerMsg::Rebuild).await.unwrap();
         assert!(matches!(next(&mut rx).await, OutEvent::GraphDelta(_)));
     }
