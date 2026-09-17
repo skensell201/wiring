@@ -70,6 +70,35 @@ fn app_error_from_kubeconfig(e: &KubeconfigError) -> AppError {
     AppError::new(kind, e.to_string())
 }
 
+/// The exec-plugin binary configured for `context`'s user, if any.
+fn exec_plugin_command(kubeconfig: &Kubeconfig, context: &str) -> Option<String> {
+    let user = kubeconfig
+        .contexts
+        .iter()
+        .find(|c| c.name == context)
+        .and_then(|c| c.context.as_ref())
+        .and_then(|c| c.user.as_deref())?;
+    kubeconfig
+        .auth_infos
+        .iter()
+        .find(|a| a.name == user)
+        .and_then(|a| a.auth_info.as_ref())
+        .and_then(|a| a.exec.as_ref())
+        .and_then(|e| e.command.clone())
+}
+
+/// Map a client error, naming the exec plugin on `Auth` failures so the user learns which
+/// binary is missing or broken (spec §8) — kube's own message only carries the OS error.
+fn app_error_from_client(e: &kube::Error, exec_command: Option<&str>) -> AppError {
+    let mut err = app_error_from_kube(e);
+    if err.kind == ErrorKind::Auth {
+        if let Some(cmd) = exec_command {
+            err.message.push_str(&format!(" (exec plugin: {cmd})"));
+        }
+    }
+    err
+}
+
 pub struct Session {
     client: Client,
     context: String,
@@ -88,12 +117,21 @@ impl Session {
             cluster: None,
             user: None,
         };
+        let exec_command = exec_plugin_command(&kubeconfig, context);
         let config = Config::from_custom_kubeconfig(kubeconfig, &options)
             .await
             .map_err(|e| app_error_from_kubeconfig(&e))?;
-        let client = Client::try_from(config).map_err(|e| AppError::new(ErrorKind::Internal, e.to_string()))?;
+        // `Client::try_from` runs the exec plugin synchronously (it can block for seconds),
+        // so keep it off the async runtime threads.
+        let client = tokio::task::spawn_blocking(move || Client::try_from(config))
+            .await
+            .map_err(|e| AppError::internal(format!("client setup task failed: {e}")))?
+            .map_err(|e| app_error_from_client(&e, exec_command.as_deref()))?;
 
-        let version = client.apiserver_version().await.map_err(|e| app_error_from_kube(&e))?;
+        let version = client
+            .apiserver_version()
+            .await
+            .map_err(|e| app_error_from_client(&e, exec_command.as_deref()))?;
         let namespaces = Api::<Namespace>::all(client.clone())
             .list(&ListParams::default())
             .await
@@ -365,6 +403,51 @@ mod tests {
         assert!(rx.try_recv().is_err(), "constructing a session must not emit anything");
         session.announce_connected();
         assert_eq!(rx.try_recv().unwrap(), OutEvent::ConnectionState(ConnectionState::Connected));
+    }
+
+    #[tokio::test]
+    async fn missing_exec_plugin_is_an_auth_error_naming_the_binary() {
+        use crate::session::emitter::ChannelEmitter;
+        use kube::config::{AuthInfo, Cluster, Context, ExecConfig, NamedAuthInfo, NamedCluster, NamedContext};
+        let kubeconfig = Kubeconfig {
+            clusters: vec![NamedCluster {
+                name: "c".into(),
+                cluster: Some(Cluster {
+                    server: Some("https://127.0.0.1:1".into()),
+                    ..Default::default()
+                }),
+                other: Default::default(),
+            }],
+            auth_infos: vec![NamedAuthInfo {
+                name: "u".into(),
+                auth_info: Some(AuthInfo {
+                    exec: Some(ExecConfig {
+                        command: Some("/nonexistent/wiring-auth-plugin".into()),
+                        api_version: Some("client.authentication.k8s.io/v1".into()),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                other: Default::default(),
+            }],
+            contexts: vec![NamedContext {
+                name: "ctx".into(),
+                context: Some(Context {
+                    cluster: "c".into(),
+                    user: Some("u".into()),
+                    ..Default::default()
+                }),
+                other: Default::default(),
+            }],
+            ..Default::default()
+        };
+        let (emitter, _rx) = ChannelEmitter::new();
+        let err = Session::connect(kubeconfig, "ctx", Arc::new(emitter))
+            .await
+            .err()
+            .expect("connect must fail");
+        assert_eq!(err.kind, ErrorKind::Auth, "{err:?}");
+        assert!(err.message.contains("wiring-auth-plugin"), "{}", err.message);
     }
 
     #[test]
