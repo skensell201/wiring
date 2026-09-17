@@ -175,7 +175,7 @@ If one owner (ReplicaSet, StatefulSet, DaemonSet, Job) has **more than 5** pods,
 
 ### 5.4 Layout
 
-ELK `layered` algorithm, direction `RIGHT`, run in a web worker. Layers are fixed by kind via `layerConstraint`, so the layout is stable across deltas:
+Layout is a deterministic layered layout implemented in `src/features/graph/layout.ts`: one column per non-empty layer (layers listed below), rows ordered by the barycenter of already-placed neighbours (two sweeps, id tie-breaks, orphans last). Edges spanning more than one column are routed through thin dummy slots in the intermediate columns (Sugiyama-style), bundled per source and target column, so an edge never passes behind a card; the frontend draws them as cubic Bézier chains through the slot centres (`edgePath.ts`). It runs synchronously on the main thread (≤ a few hundred nodes) and is stable across deltas; React Flow animates position changes.
 
 ```
 0: HPA
@@ -205,7 +205,7 @@ PV sits in layer 5 alongside PVC; the `binds` edge PV → PVC is rendered as a s
 Clicking a node → `get_object(id)` → panel shows Overview (summary key/value grid + "Related" list of node ids, click navigates), YAML (read-only, highlighted, copy button), Events. Selecting a node also calls `watch_events(id)`: the backend watches Events with `involvedObject.uid == <uid>` and pushes `object_events` on change; selecting another node or deselecting stops the previous watcher. PodGroup has no YAML; its Overview lists member pods.
 
 ### 6.5 Filters and search
-Kind filter chips and name search live entirely in the frontend. Filtering hides nodes and their edges from layout; search highlights matches and dims the rest. Neither touches the backend.
+Kind filter chips and search live entirely in the frontend. Filtering hides nodes and their edges from layout; search matches node name or kind (case-insensitive substring); matches are highlighted, the rest dimmed. Neither touches the backend.
 
 ### 6.6 Reconnect
 `kube_runtime::watcher` reconnects with exponential backoff on its own. If any kind has been in error continuously for 30 s, the session emits `connection_state: "degraded"` (yellow dot in the header); the first transient error per kind is reported once as `connection_error`, and repeats of the same kind's outage stay silent until it recovers. 403, and 404 on the initial list, are fatal for that kind (watching stops, it is reported via `denied_kinds`), while 401 is fatal for the whole session (reported once as `connection_error` followed by `disconnected`; the user must reconnect); other errors are left to the watcher's own backoff. When every watcher is healthy again the session emits `"connected"` and a fresh `graph_snapshot`. The header's **Reconnect** button (ember gradient) tears down and rebuilds the session.
@@ -251,7 +251,7 @@ Layout (chosen from three mockups; see `.superpowers/brainstorm/` for the origin
 
 **Node card** (medium density): kind icon (gradient square with a letter, or a colored dot for Pod), kind label (uppercase, muted), name (white), then a row of 0–2 pill badges. Selected: ember outline + soft glow. Hovering a node brightens its edges and dims the rest. Edges: 1.5 px, `accent-current` gradient, smooth bezier; `owns` edges solid, all others dashed.
 
-**Canvas**: dot grid on `bg-void`, subtle violet radial glow, React Flow controls and minimap bottom-right, pan/zoom with mouse and trackpad.
+**Canvas**: dot grid on `bg-void`, subtle violet radial glow, React Flow controls and minimap bottom-right, pan/zoom with mouse and trackpad. Double-click on a PodGroup expands it (double-click zoom is disabled).
 
 **Bottom panel**: tabs Overview · YAML · Events; header shows name and kind; Events tab marks `Warning` rows with `status-warn`. Empty selection: "Select a node to see details".
 
