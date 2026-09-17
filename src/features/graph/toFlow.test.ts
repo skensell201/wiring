@@ -52,4 +52,46 @@ describe("toFlow", () => {
     const cById = Object.fromEntries(c.nodes.map((x) => [x.id, x.data]));
     expect(cById["Pod/p/a"]).toBe(aById["Pod/p/a"]);
   });
+
+  describe("waypoints", () => {
+    // Service (col 0) → Pod (col 2) passes the Deployment column, so it gets a waypoint.
+    const long = e("Service/p/web", "Pod/p/a", "selects");
+    const wNodes = new Map([n("Service/p/web", "Service"), n("Deployment/p/d", "Deployment"), n("Pod/p/a", "Pod")].map((x) => [x.id, x]));
+    const wEdges = new Map([long, e("Deployment/p/d", "Pod/p/a")].map((x) => [x.id, x]));
+    const input = { nodes: wNodes, edges: wEdges, hiddenKinds: new Set<GraphNode["kind"]>(), search: "", hoveredId: null, selectedId: null, expandedGroups: new Set<string>() };
+
+    it("passes the layout waypoints into edge data and leaves short edges without", () => {
+      const f = toFlow(input);
+      const byId = Object.fromEntries(f.edges.map((x) => [x.id, x.data]));
+      expect(byId[long.id].waypoints).toHaveLength(1);
+      expect(byId["Deployment/p/d->Pod/p/a:owns"].waypoints).toBeUndefined();
+    });
+
+    it("reuses edge data while the waypoints are unchanged and replaces it when they move", () => {
+      const a = toFlow(input);
+      const b = toFlow(input);
+      const aById = Object.fromEntries(a.edges.map((x) => [x.id, x.data]));
+      const bById = Object.fromEntries(b.edges.map((x) => [x.id, x.data]));
+      expect(bById[long.id]).toBe(aById[long.id]);
+
+      // Hiding the Deployment collapses its column: the edge is short now and loses its waypoint.
+      const c = toFlow({ ...input, hiddenKinds: new Set<GraphNode["kind"]>(["Deployment"]) });
+      const cById = Object.fromEntries(c.edges.map((x) => [x.id, x.data]));
+      expect(cById[long.id]).not.toBe(aById[long.id]);
+      expect(cById[long.id].waypoints).toBeUndefined();
+
+      // Adding a second Deployment moves the dummy row: same length, different y → new data object.
+      const more = new Map(wNodes);
+      const d2 = n("Deployment/p/a0", "Deployment");
+      more.set(d2.id, d2);
+      const moreEdges = new Map(wEdges);
+      const owns = e("Deployment/p/a0", "Pod/p/a");
+      moreEdges.set(owns.id, owns);
+      const d = toFlow({ ...input, nodes: more, edges: moreEdges });
+      const dById = Object.fromEntries(d.edges.map((x) => [x.id, x.data]));
+      expect(dById[long.id].waypoints).toHaveLength(1);
+      expect(dById[long.id].waypoints).not.toEqual(aById[long.id].waypoints);
+      expect(dById[long.id]).not.toBe(aById[long.id]);
+    });
+  });
 });

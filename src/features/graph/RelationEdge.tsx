@@ -1,5 +1,6 @@
 import { BaseEdge, getBezierPath, type EdgeProps } from "@xyflow/react";
 import { memo } from "react";
+import { pathThrough } from "./edgePath";
 import type { RelationFlowEdge } from "./toFlow";
 
 /** SVG ids must not contain characters outside [A-Za-z0-9_-]; edge ids can (e.g. "/", ":"). */
@@ -9,7 +10,11 @@ function sanitiseId(id: string): string {
 
 export const RelationEdge = memo(function RelationEdge(props: EdgeProps<RelationFlowEdge>) {
   const { id, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, data } = props;
-  const [path] = getBezierPath({ sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition });
+  // Edges spanning several columns are routed through the dummy slots the layout reserved for
+  // them, so they pass through empty rows instead of behind the cards in between.
+  const path = data?.waypoints
+    ? pathThrough([{ x: sourceX, y: sourceY }, ...data.waypoints, { x: targetX, y: targetY }])
+    : getBezierPath({ sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition })[0];
   const solid = data?.edge.relation === "owns";
   const opacity = data?.dimmed ? 0.15 : data?.highlighted ? 1 : 0.7;
   // A shared gradient uses objectBoundingBox units by default, which collapses to nothing

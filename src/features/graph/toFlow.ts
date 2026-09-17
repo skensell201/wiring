@@ -1,6 +1,6 @@
 import type { Edge, Node } from "@xyflow/react";
 import type { GraphEdge, GraphNode, Kind, NodeId } from "../../shared/ipc/types";
-import { layout } from "./layout";
+import { layout, type Position } from "./layout";
 
 export interface ResourceNodeData extends Record<string, unknown> {
   node: GraphNode;
@@ -11,6 +11,8 @@ export interface RelationEdgeData extends Record<string, unknown> {
   edge: GraphEdge;
   highlighted: boolean;
   dimmed: boolean;
+  /** Dummy-slot centres the edge is routed through (only for edges spanning several columns). */
+  waypoints?: Position[];
 }
 export type ResourceFlowNode = Node<ResourceNodeData, "resource">;
 // @xyflow/react's `Edge` has an optional `data` field; toFlow always sets it, so this
@@ -40,11 +42,14 @@ function nodeData(node: GraphNode, dimmed: boolean, expanded: boolean): Resource
   return data;
 }
 
+const sameWaypoints = (a: Position[] | undefined, b: Position[] | undefined): boolean =>
+  a === b || (a !== undefined && b !== undefined && a.length === b.length && a.every((p, i) => p.x === b[i].x && p.y === b[i].y));
+
 const edgeDataCache = new WeakMap<GraphEdge, RelationEdgeData>();
-function edgeData(edge: GraphEdge, highlighted: boolean, dimmed: boolean): RelationEdgeData {
+function edgeData(edge: GraphEdge, highlighted: boolean, dimmed: boolean, waypoints: Position[] | undefined): RelationEdgeData {
   const cached = edgeDataCache.get(edge);
-  if (cached && cached.highlighted === highlighted && cached.dimmed === dimmed) return cached;
-  const data: RelationEdgeData = { edge, highlighted, dimmed };
+  if (cached && cached.highlighted === highlighted && cached.dimmed === dimmed && sameWaypoints(cached.waypoints, waypoints)) return cached;
+  const data: RelationEdgeData = waypoints ? { edge, highlighted, dimmed, waypoints } : { edge, highlighted, dimmed };
   edgeDataCache.set(edge, data);
   return data;
 }
@@ -53,7 +58,7 @@ export function toFlow(input: ToFlowInput): { nodes: ResourceFlowNode[]; edges: 
   const visible = [...input.nodes.values()].filter((n) => !input.hiddenKinds.has(n.kind));
   const visibleIds = new Set(visible.map((n) => n.id));
   const visibleEdges = [...input.edges.values()].filter((e) => visibleIds.has(e.source) && visibleIds.has(e.target));
-  const positions = layout(visible, visibleEdges);
+  const { positions, waypoints } = layout(visible, visibleEdges);
 
   const q = input.search.trim().toLowerCase();
   const matches = (n: GraphNode) => q === "" || n.name.toLowerCase().includes(q) || n.kind.toLowerCase().includes(q);
@@ -74,7 +79,7 @@ export function toFlow(input: ToFlowInput): { nodes: ResourceFlowNode[]; edges: 
       type: "relation",
       source: edge.source,
       target: edge.target,
-      data: edgeData(edge, touches, hover !== null && !touches),
+      data: edgeData(edge, touches, hover !== null && !touches, waypoints.get(edge.id)),
     };
   });
 
