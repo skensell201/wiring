@@ -32,7 +32,7 @@ export function DetailsPanel() {
 
   return (
     <section className="shrink-0 border-t border-border bg-panel" style={{ height: collapsed ? 36 : height }}>
-      <div className="h-1.5 cursor-row-resize hover:bg-current-b/40" onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} />
+      <div className="h-1.5 cursor-row-resize hover:bg-current-b/40" onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerUp} />
       <div className="flex h-[30px] items-center gap-1 border-b border-border px-2">
         <div role="tablist" className="flex gap-1">
           {tabs.map((t) => (
