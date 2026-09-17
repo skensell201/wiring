@@ -23,6 +23,8 @@ impl Default for BuildOptions {
 pub fn build(store: &Store, opts: &BuildOptions) -> Graph {
     let mut nodes: HashMap<NodeId, Node> = HashMap::new();
     for obj in store.iter() {
+        // Must run before `hide_single_replicasets`, which counts a Deployment's *remaining*
+        // ReplicaSet children: a stale RS has to be excluded from that count, not hidden by it.
         if is_stale_replicaset(obj) {
             continue;
         }
@@ -42,6 +44,9 @@ pub fn build(store: &Store, opts: &BuildOptions) -> Graph {
     hide_single_replicasets(&mut nodes, &mut edges);
     collapse_pod_groups(&mut nodes, &mut edges, opts);
 
+    // Re-pointing in `hide_single_replicasets`/`collapse_pod_groups` can leave duplicate edge ids
+    // (e.g. two re-pointed edges now sharing source/target/relation); `normalize()`'s dedup is
+    // load-bearing here, not cosmetic.
     let mut graph = Graph { nodes: nodes.into_values().collect(), edges };
     graph.normalize();
     graph
@@ -108,10 +113,15 @@ fn collapse_pod_groups(nodes: &mut HashMap<NodeId, Node>, edges: &mut Vec<Edge>,
         if opts.expanded_groups.contains(&group_id) {
             continue;
         }
-        let mut info = GroupInfo { count: pods.len(), ok: 0, warn: 0, err: 0 };
+        let mut info = GroupInfo { count: 0, ok: 0, warn: 0, err: 0 };
         let mut worst = Status::Unknown;
         for pod_id in &pods {
-            let pod = nodes.remove(pod_id).expect("member pod exists");
+            // A pod can carry more than one ownerReference (owner_edges walks all of them), so
+            // the same pod id may appear under two different owners' member lists. Once it has
+            // been collapsed into one group, it is no longer in `nodes`; skip it here instead of
+            // panicking, and only count pods actually collapsed into *this* group.
+            let Some(pod) = nodes.remove(pod_id) else { continue };
+            info.count += 1;
             match pod.status {
                 Status::Ok => info.ok += 1,
                 Status::Warn => info.warn += 1,
@@ -120,6 +130,9 @@ fn collapse_pod_groups(nodes: &mut HashMap<NodeId, Node>, edges: &mut Vec<Edge>,
             }
             worst = worst.max(pod.status);
             remap.insert(pod_id.clone(), group_id.clone());
+        }
+        if info.count == 0 {
+            continue;
         }
         let mut counts = vec![];
         if info.ok > 0 { counts.push(format!("{} ok", info.ok)); }
@@ -228,6 +241,16 @@ mod tests {
         let mut sorted = ids.clone();
         sorted.sort();
         assert_eq!(ids, sorted);
+    }
+
+    #[test]
+    fn mid_rollout_keeps_both_replicasets() {
+        let s = Store::from_fixture("rollout").unwrap();
+        let g = build(&s, &BuildOptions::default());
+        assert!(g.node("ReplicaSet/x/web-a").is_some(), "web-a must stay visible mid-rollout");
+        assert!(g.node("ReplicaSet/x/web-b").is_some(), "web-b must stay visible mid-rollout");
+        assert!(g.edges.iter().any(|e| e.id == "Deployment/x/web->ReplicaSet/x/web-a:owns"));
+        assert!(g.edges.iter().any(|e| e.id == "ReplicaSet/x/web-a->Pod/x/web-a-1:owns"), "no pass-through when >1 RS remains");
     }
 
     #[test]

@@ -40,7 +40,8 @@ pub fn diff(old: &Graph, new: &Graph) -> GraphDelta {
 mod tests {
     use super::*;
     use crate::graph::model::{Edge, Node, Relation, Status};
-    use crate::store::Kind;
+    use crate::graph::{build, BuildOptions};
+    use crate::store::{Kind, Object, Store};
 
     fn node(id: &str, status: Status) -> Node {
         Node { id: id.into(), kind: Kind::Pod, namespace: Some("n".into()), name: id.into(), status, badges: vec![], group: None }
@@ -74,5 +75,48 @@ mod tests {
         assert_eq!(d.removed_nodes, vec!["c"]);
         assert_eq!(d.added_edges.iter().map(|e| e.id.as_str()).collect::<Vec<_>>(), vec!["a->d:owns"]);
         assert_eq!(d.removed_edges, vec!["a->c:owns"]);
+    }
+
+    #[test]
+    fn diff_tracks_replicaset_transition() {
+        let store_a = Store::from_fixture("deployment-basic").unwrap();
+        let a = build(&store_a, &BuildOptions::default());
+
+        // A second active ReplicaSet appears (e.g. a rollout starts): the Deployment now has two
+        // children, so `hide_single_replicasets` no longer collapses either of them.
+        let mut store_b = store_a.clone();
+        let new_rs = Object::from_json_value(serde_json::json!({
+            "apiVersion": "apps/v1",
+            "kind": "ReplicaSet",
+            "metadata": {
+                "name": "web-new",
+                "namespace": "payments",
+                "uid": "rs-web-new",
+                "ownerReferences": [
+                    { "apiVersion": "apps/v1", "kind": "Deployment", "name": "web", "uid": "dep-web", "controller": true }
+                ]
+            },
+            "spec": {
+                "replicas": 1,
+                "selector": { "matchLabels": { "app": "web" } },
+                "template": {
+                    "metadata": { "labels": { "app": "web" } },
+                    "spec": { "containers": [ { "name": "web", "image": "nginx:1.28" } ] }
+                }
+            },
+            "status": { "replicas": 1, "readyReplicas": 1 }
+        }))
+        .unwrap();
+        store_b.upsert(new_rs);
+        let b = build(&store_b, &BuildOptions::default());
+
+        let d = diff(&a, &b);
+        let added_node_ids: Vec<&str> = d.added_nodes.iter().map(|n| n.id.as_str()).collect();
+        assert!(added_node_ids.contains(&"ReplicaSet/payments/web-7f9c"));
+        assert!(added_node_ids.contains(&"ReplicaSet/payments/web-new"));
+        assert!(d.removed_edges.contains(&"Deployment/payments/web->Pod/payments/web-7f9c-aaaaa:owns".to_string()));
+        let added_edge_ids: Vec<&str> = d.added_edges.iter().map(|e| e.id.as_str()).collect();
+        assert!(added_edge_ids.contains(&"ReplicaSet/payments/web-7f9c->Pod/payments/web-7f9c-aaaaa:owns"));
+        assert!(added_edge_ids.contains(&"Deployment/payments/web->ReplicaSet/payments/web-7f9c:owns"));
     }
 }
