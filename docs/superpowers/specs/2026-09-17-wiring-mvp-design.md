@@ -266,7 +266,7 @@ Layout (chosen from three mockups; see `.superpowers/brainstorm/` for the origin
 ## 9. Testing
 
 - **`graph` (Rust)** — the core suite, written test-first. Fixtures are YAML files under `src-tauri/tests/fixtures/` loaded into a `Store`. Cases: owner chains (Deployment → RS → Pod, hidden single RS), Service selector matching (including no-match warn), Ingress rules and default backend, volumes/envFrom/projected sources, PVC/PV binding, ServiceAccount default, HPA target, every status rule, PodGroup collapse/expand and edge aggregation, `diff` producing minimal deltas (add/update/remove, unchanged → empty delta).
-- **`kubeconfig` (Rust)** — multiple files, `KUBECONFIG` with `:` and `;`, duplicate context names across files (later file wins, source recorded), missing file.
+- **`kubeconfig` (Rust)** — multiple files, `KUBECONFIG` with `:` and `;`, duplicate context names across files (first file wins, as kubectl does; source recorded), unparseable files skipped with a warning, missing file.
 - **`commands` (Rust)** — IPC fixture test: serialize one sample of every payload type and compare with `src/shared/ipc/fixtures/*.json` so the TypeScript mirror cannot drift silently.
 - **Frontend (Vitest)** — zustand store: apply snapshot/delta, selection survival, filters; layout worker: kind → layer mapping, hidden nodes excluded; node badge/status rendering.
 - **Smoke (CI, Linux runner)** — spin up `kind`, apply a fixture namespace, run the Rust session against it headless (no Tauri window) and assert the snapshot contains the expected nodes and edges.
