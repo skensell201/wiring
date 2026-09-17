@@ -7,6 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::sync::mpsc::UnboundedReceiver;
+use wiring_lib::error::ErrorKind;
 use wiring_lib::graph::{Graph, GraphDelta, Relation};
 use wiring_lib::kubeconfig;
 use wiring_lib::session::emitter::{ChannelEmitter, ConnectionState, OutEvent};
@@ -57,7 +58,12 @@ async fn graph_until(
         match ev.expect("emitter open") {
             OutEvent::GraphSnapshot(g) => *graph = g,
             OutEvent::GraphDelta(d) => apply_delta(graph, d),
-            OutEvent::ConnectionError(e) => panic!("connection error: {e:?}"),
+            // Fatal per-kind failures mean the cluster/RBAC is not what the test needs;
+            // transient errors (watch resets) are logged and the loop keeps waiting.
+            OutEvent::ConnectionError(e) if matches!(e.kind, ErrorKind::Forbidden | ErrorKind::Auth | ErrorKind::NotFound) => {
+                panic!("connection error: {e:?}")
+            }
+            OutEvent::ConnectionError(e) => eprintln!("transient watcher error: {e:?}"),
             OutEvent::ConnectionState(ConnectionState::Disconnected) => panic!("session disconnected"),
             _ => {}
         }
