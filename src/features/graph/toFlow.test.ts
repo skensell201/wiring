@@ -30,6 +30,27 @@ describe("toFlow", () => {
     expect(byId["ConfigMap/p/cfg->Pod/p/a:envFrom"].highlighted).toBe(false);
   });
 
+  it("ignores a hovered node that is no longer in the graph", () => {
+    // Hover A, then a delta removes A: hoveredId is stale until the mouse moves again.
+    const a = n("Service/p/a", "Service");
+    const b = n("Pod/p/b", "Pod");
+    const ab = e(a.id, b.id, "selects");
+    const f = toFlow({
+      nodes: new Map([[b.id, b]]), edges: new Map([[ab.id, ab]]), hiddenKinds: new Set(), search: "", hoveredId: a.id, selectedId: null, expandedGroups: new Set(),
+    });
+    expect(f.edges.some((x) => x.data.dimmed)).toBe(false);
+
+    // The same holds with a second, visible edge: nothing gets dimmed by a hover that points nowhere.
+    const c = n("ConfigMap/p/c", "ConfigMap");
+    const cb = e(c.id, b.id, "envFrom");
+    const g = toFlow({
+      nodes: new Map([[b.id, b], [c.id, c]]), edges: new Map([[ab.id, ab], [cb.id, cb]]), hiddenKinds: new Set(), search: "", hoveredId: a.id, selectedId: null, expandedGroups: new Set(),
+    });
+    expect(g.edges).toHaveLength(1);
+    expect(g.edges[0].data.dimmed).toBe(false);
+    expect(g.edges[0].data.highlighted).toBe(false);
+  });
+
   it("sets selection and positions every node", () => {
     const f = toFlow({ nodes, edges, hiddenKinds: new Set(), search: "", hoveredId: null, selectedId: "Pod/p/a", expandedGroups: new Set() });
     expect(f.nodes.find((x) => x.id === "Pod/p/a")?.selected).toBe(true);

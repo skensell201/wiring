@@ -76,7 +76,9 @@ export function toFlow(input: ToFlowInput): { nodes: ResourceFlowNode[]; edges: 
     data: nodeData(node, !matches(node), input.expandedGroups.has(node.id)),
   }));
 
-  const hover = input.hoveredId;
+  // hoveredId can outlive its node (a delta removed it before the mouse moved), and a hover that
+  // touches nothing would otherwise dim every edge.
+  const hover = input.hoveredId !== null && visibleIds.has(input.hoveredId) ? input.hoveredId : null;
   const edges: RelationFlowEdge[] = visibleEdges.map((edge) => {
     const touches = hover !== null && (edge.source === hover || edge.target === hover);
     return {
