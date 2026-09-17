@@ -108,7 +108,11 @@ impl Session {
             server_version: version.git_version,
             namespaces,
         };
-        let session = Session {
+        Ok((Session::new(client, context, emitter), info))
+    }
+
+    fn new(client: Client, context: &str, emitter: Arc<dyn Emitter>) -> Session {
+        Session {
             client,
             context: context.to_string(),
             namespace: None,
@@ -117,9 +121,14 @@ impl Session {
             reducer_tx: None,
             tasks: vec![],
             events_task: None,
-        };
-        session.emitter.emit(OutEvent::ConnectionState(emitter::ConnectionState::Connected));
-        Ok((session, info))
+        }
+    }
+
+    /// Tell the frontend this session is live. Deliberately not part of `connect`: the caller
+    /// emits it only after any previous session has been shut down (which emits
+    /// `Disconnected`) and the new one is installed, so `connected` is the last state seen.
+    pub fn announce_connected(&self) {
+        self.emitter.emit(OutEvent::ConnectionState(emitter::ConnectionState::Connected));
     }
 
     pub fn context(&self) -> &str {
@@ -346,6 +355,17 @@ pub fn events_to_list(events: &BTreeMap<String, CoreEvent>) -> Vec<K8sEvent> {
 mod tests {
     use super::*;
     use crate::store::{Kind, Store};
+
+    #[tokio::test]
+    async fn announce_connected_emits_connected_state() {
+        use crate::session::emitter::{ChannelEmitter, ConnectionState};
+        let (emitter, mut rx) = ChannelEmitter::new();
+        let client = Client::try_from(Config::new("https://127.0.0.1:1".parse().unwrap())).unwrap();
+        let session = Session::new(client, "ctx", Arc::new(emitter));
+        assert!(rx.try_recv().is_err(), "constructing a session must not emit anything");
+        session.announce_connected();
+        assert_eq!(rx.try_recv().unwrap(), OutEvent::ConnectionState(ConnectionState::Connected));
+    }
 
     #[test]
     fn parses_node_ids() {

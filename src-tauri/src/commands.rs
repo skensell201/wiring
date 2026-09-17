@@ -74,12 +74,17 @@ pub fn add_kubeconfig(app: AppHandle, path: String) -> AppResult<Vec<ContextInfo
 pub async fn connect(app: AppHandle, state: State<'_, AppState>, context: String) -> AppResult<ConnectInfo> {
     let merged = kubeconfig::load_merged(&all_kubeconfig_paths(&app))?;
     let emitter: Arc<dyn Emitter> = Arc::new(TauriEmitter(app.clone()));
-    let (session, info) = Session::connect(merged, &context, emitter).await?;
+    // Hold the lock for the whole operation, including the network round-trips: the old
+    // session must be gone (its `Disconnected` emitted) before the new one announces
+    // `Connected`, otherwise the frontend's last state is `disconnected`. Other commands
+    // would only hit a torn-down session in the meantime anyway.
     let mut guard = state.session.lock().await;
     if let Some(mut old) = guard.take() {
         old.shutdown();
     }
-    *guard = Some(session);
+    let (session, info) = Session::connect(merged, &context, emitter).await?;
+    let session = guard.insert(session);
+    session.announce_connected();
     Ok(info)
 }
 
