@@ -72,6 +72,16 @@ status:
   containerStatuses: [ { name: c, ready: false, restartCount: 3, image: nginx, imageID: "", state: { terminated: { reason: OOMKilled, exitCode: 137 } } } ]
 ---
 apiVersion: v1
+kind: Pod
+metadata: { name: sidecar-done, namespace: s }
+spec: { containers: [ { name: main, image: nginx }, { name: init-like, image: busybox } ] }
+status:
+  phase: Running
+  containerStatuses:
+    - { name: main, ready: true, restartCount: 0, image: nginx, imageID: "", state: { running: { startedAt: "2026-09-17T10:00:00Z" } } }
+    - { name: init-like, ready: false, restartCount: 0, image: busybox, imageID: "", state: { terminated: { reason: Completed, exitCode: 0 } } }
+---
+apiVersion: v1
 kind: Service
 metadata: { name: matched, namespace: s }
 spec: { type: ClusterIP, selector: { app: running }, ports: [ { port: 80, targetPort: 8080 } ] }

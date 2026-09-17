@@ -128,7 +128,17 @@ fn pod(p: &Pod) -> (Status, Badges) {
     let phase = st.and_then(|s| s.phase.clone()).unwrap_or_else(|| "Unknown".into());
     let statuses = st.and_then(|s| s.container_statuses.as_ref()).cloned().unwrap_or_default();
     let restarts: i32 = statuses.iter().map(|c| c.restart_count).sum();
-    let all_ready = !statuses.is_empty() && statuses.iter().all(|c| c.ready);
+
+    // A container that has legitimately finished (e.g. an init-like sidecar) is permanently
+    // `ready: false` but should not count against the pod's readiness.
+    let is_completed = |c: &k8s_openapi::api::core::v1::ContainerStatus| {
+        c.state
+            .as_ref()
+            .and_then(|s| s.terminated.as_ref())
+            .and_then(|t| t.reason.as_deref())
+            == Some("Completed")
+    };
+    let all_ready = !statuses.is_empty() && statuses.iter().all(|c| c.ready || is_completed(c));
 
     // A waiting/terminated reason is more informative than the phase.
     let reason = statuses.iter().find_map(|c| {
@@ -363,6 +373,7 @@ mod tests {
         assert_eq!(describe_named(&s, Kind::Pod, "pending"), (Status::Warn, vec!["Pending".into()]));
         assert_eq!(describe_named(&s, Kind::Pod, "notready"), (Status::Warn, vec!["Running".into(), "↻ 2".into()]));
         assert_eq!(describe_named(&s, Kind::Pod, "oom"), (Status::Err, vec!["OOMKilled".into(), "↻ 3".into()]));
+        assert_eq!(describe_named(&s, Kind::Pod, "sidecar-done"), (Status::Ok, vec!["Running".into()]));
     }
 
     #[test]

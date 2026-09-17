@@ -177,4 +177,39 @@ mod tests {
         assert_eq!(Status::Err.max(Status::Unknown), Status::Err);
         assert_eq!(Status::Unknown.max(Status::Ok), Status::Ok);
     }
+
+    fn test_node(id: &str) -> Node {
+        Node {
+            id: id.into(),
+            kind: Kind::Pod,
+            namespace: Some("p".into()),
+            name: id.into(),
+            status: Status::Ok,
+            badges: vec![],
+            group: None,
+        }
+    }
+
+    #[test]
+    fn normalize_sorts_and_dedups_edges() {
+        let (a_node, b_node, c_node) = (test_node("a"), test_node("b"), test_node("c"));
+        let e_ab = Edge::new("a", "b", Relation::Owns);
+        let e_bc = Edge::new("b", "c", Relation::Selects);
+
+        let mut a = Graph {
+            nodes: vec![c_node.clone(), a_node.clone(), b_node.clone()],
+            edges: vec![e_bc.clone(), e_ab.clone()],
+        };
+        let mut b = Graph {
+            nodes: vec![b_node, c_node, a_node],
+            edges: vec![e_ab.clone(), e_bc, e_ab],
+        };
+
+        a.normalize();
+        b.normalize();
+
+        assert_eq!(a, b);
+        assert_eq!(a.nodes.iter().map(|n| n.id.as_str()).collect::<Vec<_>>(), vec!["a", "b", "c"]);
+        assert_eq!(a.edges.len(), 2);
+    }
 }
