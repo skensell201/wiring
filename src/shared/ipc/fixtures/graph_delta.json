@@ -1,0 +1,24 @@
+{
+  "addedNodes": [
+    {
+      "id": "Pod/payments/web-1",
+      "kind": "Pod",
+      "namespace": "payments",
+      "name": "web-1",
+      "status": "warn",
+      "badges": ["Pending"],
+      "group": null
+    }
+  ],
+  "updatedNodes": [],
+  "removedNodes": ["Pod/payments/web-0"],
+  "addedEdges": [
+    {
+      "id": "ServiceAccount/payments/default->Pod/payments/web-1:usesSA",
+      "source": "ServiceAccount/payments/default",
+      "target": "Pod/payments/web-1",
+      "relation": "usesSA"
+    }
+  ],
+  "removedEdges": ["ServiceAccount/payments/default->Pod/payments/web-0:usesSA"]
+}

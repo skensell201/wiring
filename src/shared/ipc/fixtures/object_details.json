@@ -1,0 +1,5 @@
+{
+  "yaml": "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: cfg\n",
+  "summary": [["Name", "cfg"], ["Kind", "ConfigMap"]],
+  "related": ["Pod/payments/web-1"]
+}

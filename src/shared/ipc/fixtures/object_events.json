@@ -1,0 +1,14 @@
+{
+  "nodeId": "Pod/payments/web-1",
+  "events": [
+    {
+      "name": "web-1.17f2a",
+      "type": "Warning",
+      "reason": "BackOff",
+      "message": "Back-off restarting failed container",
+      "count": 14,
+      "firstTimestamp": "2026-09-17T10:00:00+00:00",
+      "lastTimestamp": "2026-09-17T10:20:00+00:00"
+    }
+  ]
+}

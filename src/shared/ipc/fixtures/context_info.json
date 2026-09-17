@@ -1,0 +1,7 @@
+{
+  "name": "prod-eu",
+  "cluster": "prod-eu-cluster",
+  "user": "alice",
+  "namespace": "payments",
+  "sourceFile": "/Users/alice/.kube/config"
+}

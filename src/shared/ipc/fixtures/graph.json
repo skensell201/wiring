@@ -1,0 +1,30 @@
+{
+  "nodes": [
+    {
+      "id": "Deployment/payments/web",
+      "kind": "Deployment",
+      "namespace": "payments",
+      "name": "web",
+      "status": "ok",
+      "badges": ["3/3", "nginx:1.27"],
+      "group": null
+    },
+    {
+      "id": "PodGroup/payments/Deployment/web",
+      "kind": "PodGroup",
+      "namespace": "payments",
+      "name": "web",
+      "status": "err",
+      "badges": ["×7", "6 ok · 1 err"],
+      "group": { "count": 7, "ok": 6, "warn": 0, "err": 1 }
+    }
+  ],
+  "edges": [
+    {
+      "id": "Deployment/payments/web->PodGroup/payments/Deployment/web:owns",
+      "source": "Deployment/payments/web",
+      "target": "PodGroup/payments/Deployment/web",
+      "relation": "owns"
+    }
+  ]
+}

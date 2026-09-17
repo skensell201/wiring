@@ -1,0 +1,5 @@
+{
+  "context": "prod-eu",
+  "serverVersion": "v1.33.2",
+  "namespaces": ["default", "kube-system", "payments"]
+}
