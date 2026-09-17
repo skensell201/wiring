@@ -64,7 +64,6 @@ function CanvasInner() {
         fitView
         fitViewOptions={{ padding: 0.2, maxZoom: 1 }}
         minZoom={0.1}
-        proOptions={{ hideAttribution: true }}
         onNodeClick={onNodeClick}
         onNodeDoubleClick={onNodeDoubleClick}
         onNodeMouseEnter={onNodeMouseEnter}
@@ -73,8 +72,17 @@ function CanvasInner() {
         colorMode="dark"
       >
         <Background variant={BackgroundVariant.Dots} gap={16} size={1} color="#2c2834" />
-        <Controls showInteractive={false} position="bottom-right" />
-        <MiniMap pannable zoomable position="bottom-right" nodeColor="#2c2834" maskColor="rgba(14,9,24,0.7)" style={{ background: "#1a1624", bottom: 56 }} />
+        <Controls showInteractive={false} position="bottom-left" />
+        <MiniMap
+          pannable
+          zoomable
+          position="bottom-right"
+          nodeColor="#3e3a46"
+          nodeStrokeColor="#6b21ef"
+          nodeStrokeWidth={2}
+          maskColor="rgba(14,9,24,0.6)"
+          style={{ background: "#1b1728", border: "1px solid #3e3a46", borderRadius: 12 }}
+        />
       </ReactFlow>
       <div className="pointer-events-none absolute inset-x-3 top-3 flex">
         <div className="pointer-events-auto">
