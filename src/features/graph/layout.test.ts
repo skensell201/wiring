@@ -16,14 +16,22 @@ describe("layerOf", () => {
     expect(layerOf("CronJob")).toBe(3);
     expect(layerOf("ReplicaSet")).toBe(4);
     expect(layerOf("Job")).toBe(4);
+    expect(layerOf("PersistentVolume")).toBe(4);
     expect(layerOf("ConfigMap")).toBe(5);
-    expect(layerOf("PersistentVolume")).toBe(5);
+    expect(layerOf("PersistentVolumeClaim")).toBe(5);
     expect(layerOf("Pod")).toBe(6);
     expect(layerOf("PodGroup")).toBe(6);
   });
 });
 
 describe("layout", () => {
+  it("places a PersistentVolume one column before the claim it binds", () => {
+    const nodes = [n("PersistentVolume/p/pv", "PersistentVolume"), n("PersistentVolumeClaim/p/pvc", "PersistentVolumeClaim")];
+    const pos = layout(nodes, [e("PersistentVolume/p/pv", "PersistentVolumeClaim/p/pvc", "binds")]).positions;
+    expect(pos.get("PersistentVolume/p/pv")!.x).toBe(0);
+    expect(pos.get("PersistentVolumeClaim/p/pvc")!.x).toBe(COL);
+  });
+
   it("places kinds in columns and collapses empty layers", () => {
     const nodes = [n("Service/p/s", "Service"), n("Deployment/p/d", "Deployment"), n("Pod/p/a", "Pod")];
     const pos = layout(nodes, [e("Service/p/s", "Pod/p/a"), e("Deployment/p/d", "Pod/p/a")]).positions;

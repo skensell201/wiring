@@ -22,8 +22,9 @@ const LAYERS: Record<Kind, number> = {
   Ingress: 1,
   Service: 2,
   Deployment: 3, StatefulSet: 3, DaemonSet: 3, CronJob: 3,
-  ReplicaSet: 4, Job: 4,
-  ConfigMap: 5, Secret: 5, PersistentVolumeClaim: 5, PersistentVolume: 5, ServiceAccount: 5,
+  // PV sits one column before its claim so the `binds` PV → PVC edge is an ordinary forward edge.
+  ReplicaSet: 4, Job: 4, PersistentVolume: 4,
+  ConfigMap: 5, Secret: 5, PersistentVolumeClaim: 5, ServiceAccount: 5,
   Pod: 6, PodGroup: 6,
 };
 

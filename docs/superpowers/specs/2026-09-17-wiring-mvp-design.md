@@ -182,12 +182,12 @@ Layout is a deterministic layered layout implemented in `src/features/graph/layo
 1: Ingress
 2: Service
 3: Deployment, StatefulSet, DaemonSet, CronJob
-4: ReplicaSet, Job
-5: ConfigMap, Secret, PersistentVolumeClaim, PersistentVolume, ServiceAccount
+4: ReplicaSet, Job, PersistentVolume
+5: ConfigMap, Secret, PersistentVolumeClaim, ServiceAccount
 6: Pod, PodGroup
 ```
 
-PV sits in layer 5 alongside PVC; the `binds` edge PV → PVC is rendered as a short same-layer edge. On every delta the whole layout is recomputed; React Flow animates node position changes over 300 ms. Nodes hidden by kind filters are excluded from layout so the remaining graph tightens.
+On every delta the whole layout is recomputed; React Flow animates node position changes over 300 ms. Nodes hidden by kind filters are excluded from layout so the remaining graph tightens.
 
 ## 6. Data flow
 
