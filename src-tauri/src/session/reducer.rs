@@ -62,6 +62,9 @@ async fn run(config: ReducerConfig, shared: Shared, emitter: Arc<dyn Emitter>, m
     let mut flush_at: Option<Instant> = None;
     let mut errored_since: HashMap<Kind, Instant> = HashMap::new();
     let mut state = ConnectionState::Connected;
+    // A fresh reducer starts from a known-good state; the frontend may still show
+    // `degraded` from the previous namespace.
+    emitter.emit(OutEvent::ConnectionState(state));
     let mut ticker = tokio::time::interval(config.tick);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
@@ -257,6 +260,22 @@ mod tests {
         }
     }
 
+    /// Spawn a reducer and consume the `Connected` it announces on start, so each test can
+    /// focus on the events it is actually about.
+    async fn spawn_started(
+        kinds: &[Kind],
+        shared: Shared,
+    ) -> (
+        mpsc::Sender<ReducerMsg>,
+        JoinHandle<()>,
+        tokio::sync::mpsc::UnboundedReceiver<OutEvent>,
+    ) {
+        let (emitter, mut rx) = ChannelEmitter::new();
+        let (tx, handle) = spawn_reducer(fast_config(kinds), shared, Arc::new(emitter));
+        assert_eq!(next(&mut rx).await, OutEvent::ConnectionState(ConnectionState::Connected));
+        (tx, handle, rx)
+    }
+
     async fn next(rx: &mut tokio::sync::mpsc::UnboundedReceiver<OutEvent>) -> OutEvent {
         timeout(Duration::from_secs(2), rx.recv())
             .await
@@ -264,16 +283,22 @@ mod tests {
             .expect("channel open")
     }
 
-    // All 7 tests run on tokio's paused virtual clock (`start_paused = true`): every
+    // All tests run on tokio's paused virtual clock (`start_paused = true`): every
     // `tokio::time::sleep`/`interval`/`timeout` inside the reducer and in these tests advances
     // an in-process virtual clock instead of real wall time, so debounce/degraded-after/tick
     // timing is exact and these tests can't flake under CI scheduling jitter.
 
     #[tokio::test(start_paused = true)]
-    async fn snapshot_only_after_all_kinds_init_done() {
+    async fn reducer_announces_connected_on_start() {
         let (emitter, mut rx) = ChannelEmitter::new();
+        let (_tx, _h) = spawn_reducer(fast_config(&[Kind::Pod]), Shared::default(), Arc::new(emitter));
+        assert_eq!(next(&mut rx).await, OutEvent::ConnectionState(ConnectionState::Connected));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn snapshot_only_after_all_kinds_init_done() {
         let shared = Shared::default();
-        let (tx, handle) = spawn_reducer(fast_config(&[Kind::ConfigMap, Kind::Pod]), shared.clone(), Arc::new(emitter));
+        let (tx, handle, mut rx) = spawn_started(&[Kind::ConfigMap, Kind::Pod], shared.clone()).await;
         tx.send(ReducerMsg::Store(StoreEvent::Applied(cm("a")))).await.unwrap();
         tx.send(ReducerMsg::Store(StoreEvent::InitDone(Kind::ConfigMap))).await.unwrap();
         tokio::time::sleep(Duration::from_millis(60)).await;
@@ -289,9 +314,8 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn changes_after_snapshot_are_debounced_into_one_delta() {
-        let (emitter, mut rx) = ChannelEmitter::new();
         let shared = Shared::default();
-        let (tx, _h) = spawn_reducer(fast_config(&[Kind::Pod]), shared.clone(), Arc::new(emitter));
+        let (tx, _h, mut rx) = spawn_started(&[Kind::Pod], shared.clone()).await;
         tx.send(ReducerMsg::Store(StoreEvent::InitDone(Kind::Pod))).await.unwrap();
         assert!(matches!(next(&mut rx).await, OutEvent::GraphSnapshot(_)));
         tx.send(ReducerMsg::Store(StoreEvent::Applied(pod("a")))).await.unwrap();
@@ -312,9 +336,8 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn fatal_failure_counts_as_init_done_and_reports_error() {
-        let (emitter, mut rx) = ChannelEmitter::new();
         let shared = Shared::default();
-        let (tx, _h) = spawn_reducer(fast_config(&[Kind::Secret, Kind::Pod]), shared.clone(), Arc::new(emitter));
+        let (tx, _h, mut rx) = spawn_started(&[Kind::Secret, Kind::Pod], shared.clone()).await;
         tx.send(ReducerMsg::Store(StoreEvent::Failed {
             kind: Kind::Secret,
             error: AppError::new(ErrorKind::Forbidden, "no"),
@@ -330,9 +353,8 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn prolonged_error_degrades_then_recovers_with_snapshot() {
-        let (emitter, mut rx) = ChannelEmitter::new();
         let shared = Shared::default();
-        let (tx, _h) = spawn_reducer(fast_config(&[Kind::Pod]), shared.clone(), Arc::new(emitter));
+        let (tx, _h, mut rx) = spawn_started(&[Kind::Pod], shared.clone()).await;
         tx.send(ReducerMsg::Store(StoreEvent::InitDone(Kind::Pod))).await.unwrap();
         assert!(matches!(next(&mut rx).await, OutEvent::GraphSnapshot(_)));
         tx.send(ReducerMsg::Store(StoreEvent::Failed {
@@ -351,9 +373,8 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn first_non_fatal_failure_is_reported_once() {
-        let (emitter, mut rx) = ChannelEmitter::new();
         let shared = Shared::default();
-        let (tx, _h) = spawn_reducer(fast_config(&[Kind::Pod]), shared.clone(), Arc::new(emitter));
+        let (tx, _h, mut rx) = spawn_started(&[Kind::Pod], shared.clone()).await;
         tx.send(ReducerMsg::Store(StoreEvent::InitDone(Kind::Pod))).await.unwrap();
         assert!(matches!(next(&mut rx).await, OutEvent::GraphSnapshot(_)));
         let fail = || {
@@ -383,9 +404,8 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn restart_sweeps_objects_missing_from_the_relist() {
-        let (emitter, mut rx) = ChannelEmitter::new();
         let shared = Shared::default();
-        let (tx, _h) = spawn_reducer(fast_config(&[Kind::Pod]), shared.clone(), Arc::new(emitter));
+        let (tx, _h, mut rx) = spawn_started(&[Kind::Pod], shared.clone()).await;
         tx.send(ReducerMsg::Store(StoreEvent::Applied(pod("a")))).await.unwrap();
         tx.send(ReducerMsg::Store(StoreEvent::Applied(pod("b")))).await.unwrap();
         tx.send(ReducerMsg::Store(StoreEvent::InitDone(Kind::Pod))).await.unwrap();
@@ -403,9 +423,8 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn fatal_internal_failure_keeps_its_error_kind() {
-        let (emitter, mut rx) = ChannelEmitter::new();
         let shared = Shared::default();
-        let (tx, _h) = spawn_reducer(fast_config(&[Kind::Pod]), shared.clone(), Arc::new(emitter));
+        let (tx, _h, mut rx) = spawn_started(&[Kind::Pod], shared.clone()).await;
         tx.send(ReducerMsg::Store(StoreEvent::Failed {
             kind: Kind::Pod,
             error: AppError::internal("Pod watcher panicked"),
@@ -421,9 +440,8 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn rebuild_message_forces_immediate_rebuild() {
-        let (emitter, mut rx) = ChannelEmitter::new();
         let shared = Shared::default();
-        let (tx, _h) = spawn_reducer(fast_config(&[Kind::Pod]), shared.clone(), Arc::new(emitter));
+        let (tx, _h, mut rx) = spawn_started(&[Kind::Pod], shared.clone()).await;
         tx.send(ReducerMsg::Store(StoreEvent::InitDone(Kind::Pod))).await.unwrap();
         assert!(matches!(next(&mut rx).await, OutEvent::GraphSnapshot(_)));
         shared.store().upsert(pod("x")); // simulate an external change
