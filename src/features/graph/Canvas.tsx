@@ -60,6 +60,7 @@ function CanvasInner() {
         edgeTypes={edgeTypes}
         nodesDraggable={false}
         nodesConnectable={false}
+        zoomOnDoubleClick={false}
         elementsSelectable
         fitView
         fitViewOptions={{ padding: 0.2, maxZoom: 1 }}

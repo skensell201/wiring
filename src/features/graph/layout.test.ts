@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { GraphEdge, GraphNode, Kind } from "../../shared/ipc/types";
-import { COLUMN_GAP, NODE_HEIGHT, NODE_WIDTH, ROW_GAP, layerOf, layout } from "./layout";
+import { COLUMN_GAP, DUMMY_HEIGHT, NODE_HEIGHT, NODE_WIDTH, ROW_GAP, layerOf, layout } from "./layout";
 
 const n = (id: string, kind: Kind): GraphNode => ({ id, kind, namespace: "p", name: id.split("/").pop()!, status: "ok", badges: [], group: null });
 const e = (source: string, target: string, relation: GraphEdge["relation"] = "owns"): GraphEdge => ({ id: `${source}->${target}:${relation}`, source, target, relation });
@@ -75,14 +75,22 @@ describe("layout waypoints (dummy slots for edges spanning several columns)", ()
   const deployment = n("Deployment/p/d", "Deployment");
   const pod = n("Pod/p/a", "Pod");
 
-  it("gives a two-column edge one waypoint centred in the middle column, on a row no real node uses", () => {
+  it("gives a two-column edge one waypoint centred in the middle column, clear of every real card", () => {
     const long = e("Service/p/s", "Pod/p/a", "selects");
     const { positions, waypoints } = layout([service, deployment, pod], [long, e("Deployment/p/d", "Pod/p/a")]);
     const wp = waypoints.get(long.id)!;
     expect(wp).toHaveLength(1);
     expect(wp[0].x).toBe(COL + NODE_WIDTH / 2);
-    expect((wp[0].y - NODE_HEIGHT / 2) % ROW).toBe(0); // sits exactly on a row slot
-    expect(positions.get("Deployment/p/d")!.y).not.toBe(wp[0].y - NODE_HEIGHT / 2);
+    const d = positions.get("Deployment/p/d")!;
+    expect(wp[0].y < d.y || wp[0].y > d.y + NODE_HEIGHT).toBe(true);
+  });
+
+  it("uses a thin slot for a dummy, so the real node below it starts at DUMMY_HEIGHT + ROW_GAP", () => {
+    const long = e("Service/p/s", "Pod/p/a", "selects");
+    const { positions, waypoints } = layout([service, deployment, pod], [long, e("Deployment/p/d", "Pod/p/a")]);
+    // Both slots tie on barycenter (both lead to Pod a); dummies sort first.
+    expect(waypoints.get(long.id)![0].y).toBe(DUMMY_HEIGHT / 2);
+    expect(positions.get("Deployment/p/d")!.y).toBe(DUMMY_HEIGHT + ROW_GAP);
   });
 
   it("gives every intermediate column its own waypoint", () => {
@@ -115,10 +123,10 @@ describe("layout waypoints (dummy slots for edges spanning several columns)", ()
     expect(waypoints.get(toA.id)).toBe(waypoints.get(toB.id));
     expect(waypoints.get(again.id)).toBe(waypoints.get(toA.id));
     expect(waypoints.get(toA.id)).toHaveLength(1);
-    expect(positions.get("ConfigMap/p/c")!.y + NODE_HEIGHT / 2).not.toBe(waypoints.get(toA.id)![0].y);
-    // Column 1 holds exactly two slots: the ConfigMap and the one bundle dummy.
-    const ys = new Set([positions.get("ConfigMap/p/c")!.y, waypoints.get(toA.id)![0].y - NODE_HEIGHT / 2]);
-    expect(ys).toEqual(new Set([0, ROW]));
+    // Column 1 holds exactly two slots: the one bundle dummy (its barycenter covers both pods, and
+    // Pod b, fed only by the bundle, sorts first) and the ConfigMap right below it.
+    expect(waypoints.get(toA.id)![0].y).toBe(DUMMY_HEIGHT / 2);
+    expect(positions.get("ConfigMap/p/c")!.y).toBe(DUMMY_HEIGHT + ROW_GAP);
   });
 
   it("keeps bundles above the real nodes of the column they pass through (blog-like namespace)", () => {
@@ -148,13 +156,13 @@ describe("layout waypoints (dummy slots for edges spanning several columns)", ()
     expect(svc).toHaveLength(2);
 
     const col3 = 3 * COL;
-    const row = (y: number) => (y - NODE_HEIGHT / 2) / ROW;
+    const DUMMY_ROW = DUMMY_HEIGHT + ROW_GAP;
     expect(dep[0].x).toBe(col3 + NODE_WIDTH / 2);
     expect(svc[1].x).toBe(col3 + NODE_WIDTH / 2);
-    expect(row(dep[0].y)).toBe(0);
-    expect(row(svc[1].y)).toBe(1);
-    const realRows = ["ConfigMap/p/c1", "ConfigMap/p/c2", "ServiceAccount/p/sa"].map((id) => positions.get(id)!.y / ROW).sort();
-    expect(realRows).toEqual([2, 3, 4]);
+    expect(dep[0].y).toBe(DUMMY_HEIGHT / 2);
+    expect(svc[1].y).toBe(DUMMY_ROW + DUMMY_HEIGHT / 2);
+    const realYs = ["ConfigMap/p/c1", "ConfigMap/p/c2", "ServiceAccount/p/sa"].map((id) => positions.get(id)!.y).sort((a, b) => a - b);
+    expect(realYs).toEqual([2 * DUMMY_ROW, 2 * DUMMY_ROW + ROW, 2 * DUMMY_ROW + 2 * ROW]);
   });
 
   it("gives edges spanning at most one column no waypoints", () => {

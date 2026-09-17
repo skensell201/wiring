@@ -4,6 +4,9 @@ export const NODE_WIDTH = 220;
 export const NODE_HEIGHT = 64;
 export const COLUMN_GAP = 96;
 export const ROW_GAP = 24;
+/** Height of the row slot a pass-through edge reserves; much thinner than a card so a column full
+ *  of bundles does not grow past its neighbours and drag those edges below their targets. */
+export const DUMMY_HEIGHT = 16;
 
 export interface Position { x: number; y: number }
 
@@ -37,7 +40,7 @@ type SlotId = string;
  *
  * Edges spanning more than one column are split into a chain of dummy slots, one per intermediate
  * column. Dummies are ordered like nodes (so they sit between their chain neighbours) and occupy a
- * full row slot, so real nodes move aside and the edge passes through empty space instead of behind
+ * thin row slot, so real nodes move aside and the edge passes through empty space instead of behind
  * a card. All long edges from one source into one target column share a single chain (a bundle);
  * they fan out to their individual targets only in the last segment.
  */
@@ -94,9 +97,20 @@ export function layout(nodes: GraphNode[], edges: GraphEdge[]): Layout {
     link(chain[chain.length - 1], e.target);
   }
 
-  const rowOf = new Map<SlotId, number>();
-  const assignRows = (col: SlotId[]) => col.forEach((id, i) => rowOf.set(id, i));
-  columns.forEach(assignRows);
+  // Slots are stacked cumulatively (cards are NODE_HEIGHT tall, dummies DUMMY_HEIGHT); barycenters
+  // are computed on slot centres in pixels, so a thin dummy does not weigh like a full row.
+  const heightOf = (id: SlotId) => (dummies.has(id) ? DUMMY_HEIGHT : NODE_HEIGHT);
+  const topOf = new Map<SlotId, number>();
+  const centreOf = new Map<SlotId, number>();
+  const stack = (col: SlotId[]) => {
+    let y = 0;
+    for (const id of col) {
+      topOf.set(id, y);
+      centreOf.set(id, y + heightOf(id) / 2);
+      y += heightOf(id) + ROW_GAP;
+    }
+  };
+  columns.forEach(stack);
 
   // Ties: dummies before real nodes (a bundle hugs the top of the group it targets), then by id
   // (a dummy id embeds its source and target column).
@@ -104,7 +118,7 @@ export function layout(nodes: GraphNode[], edges: GraphEdge[]): Layout {
 
   const order = (col: SlotId[], neighbours: Map<SlotId, SlotId[]>) => {
     const key = (id: SlotId): number | null => {
-      const ns = (neighbours.get(id) ?? []).map((n) => rowOf.get(n)).filter((r): r is number => r !== undefined);
+      const ns = (neighbours.get(id) ?? []).map((n) => centreOf.get(n)).filter((r): r is number => r !== undefined);
       return ns.length ? ns.reduce((a, b) => a + b, 0) / ns.length : null;
     };
     const keyed = col.map((id) => ({ id, k: key(id) }));
@@ -115,7 +129,7 @@ export function layout(nodes: GraphNode[], edges: GraphEdge[]): Layout {
       return a.k - b.k || compareIds(a.id, b.id);
     });
     const sorted = keyed.map((k) => k.id);
-    assignRows(sorted);
+    stack(sorted);
     return sorted;
   };
 
@@ -123,20 +137,14 @@ export function layout(nodes: GraphNode[], edges: GraphEdge[]): Layout {
   for (let i = 1; i < columns.length; i++) columns[i] = order(columns[i], preds);
   for (let i = columns.length - 2; i >= 0; i--) columns[i] = order(columns[i], succs);
 
-  const slotAt = new Map<SlotId, Position>();
-  columns.forEach((col, c) => {
-    col.forEach((id, r) => slotAt.set(id, { x: c * (NODE_WIDTH + COLUMN_GAP), y: r * (NODE_HEIGHT + ROW_GAP) }));
-  });
+  const columnX = (id: SlotId) => columnOf.get(id)! * (NODE_WIDTH + COLUMN_GAP);
 
   const positions = new Map<NodeId, Position>();
-  for (const id of ids) positions.set(id, slotAt.get(id)!);
+  for (const id of ids) positions.set(id, { x: columnX(id), y: topOf.get(id)! });
 
   const centres = new Map<string, Position[]>();
   for (const [key, chain] of chains) {
-    centres.set(key, chain.map((d) => {
-      const p = slotAt.get(d)!;
-      return { x: p.x + NODE_WIDTH / 2, y: p.y + NODE_HEIGHT / 2 };
-    }));
+    centres.set(key, chain.map((d) => ({ x: columnX(d) + NODE_WIDTH / 2, y: centreOf.get(d)! })));
   }
   const waypoints = new Map<string, Position[]>();
   for (const [edgeId, key] of chainKeyOf) waypoints.set(edgeId, centres.get(key)!);
