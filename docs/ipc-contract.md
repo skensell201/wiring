@@ -35,7 +35,7 @@ Argument names are camelCase on the JS side; Tauri maps them to the Rust snake_c
 | Event | Payload | Notes |
 |---|---|---|
 | `connection_state` | `"connected" \| "degraded" \| "disconnected"` | `connected` is emitted after `connect` succeeds and again whenever a namespace session starts; `disconnected` on `disconnect` and before a re-`connect` tears down the old session |
-| `connection_error` | `AppError` | Per-kind failures: message is `"<Kind>: <reason>"`. `forbidden`/`notFound`/`auth` per kind ⇒ the kind is dropped, call `denied_kinds` to mark its chip. A transient error is reported once per kind until it recovers. |
+| `connection_error` | `AppError` | Per-kind failures: message is `"<Kind>: <reason>"`. `forbidden`/`notFound` per kind ⇒ the kind is dropped, call `denied_kinds` to mark its chip. A transient error is reported once per kind until it recovers. A fatal `auth` error (expired/invalid credentials) is reported once and followed by `disconnected`; the user must reconnect. |
 | `graph_snapshot` | `Graph` | Full replace. Arrives after every kind finished its initial list, and again after recovery from `degraded`. |
 | `graph_delta` | `GraphDelta` | Apply `addedNodes`/`updatedNodes` (full node objects) / `removedNodes` (ids) / `addedEdges` / `removedEdges` (ids). Only sent when non-empty. |
 | `object_events` | `ObjectEvents` | Full list, newest first, for the node passed to `watch_events`. Ignore payloads whose `nodeId` is not the current selection. |

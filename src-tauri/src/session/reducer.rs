@@ -16,7 +16,7 @@ use tokio::time::Instant;
 use super::emitter::{ConnectionState, Emitter, OutEvent};
 use super::shared::Shared;
 use super::watch::StoreEvent;
-use crate::error::AppError;
+use crate::error::{AppError, ErrorKind};
 use crate::store::{Kind, Object, ObjectKey};
 
 // `StoreEvent` carries a full k8s-openapi `Object` (see watch.rs); event volume is bounded
@@ -84,6 +84,22 @@ async fn run(config: ReducerConfig, shared: Shared, emitter: Arc<dyn Emitter>, m
                             flush_at = None;
                             emit_rebuild(&shared, &emitter);
                         }
+                    }
+                    ReducerMsg::Store(StoreEvent::Failed {
+                        error,
+                        fatal: true,
+                        ..
+                    }) if error.kind == ErrorKind::Auth => {
+                        // Expired/invalid credentials doom every watcher, not just this kind:
+                        // report it once as a session-level failure and stop, instead of
+                        // reporting the same auth error kind-by-kind as the other 14 watchers
+                        // fail right behind it.
+                        emitter.emit(OutEvent::ConnectionError(AppError::new(
+                            ErrorKind::Auth,
+                            format!("authentication failed: {}", error.message),
+                        )));
+                        emitter.emit(OutEvent::ConnectionState(ConnectionState::Disconnected));
+                        return;
                     }
                     ReducerMsg::Store(ev) => {
                         let changed = apply(&shared, ev, &mut init_pending, &mut stale, &mut errored_since, &emitter);
@@ -436,6 +452,44 @@ mod tests {
             OutEvent::ConnectionError(e) => assert_eq!(e.kind, ErrorKind::Internal),
             other => panic!("expected connection error, got {other:?}"),
         }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn fatal_auth_failure_disconnects_the_session_once() {
+        let shared = Shared::default();
+        let (tx, handle, mut rx) = spawn_started(&[Kind::Pod, Kind::Secret], shared.clone()).await;
+        tx.send(ReducerMsg::Store(StoreEvent::Failed {
+            kind: Kind::Pod,
+            error: AppError::new(ErrorKind::Auth, "Unauthorized"),
+            fatal: true,
+        }))
+        .await
+        .unwrap();
+        // The receiver may already be gone once the reducer loop returns after the first
+        // fatal Auth failure, so the second watcher's send can fail — that's expected.
+        let _ = tx
+            .send(ReducerMsg::Store(StoreEvent::Failed {
+                kind: Kind::Secret,
+                error: AppError::new(ErrorKind::Auth, "Unauthorized"),
+                fatal: true,
+            }))
+            .await;
+        match next(&mut rx).await {
+            OutEvent::ConnectionError(e) => {
+                assert_eq!(e.kind, ErrorKind::Auth);
+                assert!(e.message.contains("Unauthorized"), "{}", e.message);
+            }
+            other => panic!("expected connection error, got {other:?}"),
+        }
+        assert_eq!(next(&mut rx).await, OutEvent::ConnectionState(ConnectionState::Disconnected));
+        // Await the reducer task first so the emitter (and its channel sender) is dropped
+        // deterministically before we assert the channel is closed.
+        handle.await.unwrap();
+        assert!(
+            rx.recv().await.is_none(),
+            "nothing more should be emitted once the session disconnects"
+        );
+        assert!(shared.denied_kinds().is_empty());
     }
 
     #[tokio::test(start_paused = true)]
