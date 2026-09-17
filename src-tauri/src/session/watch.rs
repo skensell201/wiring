@@ -70,26 +70,49 @@ into_object! {
     k8s_openapi::api::autoscaling::v2::HorizontalPodAutoscaler => HorizontalPodAutoscaler,
 }
 
+fn app_error_from_status(code: u16, message: &str) -> AppError {
+    let kind = match code {
+        401 => ErrorKind::Auth,
+        403 => ErrorKind::Forbidden,
+        404 => ErrorKind::NotFound,
+        _ => ErrorKind::Internal,
+    };
+    AppError::new(kind, message)
+}
+
 pub fn app_error_from_kube(e: &kube::Error) -> AppError {
     match e {
-        kube::Error::Api(resp) if resp.code == 401 => AppError::new(ErrorKind::Auth, resp.message.clone()),
-        kube::Error::Api(resp) if resp.code == 403 => AppError::new(ErrorKind::Forbidden, resp.message.clone()),
-        kube::Error::Api(resp) if resp.code == 404 => AppError::new(ErrorKind::NotFound, resp.message.clone()),
-        kube::Error::Api(resp) => AppError::new(ErrorKind::Internal, resp.message.clone()),
+        kube::Error::Api(resp) => app_error_from_status(resp.code, &resp.message),
         kube::Error::Auth(e) => AppError::new(ErrorKind::Auth, e.to_string()),
         kube::Error::HyperError(_) | kube::Error::Service(_) => AppError::new(ErrorKind::Network, e.to_string()),
         other => AppError::new(ErrorKind::Internal, other.to_string()),
     }
 }
 
+/// Decide whether a watcher error ends the watcher for good (spec §8).
+///
+/// - 403: no RBAC for this kind — it is dropped and reported via `denied_kinds`.
+/// - 401: credentials are rejected; retrying with the same client cannot succeed.
+/// - 404 on the initial list: the API group is not served by this cluster (e.g. no
+///   `autoscaling/v2`); a 404 mid-watch is a re-list trigger, not a missing API.
+///
+/// Everything else is transient and left to the watcher's own backoff.
 fn classify(kind: Kind, e: &watcher::Error) -> StoreEvent {
     let (error, fatal) = match e {
         watcher::Error::InitialListFailed(k) | watcher::Error::WatchStartFailed(k) | watcher::Error::WatchFailed(k) => {
             let app = app_error_from_kube(k);
-            let fatal = app.kind == ErrorKind::Forbidden;
+            let fatal = match app.kind {
+                ErrorKind::Forbidden | ErrorKind::Auth => true,
+                ErrorKind::NotFound => matches!(e, watcher::Error::InitialListFailed(_)),
+                _ => false,
+            };
             (app, fatal)
         }
-        watcher::Error::WatchError(resp) if resp.code == 403 => (AppError::new(ErrorKind::Forbidden, resp.message.clone()), true),
+        watcher::Error::WatchError(resp) => {
+            let app = app_error_from_status(resp.code, &resp.message);
+            let fatal = matches!(app.kind, ErrorKind::Forbidden | ErrorKind::Auth);
+            (app, fatal)
+        }
         other => (AppError::new(ErrorKind::Network, other.to_string()), false),
     };
     StoreEvent::Failed { kind, error, fatal }
@@ -227,15 +250,29 @@ mod tests {
         }
     }
 
+    fn status(code: u16) -> kube::core::Status {
+        kube::core::Status {
+            code,
+            message: format!("status {code}"),
+            reason: "reason".into(),
+            ..Default::default()
+        }
+    }
+
+    fn api_error(code: u16) -> kube::Error {
+        kube::Error::Api(Box::new(status(code)))
+    }
+
+    fn failed(ev: StoreEvent) -> (ErrorKind, bool) {
+        match ev {
+            StoreEvent::Failed { error, fatal, .. } => (error.kind, fatal),
+            other => panic!("expected Failed, got {other:?}"),
+        }
+    }
+
     #[test]
     fn forbidden_is_fatal_network_is_not() {
-        let status = kube::core::Status {
-            code: 403,
-            message: "forbidden".into(),
-            reason: "Forbidden".into(),
-            ..Default::default()
-        };
-        let ev = classify(Kind::Secret, &watcher::Error::WatchError(Box::new(status)));
+        let ev = classify(Kind::Secret, &watcher::Error::WatchError(Box::new(status(403))));
         assert!(matches!(
             ev,
             StoreEvent::Failed {
@@ -244,8 +281,65 @@ mod tests {
                 ..
             }
         ));
+        assert_eq!(
+            failed(classify(Kind::Secret, &watcher::Error::InitialListFailed(api_error(403)))),
+            (ErrorKind::Forbidden, true)
+        );
         let ev = classify(Kind::Pod, &watcher::Error::NoResourceVersion);
         assert!(matches!(ev, StoreEvent::Failed { fatal: false, .. }));
+    }
+
+    #[test]
+    fn not_found_on_initial_list_is_fatal_but_transient_elsewhere() {
+        // The API group is not served at all (e.g. no autoscaling/v2): give up on the kind.
+        assert_eq!(
+            failed(classify(
+                Kind::HorizontalPodAutoscaler,
+                &watcher::Error::InitialListFailed(api_error(404))
+            )),
+            (ErrorKind::NotFound, true)
+        );
+        // A 404 mid-watch is a re-list trigger, not a missing API.
+        assert_eq!(
+            failed(classify(Kind::Pod, &watcher::Error::WatchFailed(api_error(404)))),
+            (ErrorKind::NotFound, false)
+        );
+        assert_eq!(
+            failed(classify(Kind::Pod, &watcher::Error::WatchStartFailed(api_error(404)))),
+            (ErrorKind::NotFound, false)
+        );
+    }
+
+    #[test]
+    fn unauthorized_is_always_fatal() {
+        assert_eq!(
+            failed(classify(Kind::Pod, &watcher::Error::InitialListFailed(api_error(401)))),
+            (ErrorKind::Auth, true)
+        );
+        assert_eq!(
+            failed(classify(Kind::Pod, &watcher::Error::WatchStartFailed(api_error(401)))),
+            (ErrorKind::Auth, true)
+        );
+        assert_eq!(
+            failed(classify(Kind::Pod, &watcher::Error::WatchFailed(api_error(401)))),
+            (ErrorKind::Auth, true)
+        );
+        assert_eq!(
+            failed(classify(Kind::Pod, &watcher::Error::WatchError(Box::new(status(401))))),
+            (ErrorKind::Auth, true)
+        );
+    }
+
+    #[test]
+    fn server_errors_are_transient() {
+        assert_eq!(
+            failed(classify(Kind::Pod, &watcher::Error::InitialListFailed(api_error(500)))),
+            (ErrorKind::Internal, false)
+        );
+        assert_eq!(
+            failed(classify(Kind::Pod, &watcher::Error::WatchError(Box::new(status(500))))),
+            (ErrorKind::Internal, false)
+        );
     }
 
     #[tokio::test]

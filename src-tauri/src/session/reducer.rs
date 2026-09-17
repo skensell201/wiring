@@ -1,5 +1,6 @@
 //! Consumes StoreEvents, keeps the Store and last Graph, emits snapshots/deltas.
 
+use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
@@ -115,6 +116,13 @@ async fn run(config: ReducerConfig, shared: Shared, emitter: Arc<dyn Emitter>, m
     }
 }
 
+fn emit_kind_error(emitter: &Arc<dyn Emitter>, kind: Kind, error: &AppError) {
+    emitter.emit(OutEvent::ConnectionError(AppError::new(
+        error.kind,
+        format!("{}: {}", kind.as_str(), error.message),
+    )));
+}
+
 fn emit_rebuild(shared: &Shared, emitter: &Arc<dyn Emitter>) {
     let (_, delta) = shared.rebuild();
     if !delta.is_empty() {
@@ -174,12 +182,13 @@ fn apply(
                 errored_since.remove(&kind);
                 stale.remove(&kind);
                 shared.denied_kinds().insert(kind);
-                emitter.emit(OutEvent::ConnectionError(AppError::new(
-                    error.kind,
-                    format!("{}: {}", kind.as_str(), error.message),
-                )));
-            } else {
-                errored_since.entry(kind).or_insert_with(Instant::now);
+                emit_kind_error(emitter, kind, &error);
+            } else if let Entry::Vacant(slot) = errored_since.entry(kind) {
+                // Report the first failure of an outage so the user learns why nothing
+                // arrives; the watcher keeps retrying, and repeats stay silent until the
+                // kind recovers (any Applied/Deleted/InitDone/Recovered clears the entry).
+                slot.insert(Instant::now());
+                emit_kind_error(emitter, kind, &error);
             }
             false
         }
@@ -333,10 +342,43 @@ mod tests {
         }))
         .await
         .unwrap();
+        assert!(matches!(next(&mut rx).await, OutEvent::ConnectionError(_)));
         assert_eq!(next(&mut rx).await, OutEvent::ConnectionState(ConnectionState::Degraded));
         tx.send(ReducerMsg::Store(StoreEvent::Recovered(Kind::Pod))).await.unwrap();
         assert_eq!(next(&mut rx).await, OutEvent::ConnectionState(ConnectionState::Connected));
         assert!(matches!(next(&mut rx).await, OutEvent::GraphSnapshot(_)));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn first_non_fatal_failure_is_reported_once() {
+        let (emitter, mut rx) = ChannelEmitter::new();
+        let shared = Shared::default();
+        let (tx, _h) = spawn_reducer(fast_config(&[Kind::Pod]), shared.clone(), Arc::new(emitter));
+        tx.send(ReducerMsg::Store(StoreEvent::InitDone(Kind::Pod))).await.unwrap();
+        assert!(matches!(next(&mut rx).await, OutEvent::GraphSnapshot(_)));
+        let fail = || {
+            ReducerMsg::Store(StoreEvent::Failed {
+                kind: Kind::Pod,
+                error: AppError::new(ErrorKind::Network, "connection reset"),
+                fatal: false,
+            })
+        };
+        tx.send(fail()).await.unwrap();
+        tx.send(fail()).await.unwrap();
+        match next(&mut rx).await {
+            OutEvent::ConnectionError(e) => {
+                assert_eq!(e.kind, ErrorKind::Network);
+                assert!(e.message.contains("connection reset"), "{}", e.message);
+                assert!(e.message.contains("Pod"), "{}", e.message);
+            }
+            other => panic!("expected the first failure to be reported, got {other:?}"),
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        assert!(rx.try_recv().is_err(), "repeated failures of the same kind stay silent");
+        // The kind is not degraded yet, so recovery is silent; the next outage is reported again.
+        tx.send(ReducerMsg::Store(StoreEvent::Recovered(Kind::Pod))).await.unwrap();
+        tx.send(fail()).await.unwrap();
+        assert!(matches!(next(&mut rx).await, OutEvent::ConnectionError(_)));
     }
 
     #[tokio::test(start_paused = true)]
