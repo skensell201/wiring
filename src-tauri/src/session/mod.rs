@@ -273,32 +273,12 @@ impl Session {
             Some(ns) => Api::namespaced(self.client.clone(), ns),
             None => Api::all(self.client.clone()),
         };
-        let emitter = self.ns_emitter.clone();
+        let emitter: Arc<dyn Emitter> = Arc::new(self.ns_emitter.clone());
         let node_id = node_id.to_string();
         self.events_task = Some(tokio::spawn(async move {
             let cfg = watcher::Config::default().fields(&format!("involvedObject.uid={uid}"));
-            let mut stream = watcher(api, cfg).default_backoff().boxed();
-            let mut events: BTreeMap<String, CoreEvent> = BTreeMap::new();
-            while let Some(item) = stream.next().await {
-                match item {
-                    Ok(Event::Init) => events.clear(),
-                    Ok(Event::InitApply(e)) | Ok(Event::Apply(e)) => {
-                        events.insert(e.metadata.name.clone().unwrap_or_default(), e);
-                    }
-                    Ok(Event::Delete(e)) => {
-                        events.remove(&e.metadata.name.clone().unwrap_or_default());
-                    }
-                    Ok(Event::InitDone) => {}
-                    Err(e) => {
-                        tracing::warn!(error = %e, "events watcher error");
-                        continue;
-                    }
-                }
-                emitter.emit(OutEvent::ObjectEvents(ObjectEvents {
-                    node_id: node_id.clone(),
-                    events: events_to_list(&events),
-                }));
-            }
+            let stream = watcher(api, cfg).default_backoff().boxed();
+            forward_object_events(node_id, stream, emitter).await;
         }));
         Ok(())
     }
@@ -325,6 +305,48 @@ impl Session {
 impl Drop for Session {
     fn drop(&mut self) {
         self.stop_watchers();
+    }
+}
+
+/// Mirror a core/v1 Event watch into `object_events` for one node.
+///
+/// Emits once per visible change — after the (re-)list completes and on every later
+/// apply/delete — rather than per stream item, so startup produces one list instead of
+/// N+2 and a re-list does not flash an empty tab. Cluster-free (generic over the stream)
+/// so it is unit-tested without a real `Api`.
+async fn forward_object_events<S>(node_id: NodeId, mut stream: S, emitter: Arc<dyn Emitter>)
+where
+    S: futures::Stream<Item = Result<Event<CoreEvent>, watcher::Error>> + Unpin,
+{
+    // Built up during a (re-)list; swapped into `events` on InitDone.
+    let mut listing: BTreeMap<String, CoreEvent> = BTreeMap::new();
+    let mut events: BTreeMap<String, CoreEvent> = BTreeMap::new();
+    while let Some(item) = stream.next().await {
+        match item {
+            Ok(Event::Init) => {
+                listing.clear();
+                continue;
+            }
+            Ok(Event::InitApply(e)) => {
+                listing.insert(e.metadata.name.clone().unwrap_or_default(), e);
+                continue;
+            }
+            Ok(Event::InitDone) => events = std::mem::take(&mut listing),
+            Ok(Event::Apply(e)) => {
+                events.insert(e.metadata.name.clone().unwrap_or_default(), e);
+            }
+            Ok(Event::Delete(e)) => {
+                events.remove(&e.metadata.name.clone().unwrap_or_default());
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "events watcher error");
+                continue;
+            }
+        }
+        emitter.emit(OutEvent::ObjectEvents(ObjectEvents {
+            node_id: node_id.clone(),
+            events: events_to_list(&events),
+        }));
     }
 }
 
@@ -505,6 +527,41 @@ mod tests {
             namespaces_or_fallback(Err(unauthorized), Some("team-a")).unwrap_err().kind,
             ErrorKind::Auth
         );
+    }
+
+    #[tokio::test]
+    async fn object_events_are_emitted_once_per_change_not_per_stream_item() {
+        use crate::session::emitter::ChannelEmitter;
+        use k8s_openapi::api::core::v1::Event as CoreEvent;
+        use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
+        let ev = |name: &str| CoreEvent {
+            metadata: ObjectMeta {
+                name: Some(name.into()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let items: Vec<Result<Event<CoreEvent>, watcher::Error>> = vec![
+            Ok(Event::Init),
+            Ok(Event::InitApply(ev("a"))),
+            Ok(Event::InitApply(ev("b"))),
+            Ok(Event::InitDone),
+            Err(watcher::Error::NoResourceVersion),
+            Ok(Event::Apply(ev("c"))),
+            Ok(Event::Delete(ev("a"))),
+            // A re-list must not flash an empty list: nothing until InitDone.
+            Ok(Event::Init),
+            Ok(Event::InitApply(ev("b"))),
+            Ok(Event::InitDone),
+        ];
+        let (emitter, mut rx) = ChannelEmitter::new();
+        forward_object_events("Pod/n/p".into(), futures::stream::iter(items), Arc::new(emitter)).await;
+        let mut lists = Vec::new();
+        while let Ok(OutEvent::ObjectEvents(e)) = rx.try_recv() {
+            assert_eq!(e.node_id, "Pod/n/p");
+            lists.push(e.events.into_iter().map(|e| e.name).collect::<Vec<_>>());
+        }
+        assert_eq!(lists, vec![vec!["a", "b"], vec!["a", "b", "c"], vec!["b", "c"], vec!["b"]]);
     }
 
     #[test]
