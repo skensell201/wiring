@@ -13,7 +13,7 @@ import { useShallow } from "zustand/react/shallow";
 import { useAppStore } from "../../app/store";
 import type { Kind } from "../../shared/ipc/types";
 import { KindChips } from "./KindChips";
-import { EdgeGradientDefs, RelationEdge } from "./RelationEdge";
+import { RelationEdge } from "./RelationEdge";
 import { ResourceNode } from "./ResourceNode";
 import { toFlow, type ResourceFlowNode } from "./toFlow";
 
@@ -53,7 +53,6 @@ function CanvasInner() {
 
   return (
     <div className="relative h-full w-full bg-void">
-      <EdgeGradientDefs />
       <ReactFlow
         nodes={flow.nodes}
         edges={flow.edges}

@@ -27,6 +27,28 @@ export interface ToFlowInput {
   expandedGroups: Set<NodeId>;
 }
 
+// The store replaces a GraphNode/GraphEdge object whenever its content changes, so object
+// identity is content identity. Caching each node/edge's flow `data` object by that identity —
+// and only replacing it when the derived fields actually change — lets `memo(ResourceNode)` /
+// `memo(RelationEdge)` skip re-rendering nodes/edges the current toFlow() call didn't affect.
+const nodeDataCache = new WeakMap<GraphNode, ResourceNodeData>();
+function nodeData(node: GraphNode, dimmed: boolean, expanded: boolean): ResourceNodeData {
+  const cached = nodeDataCache.get(node);
+  if (cached && cached.dimmed === dimmed && cached.expanded === expanded) return cached;
+  const data: ResourceNodeData = { node, dimmed, expanded };
+  nodeDataCache.set(node, data);
+  return data;
+}
+
+const edgeDataCache = new WeakMap<GraphEdge, RelationEdgeData>();
+function edgeData(edge: GraphEdge, highlighted: boolean, dimmed: boolean): RelationEdgeData {
+  const cached = edgeDataCache.get(edge);
+  if (cached && cached.highlighted === highlighted && cached.dimmed === dimmed) return cached;
+  const data: RelationEdgeData = { edge, highlighted, dimmed };
+  edgeDataCache.set(edge, data);
+  return data;
+}
+
 export function toFlow(input: ToFlowInput): { nodes: ResourceFlowNode[]; edges: RelationFlowEdge[] } {
   const visible = [...input.nodes.values()].filter((n) => !input.hiddenKinds.has(n.kind));
   const visibleIds = new Set(visible.map((n) => n.id));
@@ -41,7 +63,7 @@ export function toFlow(input: ToFlowInput): { nodes: ResourceFlowNode[]; edges: 
     type: "resource",
     position: positions.get(node.id)!,
     selected: node.id === input.selectedId,
-    data: { node, dimmed: !matches(node), expanded: input.expandedGroups.has(node.id) },
+    data: nodeData(node, !matches(node), input.expandedGroups.has(node.id)),
   }));
 
   const hover = input.hoveredId;
@@ -52,7 +74,7 @@ export function toFlow(input: ToFlowInput): { nodes: ResourceFlowNode[]; edges: 
       type: "relation",
       source: edge.source,
       target: edge.target,
-      data: { edge, highlighted: touches, dimmed: hover !== null && !touches },
+      data: edgeData(edge, touches, hover !== null && !touches),
     };
   });
 

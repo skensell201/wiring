@@ -2,37 +2,38 @@ import { BaseEdge, getBezierPath, type EdgeProps } from "@xyflow/react";
 import { memo } from "react";
 import type { RelationFlowEdge } from "./toFlow";
 
-export const EDGE_GRADIENT_ID = "wiring-edge-gradient";
-
-/** Rendered once inside the canvas so every edge can reference the gradient. */
-export function EdgeGradientDefs() {
-  return (
-    <svg width="0" height="0" style={{ position: "absolute" }}>
-      <defs>
-        <linearGradient id={EDGE_GRADIENT_ID} x1="0" y1="0" x2="1" y2="0">
-          <stop offset="0" stopColor="#077ac7" />
-          <stop offset="1" stopColor="#6b21ef" />
-        </linearGradient>
-      </defs>
-    </svg>
-  );
+/** SVG ids must not contain characters outside [A-Za-z0-9_-]; edge ids can (e.g. "/", ":"). */
+function sanitiseId(id: string): string {
+  return id.replace(/[^A-Za-z0-9_-]/g, "_");
 }
 
 export const RelationEdge = memo(function RelationEdge(props: EdgeProps<RelationFlowEdge>) {
-  const { sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, data } = props;
+  const { id, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, data } = props;
   const [path] = getBezierPath({ sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition });
   const solid = data?.edge.relation === "owns";
   const opacity = data?.dimmed ? 0.15 : data?.highlighted ? 1 : 0.7;
+  // A shared gradient uses objectBoundingBox units by default, which collapses to nothing
+  // on a zero-height (perfectly horizontal) edge — e.g. same-layer PV→PVC `binds` edges.
+  // Each edge gets its own gradient in userSpaceOnUse coordinates instead.
+  const gradientId = `edge-grad-${sanitiseId(id)}`;
   return (
-    <BaseEdge
-      path={path}
-      style={{
-        stroke: `url(#${EDGE_GRADIENT_ID})`,
-        strokeWidth: data?.highlighted ? 2.5 : 1.5,
-        strokeDasharray: solid ? undefined : "6 4",
-        opacity,
-        transition: "opacity 150ms, stroke-width 150ms",
-      }}
-    />
+    <>
+      <defs>
+        <linearGradient id={gradientId} gradientUnits="userSpaceOnUse" x1={sourceX} y1={sourceY} x2={targetX} y2={targetY}>
+          <stop offset="0" style={{ stopColor: "var(--color-current-a)" }} />
+          <stop offset="1" style={{ stopColor: "var(--color-current-b)" }} />
+        </linearGradient>
+      </defs>
+      <BaseEdge
+        path={path}
+        style={{
+          stroke: `url(#${gradientId})`,
+          strokeWidth: data?.highlighted ? 2.5 : 1.5,
+          strokeDasharray: solid ? undefined : "6 4",
+          opacity,
+          transition: "opacity 150ms, stroke-width 150ms",
+        }}
+      />
+    </>
   );
 });

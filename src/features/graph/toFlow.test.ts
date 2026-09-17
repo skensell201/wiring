@@ -36,4 +36,20 @@ describe("toFlow", () => {
     expect(f.nodes.every((x) => x.type === "resource")).toBe(true);
     expect(f.edges.every((x) => x.type === "relation")).toBe(true);
   });
+
+  it("reuses node data objects when nothing about the node changed", () => {
+    const input = { nodes, edges, hiddenKinds: new Set<GraphNode["kind"]>(), search: "", hoveredId: null, selectedId: null, expandedGroups: new Set<string>() };
+    const a = toFlow(input);
+    const b = toFlow(input);
+    const aById = Object.fromEntries(a.nodes.map((x) => [x.id, x.data]));
+    const bById = Object.fromEntries(b.nodes.map((x) => [x.id, x.data]));
+    expect(bById["Pod/p/a"]).toBe(aById["Pod/p/a"]);
+
+    const c = toFlow({ ...input, hoveredId: "Service/p/web" });
+    const cEdgesById = Object.fromEntries(c.edges.map((x) => [x.id, x.data]));
+    const bEdgesById = Object.fromEntries(b.edges.map((x) => [x.id, x.data]));
+    expect(cEdgesById["Service/p/web->Pod/p/a:selects"]).not.toBe(bEdgesById["Service/p/web->Pod/p/a:selects"]);
+    const cById = Object.fromEntries(c.nodes.map((x) => [x.id, x.data]));
+    expect(cById["Pod/p/a"]).toBe(aById["Pod/p/a"]);
+  });
 });

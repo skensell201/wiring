@@ -17,7 +17,9 @@ export function ResourceCard({ node, dimmed, expanded, selected }: { node: Graph
       title={isGroup ? "Double-click to expand" : undefined}
       style={{ width: NODE_WIDTH, height: NODE_HEIGHT }}
       className={`flex items-center gap-2.5 rounded-node border bg-surface px-3 transition-opacity ${
-        selected ? "border-transparent shadow-[0_0_0_1.5px_#ff5c2c,0_0_14px_rgba(255,73,44,.35)]" : "border-border"
+        selected
+          ? "border-transparent shadow-[0_0_0_1.5px_var(--color-ember-a),0_0_14px_color-mix(in_srgb,var(--color-ember-b)_35%,transparent)]"
+          : "border-border"
       } ${dimmed ? "opacity-30" : "opacity-100"}`}
     >
       {isPod || isGroup ? (
@@ -37,7 +39,7 @@ export function ResourceCard({ node, dimmed, expanded, selected }: { node: Graph
         {node.badges.length > 0 && (
           <div className="mt-0.5 flex gap-1 overflow-hidden">
             {node.badges.map((b) => (
-              <span key={b} className={`truncate rounded-full bg-muted px-1.5 text-[10px] ${node.status === "err" ? "text-[#ff492c]" : "text-text"}`}>{b}</span>
+              <span key={b} className={`truncate rounded-full bg-muted px-1.5 text-[10px] ${node.status === "err" ? "text-status-err" : "text-text"}`}>{b}</span>
             ))}
           </div>
         )}
