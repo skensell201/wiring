@@ -6,8 +6,9 @@ pub mod session;
 pub mod store;
 
 pub fn run() {
+    let default_filter = if cfg!(debug_assertions) { "info,wiring_lib=debug" } else { "info" };
     tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info,wiring_lib=debug".into()))
+        .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| default_filter.into()))
         .init();
 
     let builder = tauri::Builder::default()

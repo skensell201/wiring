@@ -110,6 +110,7 @@ impl Session {
             tasks: vec![],
             events_task: None,
         };
+        session.emitter.emit(OutEvent::ConnectionState(emitter::ConnectionState::Connected));
         Ok((session, info))
     }
 

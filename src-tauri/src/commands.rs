@@ -80,53 +80,57 @@ pub async fn connect(app: AppHandle, state: State<'_, AppState>, context: String
         old.shutdown();
     }
     *guard = Some(session);
-    let _ = app.emit("connection_state", "connected");
     Ok(info)
 }
 
 #[tauri::command]
 pub async fn disconnect(state: State<'_, AppState>) -> AppResult<()> {
-    if let Some(mut s) = state.session.lock().await.take() {
+    let mut guard = state.session.lock().await;
+    if let Some(mut s) = guard.take() {
+        drop(guard);
         s.shutdown();
     }
     Ok(())
 }
 
-async fn with_session<T>(state: &State<'_, AppState>, f: impl FnOnce(&mut Session) -> AppResult<T>) -> AppResult<T> {
-    let mut guard = state.session.lock().await;
-    let session = guard.as_mut().ok_or_else(|| AppError::new(ErrorKind::Internal, "not connected"))?;
-    f(session)
+/// Borrow the active session out of the state guard, or `Internal` if not connected.
+fn session_mut(guard: &mut Option<Session>) -> AppResult<&mut Session> {
+    guard.as_mut().ok_or_else(|| AppError::new(ErrorKind::Internal, "not connected"))
 }
 
 #[tauri::command]
 pub async fn select_namespace(state: State<'_, AppState>, namespace: String, expanded_groups: Vec<String>) -> AppResult<()> {
     let mut guard = state.session.lock().await;
-    let session = guard.as_mut().ok_or_else(|| AppError::new(ErrorKind::Internal, "not connected"))?;
+    let session = session_mut(&mut guard)?;
     session.select_namespace(&namespace, expanded_groups.into_iter().collect::<HashSet<_>>()).await
 }
 
 #[tauri::command]
 pub async fn set_expanded_groups(state: State<'_, AppState>, expanded_groups: Vec<String>) -> AppResult<()> {
     let mut guard = state.session.lock().await;
-    let session = guard.as_mut().ok_or_else(|| AppError::new(ErrorKind::Internal, "not connected"))?;
+    let session = session_mut(&mut guard)?;
     session.set_expanded_groups(expanded_groups.into_iter().collect::<HashSet<_>>()).await
 }
 
 #[tauri::command]
 pub async fn get_object(state: State<'_, AppState>, node_id: String) -> AppResult<ObjectDetails> {
-    with_session(&state, |s| s.get_object(&node_id)).await
+    let mut guard = state.session.lock().await;
+    let session = session_mut(&mut guard)?;
+    session.get_object(&node_id)
 }
 
 #[tauri::command]
 pub async fn watch_events(state: State<'_, AppState>, node_id: Option<String>) -> AppResult<()> {
     let mut guard = state.session.lock().await;
-    let session = guard.as_mut().ok_or_else(|| AppError::new(ErrorKind::Internal, "not connected"))?;
+    let session = session_mut(&mut guard)?;
     session.watch_events(node_id.as_deref()).await
 }
 
 #[tauri::command]
 pub async fn denied_kinds(state: State<'_, AppState>) -> AppResult<Vec<Kind>> {
-    with_session(&state, |s| Ok(s.denied_kinds())).await
+    let mut guard = state.session.lock().await;
+    let session = session_mut(&mut guard)?;
+    Ok(session.denied_kinds())
 }
 
 pub fn register(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wry> {
