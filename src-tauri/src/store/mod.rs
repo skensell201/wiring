@@ -92,6 +92,16 @@ pub struct ObjectKey {
     pub name: String,
 }
 
+impl ObjectKey {
+    /// Normalizes `namespace` to `None` for cluster-scoped kinds, regardless of what was passed in.
+    pub fn new(kind: Kind, namespace: Option<&str>, name: &str) -> ObjectKey {
+        let namespace = if kind.is_cluster_scoped() { None } else { namespace.map(str::to_owned) };
+        ObjectKey { kind, namespace, name: name.to_owned() }
+    }
+}
+
+// Object count is bounded (one namespace); simplicity beats boxing here.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone)]
 pub enum Object {
     Deployment(Deployment),
@@ -132,7 +142,6 @@ macro_rules! for_each_object {
         }
     };
 }
-pub(crate) use for_each_object;
 
 impl Object {
     pub fn kind(&self) -> Kind {
@@ -176,11 +185,7 @@ impl Object {
     }
 
     pub fn key(&self) -> ObjectKey {
-        ObjectKey {
-            kind: self.kind(),
-            namespace: self.namespace().map(str::to_owned),
-            name: self.name().to_owned(),
-        }
+        ObjectKey::new(self.kind(), self.namespace(), self.name())
     }
 
     /// Serialize to JSON with server-side noise (managedFields) removed.
@@ -227,8 +232,7 @@ impl Store {
 
     /// Look up by kind + namespace + name; `namespace` is ignored for cluster-scoped kinds.
     pub fn find(&self, kind: Kind, namespace: Option<&str>, name: &str) -> Option<&Object> {
-        let ns = if kind.is_cluster_scoped() { None } else { namespace.map(str::to_owned) };
-        self.objects.get(&ObjectKey { kind, namespace: ns, name: name.to_owned() })
+        self.objects.get(&ObjectKey::new(kind, namespace, name))
     }
 }
 
@@ -236,7 +240,7 @@ impl Store {
 mod tests {
     use super::*;
     use k8s_openapi::api::core::v1::Pod;
-    use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
+    use k8s_openapi::apimachinery::pkg::apis::meta::v1::{ManagedFieldsEntry, ObjectMeta};
 
     fn pod(ns: &str, name: &str) -> Object {
         Object::Pod(Pod {
@@ -271,5 +275,37 @@ mod tests {
         store.remove(&key);
         assert!(store.get(&key).is_none());
         assert_eq!(store.iter_kind(Kind::Pod).count(), 1);
+    }
+
+    #[test]
+    fn cluster_scoped_keys_ignore_namespace() {
+        let pv = Object::PersistentVolume(PersistentVolume {
+            metadata: ObjectMeta { name: Some("pv-1".into()), namespace: None, ..Default::default() },
+            ..Default::default()
+        });
+        let mut store = Store::default();
+        store.upsert(pv);
+        assert!(store.find(Kind::PersistentVolume, Some("some-ns"), "pv-1").is_some());
+
+        let pv_with_ns = Object::PersistentVolume(PersistentVolume {
+            metadata: ObjectMeta { name: Some("pv-2".into()), namespace: Some("x".into()), ..Default::default() },
+            ..Default::default()
+        });
+        assert_eq!(pv_with_ns.key().namespace, None);
+    }
+
+    #[test]
+    fn to_json_value_strips_managed_fields() {
+        let plain = pod("payments", "web-1");
+        let mut with_managed_fields = pod("payments", "web-1");
+        with_managed_fields.meta_mut().managed_fields = Some(vec![ManagedFieldsEntry {
+            manager: Some("kubectl".into()),
+            ..Default::default()
+        }]);
+
+        let plain_json = plain.to_json_value();
+        let with_managed_fields_json = with_managed_fields.to_json_value();
+        assert_eq!(plain_json, with_managed_fields_json);
+        assert!(with_managed_fields_json["metadata"].get("managedFields").is_none());
     }
 }
