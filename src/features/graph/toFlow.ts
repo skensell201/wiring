@@ -1,6 +1,6 @@
 import type { Edge, Node } from "@xyflow/react";
 import type { GraphEdge, GraphNode, Kind, NodeId } from "../../shared/ipc/types";
-import { layout, type Position } from "./layout";
+import { layout, NODE_HEIGHT, NODE_WIDTH, type Position } from "./layout";
 
 export interface ResourceNodeData extends Record<string, unknown> {
   node: GraphNode;
@@ -67,6 +67,11 @@ export function toFlow(input: ToFlowInput): { nodes: ResourceFlowNode[]; edges: 
     id: node.id,
     type: "resource",
     position: positions.get(node.id)!,
+    // React Flow 12's MiniMap only draws a node once it has dimensions (measured, or these
+    // explicit ones); without them it renders nothing until the ResizeObserver catches up, and
+    // fitView's first pass is likewise more stable when dimensions are known up front.
+    width: NODE_WIDTH,
+    height: NODE_HEIGHT,
     selected: node.id === input.selectedId,
     data: nodeData(node, !matches(node), input.expandedGroups.has(node.id)),
   }));

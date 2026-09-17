@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { GraphEdge, GraphNode } from "../../shared/ipc/types";
+import { NODE_HEIGHT, NODE_WIDTH } from "./layout";
 import { toFlow } from "./toFlow";
 
 const n = (id: string, kind: GraphNode["kind"], name = id.split("/").pop()!): GraphNode => ({ id, kind, namespace: "p", name, status: "ok", badges: [], group: null });
@@ -35,6 +36,11 @@ describe("toFlow", () => {
     expect(f.nodes.every((x) => Number.isFinite(x.position.x) && Number.isFinite(x.position.y))).toBe(true);
     expect(f.nodes.every((x) => x.type === "resource")).toBe(true);
     expect(f.edges.every((x) => x.type === "relation")).toBe(true);
+  });
+
+  it("sets explicit dimensions on every node so the MiniMap can measure them before layout", () => {
+    const f = toFlow({ nodes, edges, hiddenKinds: new Set(), search: "", hoveredId: null, selectedId: null, expandedGroups: new Set() });
+    expect(f.nodes.every((x) => x.width === NODE_WIDTH && x.height === NODE_HEIGHT)).toBe(true);
   });
 
   it("reuses node data objects when nothing about the node changed", () => {

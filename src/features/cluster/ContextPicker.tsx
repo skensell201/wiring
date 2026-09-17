@@ -5,14 +5,24 @@ import { settings } from "../../shared/settings";
 import { Button } from "../../shared/ui/Button";
 
 export function ContextPicker() {
-  const { contexts, pickerOpen, connect, addKubeconfig, setPickerOpen, busy, current } = useAppStore(
-    useShallow((s) => ({ contexts: s.contexts, pickerOpen: s.pickerOpen, connect: s.connect, addKubeconfig: s.addKubeconfig, setPickerOpen: s.setPickerOpen, busy: s.connection.busy, current: s.connection.context })),
+  const { contexts, pickerOpen, connect, selectNamespace, addKubeconfig, setPickerOpen, busy, current } = useAppStore(
+    useShallow((s) => ({
+      contexts: s.contexts, pickerOpen: s.pickerOpen, connect: s.connect, selectNamespace: s.selectNamespace,
+      addKubeconfig: s.addKubeconfig, setPickerOpen: s.setPickerOpen, busy: s.connection.busy, current: s.connection.context,
+    })),
   );
   if (!pickerOpen) return null;
 
   const pick = async (name: string) => {
+    const ctx = contexts.find((c) => c.name === name);
     if (await connect(name)) {
       await settings.set("lastContext", name);
+      const namespaces = useAppStore.getState().connection.namespaces;
+      const ns = ctx?.namespace ?? (namespaces.length === 1 ? namespaces[0] : null);
+      if (ns) {
+        await selectNamespace(ns);
+        await settings.set("lastNamespace", ns);
+      }
       setPickerOpen(false);
     }
   };

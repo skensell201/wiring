@@ -1,6 +1,7 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { initialState, useAppStore } from "../../app/store";
+import { settings } from "../../shared/settings";
 import { ContextPicker } from "./ContextPicker";
 import { Header } from "./Header";
 import { NamespacePicker } from "./NamespacePicker";
@@ -26,6 +27,21 @@ describe("ContextPicker", () => {
     expect(screen.getByText(/no kubeconfig contexts found/i)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /add kubeconfig/i })).toBeInTheDocument();
   });
+
+  it("opens the context's default namespace after connecting", async () => {
+    const connect = vi.fn(async () => true);
+    const selectNamespace = vi.fn(async () => {});
+    useAppStore.setState({
+      contexts: [{ name: "prod", cluster: "c", user: "u", namespace: "shop", sourceFile: "/k" }],
+      connect,
+      selectNamespace,
+      pickerOpen: true,
+    });
+    render(<ContextPicker />);
+    fireEvent.click(screen.getByRole("button", { name: /prod/ }));
+    await waitFor(() => expect(selectNamespace).toHaveBeenCalledWith("shop"));
+    expect(settings.set).toHaveBeenCalledWith("lastNamespace", "shop");
+  });
 });
 
 describe("NamespacePicker", () => {
@@ -50,13 +66,13 @@ describe("NamespacePicker", () => {
 
 describe("Header", () => {
   it("shows the connection dot, the context and a Reconnect button", () => {
-    const connect = vi.fn(async () => true);
-    useAppStore.setState({ connection: { ...initialState().connection, context: "prod", state: "degraded", serverVersion: "v1.33.0" }, connect });
+    const reconnect = vi.fn(async () => {});
+    useAppStore.setState({ connection: { ...initialState().connection, context: "prod", state: "degraded", serverVersion: "v1.33.0" }, reconnect });
     render(<Header />);
     expect(screen.getByTestId("status-dot")).toHaveAttribute("data-status", "degraded");
     expect(screen.getByText("prod")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /reconnect/i }));
-    expect(connect).toHaveBeenCalledWith("prod");
+    expect(reconnect).toHaveBeenCalled();
   });
 
   it("search box updates the store", () => {

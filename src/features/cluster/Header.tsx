@@ -9,8 +9,8 @@ import { NamespacePicker } from "./NamespacePicker";
 const isMac = typeof navigator !== "undefined" && /Mac/.test(navigator.platform ?? "");
 
 export function Header() {
-  const { connection, search, setSearch, connect, setPickerOpen } = useAppStore(
-    useShallow((s) => ({ connection: s.connection, search: s.search, setSearch: s.setSearch, connect: s.connect, setPickerOpen: s.setPickerOpen })),
+  const { connection, search, setSearch, reconnect, setPickerOpen } = useAppStore(
+    useShallow((s) => ({ connection: s.connection, search: s.search, setSearch: s.setSearch, reconnect: s.reconnect, setPickerOpen: s.setPickerOpen })),
   );
   const searchRef = useRef<HTMLInputElement>(null);
 
@@ -39,7 +39,7 @@ export function Header() {
       </div>
       <Dot status={connection.state} className="size-2.5" />
       {connection.context && (
-        <Button variant="primary" disabled={connection.busy} onClick={() => void connect(connection.context!)}>Reconnect</Button>
+        <Button variant="primary" disabled={connection.busy} onClick={() => void reconnect()}>Reconnect</Button>
       )}
     </header>
   );

@@ -120,6 +120,25 @@ describe("actions", () => {
     expect(s.toasts[s.toasts.length - 1]).toMatchObject({ message: "boom" });
   });
 
+  it("reconnect reconnects and re-selects the remembered namespace", async () => {
+    useAppStore.setState({
+      connection: { ...initialState().connection, context: "prod", namespace: "payments" },
+    });
+    await useAppStore.getState().reconnect();
+    expect(invoke).toHaveBeenCalledWith("connect", { context: "prod" });
+    expect(invoke).toHaveBeenCalledWith("select_namespace", { namespace: "payments", expandedGroups: [] });
+  });
+
+  it("reconnect does not re-select the namespace when connect fails", async () => {
+    useAppStore.setState({
+      connection: { ...initialState().connection, context: "prod", namespace: "payments" },
+    });
+    vi.mocked(invoke).mockRejectedValueOnce({ kind: "auth", message: "exec plugin missing" });
+    await useAppStore.getState().reconnect();
+    expect(invoke).toHaveBeenCalledWith("connect", { context: "prod" });
+    expect(invoke).not.toHaveBeenCalledWith("select_namespace", expect.anything());
+  });
+
   it("toggleKind hides and shows kinds; setSearch stores the query", () => {
     useAppStore.getState().toggleKind("Secret");
     expect(useAppStore.getState().hiddenKinds.has("Secret")).toBe(true);

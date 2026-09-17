@@ -35,7 +35,13 @@ function CanvasInner() {
 
   const { fitView } = useReactFlow();
   useEffect(() => {
-    if (s.graphReady) requestAnimationFrame(() => fitView({ padding: 0.2, maxZoom: 1 }));
+    if (!s.graphReady) return;
+    // A single pass can fire before React Flow has measured the freshly laid-out nodes (e.g. the
+    // first snapshot of a namespace), leaving the viewport off. Fit once now and once more shortly
+    // after so a late measurement still gets picked up.
+    fitView({ padding: 0.2, maxZoom: 1 });
+    const timeout = setTimeout(() => fitView({ padding: 0.2, maxZoom: 1 }), 50);
+    return () => clearTimeout(timeout);
   }, [s.graphReady, s.namespace, fitView]);
 
   const onNodeClick = useCallback<NodeMouseHandler<ResourceFlowNode>>((_, node) => void s.select(node.id), [s.select]);

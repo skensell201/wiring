@@ -47,6 +47,7 @@ export interface AppState extends GraphState {
   loadContexts: () => Promise<void>;
   addKubeconfig: (path: string) => Promise<void>;
   connect: (context: string) => Promise<boolean>;
+  reconnect: () => Promise<void>;
   disconnect: () => Promise<void>;
   selectNamespace: (namespace: string) => Promise<void>;
   select: (id: NodeId | null) => Promise<void>;
@@ -82,7 +83,7 @@ export function initialState(): Omit<AppState, keyof Actions> {
 
 type Actions = Pick<AppState,
   | "applySnapshot" | "applyDelta" | "setObjectEvents" | "setConnectionState" | "loadContexts" | "addKubeconfig" | "connect"
-  | "disconnect" | "selectNamespace" | "select" | "setHovered" | "toggleGroup" | "toggleKind" | "setSearch" | "toast"
+  | "reconnect" | "disconnect" | "selectNamespace" | "select" | "setHovered" | "toggleGroup" | "toggleKind" | "setSearch" | "toast"
   | "dismissToast" | "setPickerOpen">;
 
 // ---- pure reducers --------------------------------------------------------
@@ -153,6 +154,13 @@ export const useAppStore = create<AppState>()((set, get) => ({
       get().toast(toAppError(e));
       return false;
     }
+  },
+
+  reconnect: async () => {
+    const { context, namespace } = get().connection;
+    if (!context) return;
+    const ok = await get().connect(context);
+    if (ok && namespace) await get().selectNamespace(namespace);
   },
 
   disconnect: async () => {
