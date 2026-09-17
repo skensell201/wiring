@@ -204,6 +204,8 @@ mod tests {
     #[test]
     fn service_selector_edges_skip_headless_and_unmatched() {
         let s = Store::from_fixture("relations").unwrap();
+        // Also proves the cross-namespace guard: `web-other` (namespace `other`) has
+        // matching labels but must not be selected by `web-svc` (namespace `r`).
         assert_eq!(ids(&service_edges(&s)), vec!["Service/r/web-svc->Pod/r/web-1-a:selects"]);
     }
 
@@ -225,6 +227,7 @@ mod tests {
             vec![
                 "ConfigMap/r/env-cm->Pod/r/web-1-a:envFrom",
                 "ConfigMap/r/flags-cm->Pod/r/web-1-a:envFrom",
+                "ConfigMap/r/init-cm->Pod/r/web-1-a:envFrom",
                 "ConfigMap/r/mounted-cm->Pod/r/web-1-a:mounts",
                 "ConfigMap/r/proj-cm->Pod/r/web-1-a:mounts",
                 "PersistentVolumeClaim/r/data-pvc->Pod/r/web-1-a:claims",

@@ -58,6 +58,11 @@ metadata:
   ownerReferences: [ { apiVersion: apps/v1, kind: ReplicaSet, name: web-1, uid: rs-web-1, controller: true } ]
 spec:
   serviceAccountName: web-sa
+  initContainers:
+    - name: init
+      image: busybox
+      envFrom:
+        - configMapRef: { name: init-cm }
   containers:
     - name: c
       image: nginx
@@ -90,6 +95,11 @@ metadata: { name: default-sa-pod, namespace: r, labels: { app: other } }
 spec: { containers: [ { name: c, image: nginx } ] }
 ---
 apiVersion: v1
+kind: Pod
+metadata: { name: web-other, namespace: other, labels: { app: web } }
+spec: { containers: [ { name: c, image: nginx } ] }
+---
+apiVersion: v1
 kind: ServiceAccount
 metadata: { name: web-sa, namespace: r }
 ---
@@ -104,6 +114,10 @@ metadata: { name: env-cm, namespace: r }
 apiVersion: v1
 kind: ConfigMap
 metadata: { name: flags-cm, namespace: r }
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: init-cm, namespace: r }
 ---
 apiVersion: v1
 kind: ConfigMap
