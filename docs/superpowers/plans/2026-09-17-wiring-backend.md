@@ -3552,7 +3552,7 @@ mod tests {
             reason: Some("BackOff".into()),
             message: Some("restarting".into()),
             count: Some(3),
-            last_timestamp: Some(Time(ts.parse().unwrap())),
+            last_timestamp: Some(Time(ts.parse().expect("rfc3339 timestamp"))),
             ..Default::default()
         };
         let mut map = std::collections::BTreeMap::new();
@@ -3578,6 +3578,7 @@ Expected: compile error — functions not found.
 
 pub mod emitter;
 pub mod reducer;
+pub mod shared;
 pub mod watch;
 
 use std::collections::{BTreeMap, HashSet};
@@ -3598,7 +3599,8 @@ use crate::error::{AppError, AppResult, ErrorKind};
 use crate::graph::{status::summary, Graph, NodeId};
 use crate::store::{Kind, Store};
 use emitter::{Emitter, K8sEvent, ObjectEvents, OutEvent};
-use reducer::{spawn_reducer, ReducerConfig, ReducerMsg, Shared};
+use reducer::{spawn_reducer, ReducerConfig, ReducerMsg};
+use shared::Shared;
 use watch::{app_error_from_kube, spawn_all};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -3669,7 +3671,7 @@ impl Session {
     }
 
     pub fn denied_kinds(&self) -> Vec<Kind> {
-        let mut v: Vec<Kind> = self.shared.denied_kinds.lock().unwrap().iter().copied().collect();
+        let mut v: Vec<Kind> = self.shared.denied_kinds().iter().copied().collect();
         v.sort();
         v
     }
@@ -3678,7 +3680,7 @@ impl Session {
     pub async fn select_namespace(&mut self, namespace: &str, expanded_groups: HashSet<NodeId>) -> AppResult<()> {
         self.stop_watchers();
         self.shared = Shared::default();
-        *self.shared.expanded_groups.lock().unwrap() = expanded_groups;
+        *self.shared.expanded_groups() = expanded_groups;
         self.namespace = Some(namespace.to_string());
 
         let (reducer_tx, reducer_task) = spawn_reducer(ReducerConfig::default(), self.shared.clone(), self.emitter.clone());
@@ -3700,7 +3702,7 @@ impl Session {
     }
 
     pub async fn set_expanded_groups(&mut self, expanded_groups: HashSet<NodeId>) -> AppResult<()> {
-        *self.shared.expanded_groups.lock().unwrap() = expanded_groups;
+        *self.shared.expanded_groups() = expanded_groups;
         if let Some(tx) = &self.reducer_tx {
             tx.send(ReducerMsg::Rebuild).await.map_err(|_| AppError::internal("reducer stopped"))?;
         }
@@ -3708,8 +3710,10 @@ impl Session {
     }
 
     pub fn get_object(&self, node_id: &str) -> AppResult<ObjectDetails> {
-        let store = self.shared.store.lock().unwrap();
-        let graph = self.shared.graph.lock().unwrap();
+        // Lock sequentially (never store + graph at once) to keep the same
+        // ordering discipline as `Shared::rebuild` and rule out deadlocks.
+        let graph = self.shared.graph().clone();
+        let store = self.shared.store();
         object_details(&store, &graph, node_id)
     }
 
@@ -3724,7 +3728,7 @@ impl Session {
             return Ok(());
         }
         let uid = {
-            let store = self.shared.store.lock().unwrap();
+            let store = self.shared.store();
             store
                 .find(kind, ns.as_deref(), &name)
                 .and_then(|o| o.uid().map(str::to_owned))
@@ -3831,14 +3835,15 @@ pub fn events_to_list(events: &BTreeMap<String, CoreEvent>) -> Vec<K8sEvent> {
     let mut list: Vec<(Option<String>, K8sEvent)> = events
         .values()
         .map(|e| {
-            let last = e.last_timestamp.as_ref().map(|t| t.0.to_rfc3339()).or_else(|| e.event_time.as_ref().map(|t| t.0.to_rfc3339()));
+            // k8s-openapi 0.28 wraps `jiff::Timestamp`; its Display is RFC 3339 ("...Z").
+            let last = e.last_timestamp.as_ref().map(|t| t.0.to_string()).or_else(|| e.event_time.as_ref().map(|t| t.0.to_string()));
             let ev = K8sEvent {
                 name: e.metadata.name.clone().unwrap_or_default(),
                 type_: e.type_.clone().unwrap_or_else(|| "Normal".into()),
                 reason: e.reason.clone().unwrap_or_default(),
                 message: e.message.clone().unwrap_or_default(),
                 count: e.count.unwrap_or(1),
-                first_timestamp: e.first_timestamp.as_ref().map(|t| t.0.to_rfc3339()),
+                first_timestamp: e.first_timestamp.as_ref().map(|t| t.0.to_string()),
                 last_timestamp: last.clone(),
             };
             (last, ev)
