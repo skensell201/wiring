@@ -76,7 +76,7 @@ The backend caches every watched object for the selected namespace, recomputes r
 
 Watched kinds (15): Deployment, StatefulSet, DaemonSet, ReplicaSet, Job, CronJob, Pod, Service, Ingress, ConfigMap, Secret, PersistentVolumeClaim, PersistentVolume, ServiceAccount, HorizontalPodAutoscaler. Events are watched separately, per selected object (see 6.4).
 
-**`store`** — `HashMap<ObjectKey, DynamicObject>` where `ObjectKey = (kind, namespace, name)`. Plain data, no async.
+**`store`** — `HashMap<ObjectKey, Object>` where `Object` is a typed enum over the 15 watched k8s-openapi structs and `ObjectKey = (kind, namespace, name)` (namespace is normalized to `None` for cluster-scoped kinds). Plain data, no async.
 
 **`graph`** — `fn build(store: &Store, opts: &BuildOptions) -> Graph` and `fn diff(old: &Graph, new: &Graph) -> GraphDelta`. `BuildOptions { expanded_groups: HashSet<NodeId> }`. Pure functions; the bulk of the test suite lives here.
 
