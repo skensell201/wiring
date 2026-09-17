@@ -91,10 +91,14 @@ Commands (frontend → backend):
 | `list_contexts` | — | `ContextInfo[]` |
 | `add_kubeconfig` | `path` | `ContextInfo[]` (refreshed list) |
 | `connect` | `context` | `{ serverVersion, namespaces[] }` |
+| `disconnect` | — | `()` — tears down the active session |
 | `select_namespace` | `namespace, expandedGroups[]` | `()` — graph arrives via event |
 | `set_expanded_groups` | `expandedGroups[]` | `()` — rebuild + delta via event |
 | `get_object` | `nodeId` | `{ yaml, summary: [string, string][] (ordered key/value rows), related: NodeId[] }` |
 | `watch_events` | `nodeId \| null` | `()` — starts/stops the per-object Events watcher |
+| `denied_kinds` | — | `Kind[]` — kinds the active session was denied (RBAC) access to |
+
+`ConnectInfo.namespaces` may come back empty when the context has no cluster-wide `list namespaces` permission and no default namespace either (403 on the namespace list falls back to the context's own namespace, spec §8).
 
 Events (backend → frontend):
 
@@ -132,7 +136,7 @@ Badges and status per kind:
 | ReplicaSet | `ready/desired` | as above. **Hidden** when it is the only active ReplicaSet of a Deployment; its edges pass through (Deployment → Pod) |
 | Job | `succeeded/completions` | err if condition `Failed=True` |
 | CronJob | schedule | warn if `spec.suspend` |
-| Pod | phase or waiting reason (`Running`, `CrashLoopBackOff`), `↻ N` restarts if N > 0 | err: `Failed`, `CrashLoopBackOff`, `ImagePullBackOff`, `ErrImagePull`, `OOMKilled`; warn: `Pending`, `Running` but not all containers ready |
+| Pod | phase or waiting reason (`Running`, `CrashLoopBackOff`), `↻ N` restarts if N > 0 | err: `Failed`, `CrashLoopBackOff`, `ImagePullBackOff`, `ErrImagePull`, `OOMKilled`; warn: `Pending`, `Running` but not all containers ready; warn: `Terminating` when `metadata.deletionTimestamp` is set (an err reason still wins) |
 | Service | type, `port→targetPort` (first port) | warn if the selector matches zero pods |
 | Ingress | first host (`+N` if more) | — |
 | ConfigMap / Secret | `N keys` | — |
@@ -167,7 +171,7 @@ Ingress `secretName` (TLS) → Secret is out of scope for the MVP.
 
 ### 5.3 Pod collapsing (PodGroup)
 
-If one owner (ReplicaSet, StatefulSet, DaemonSet, Job) has **more than 5** pods, they are replaced by one `PodGroup` node with id `PodGroup/<ns>/<owner-kind>/<owner-name>`. Edges from ConfigMap/Secret/PVC/SA to member pods are aggregated into one edge per source to the group; Service → pod edges likewise. Clicking the group adds its id to `expandedGroups`; the backend rebuilds with the pods expanded. The frontend persists `expandedGroups` for the session only.
+If one owner (ReplicaSet, StatefulSet, DaemonSet, Job) has **more than 5** pods, they are replaced by one `PodGroup` node with id `PodGroup/<ns>/<owner-kind>/<owner-name>`. `<owner-kind>/<owner-name>` names the *visible* owner, not necessarily the immediate one: a Deployment whose single ReplicaSet is hidden (§5.1) yields `PodGroup/<ns>/Deployment/<name>`, while a ReplicaSet still visible mid-rollout yields its own `PodGroup/<ns>/ReplicaSet/<rs>` per ReplicaSet. Edges from ConfigMap/Secret/PVC/SA to member pods are aggregated into one edge per source to the group; Service → pod edges likewise. Clicking the group adds its id to `expandedGroups`; the backend rebuilds with the pods expanded. The frontend persists `expandedGroups` for the session only, and since the group id depends on the visible owner, a rollout that changes which owner is visible (e.g. the hidden-single-RS case flipping) changes the id — expanded state does not survive that change and the group re-collapses.
 
 ### 5.4 Layout
 
@@ -204,7 +208,7 @@ Clicking a node → `get_object(id)` → panel shows Overview (summary key/value
 Kind filter chips and name search live entirely in the frontend. Filtering hides nodes and their edges from layout; search highlights matches and dims the rest. Neither touches the backend.
 
 ### 6.6 Reconnect
-`kube_runtime::watcher` reconnects with exponential backoff on its own. If no watcher has produced an event or successful re-list for 30 s while at least one is in error, the session emits `connection_state: "degraded"` (yellow dot in the header). When every watcher is healthy again the session emits `"connected"` and a fresh `graph_snapshot`. The header's **Reconnect** button (ember gradient) tears down and rebuilds the session.
+`kube_runtime::watcher` reconnects with exponential backoff on its own. If any kind has been in error continuously for 30 s, the session emits `connection_state: "degraded"` (yellow dot in the header); the first transient error per kind is reported once as `connection_error`, and repeats of the same kind's outage stay silent until it recovers. 401/403, and 404 on the initial list, are fatal for that kind (watching stops, it is reported via `denied_kinds`); other errors are left to the watcher's own backoff. When every watcher is healthy again the session emits `"connected"` and a fresh `graph_snapshot`. The header's **Reconnect** button (ember gradient) tears down and rebuilds the session.
 
 ## 7. UI
 
