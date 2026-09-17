@@ -21,6 +21,26 @@ describe("ContextPicker", () => {
     expect(connect).toHaveBeenCalledWith("prod");
   });
 
+  it("is a modal dialog named by its heading", () => {
+    useAppStore.setState({ contexts: [], pickerOpen: true });
+    render(<ContextPicker />);
+    const dialog = screen.getByRole("dialog", { name: /choose a cluster/i });
+    expect(dialog).toHaveAttribute("aria-modal", "true");
+  });
+
+  it("Escape closes it when a context is already connected, and is ignored otherwise", () => {
+    useAppStore.setState({ contexts: [], pickerOpen: true });
+    const { unmount } = render(<ContextPicker />);
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(useAppStore.getState().pickerOpen).toBe(true);
+    unmount();
+
+    useAppStore.setState({ contexts: [], pickerOpen: true, connection: { ...initialState().connection, context: "prod", state: "connected" } });
+    render(<ContextPicker />);
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(useAppStore.getState().pickerOpen).toBe(false);
+  });
+
   it("shows instructions when there are no contexts", () => {
     useAppStore.setState({ contexts: [], pickerOpen: true });
     render(<ContextPicker />);

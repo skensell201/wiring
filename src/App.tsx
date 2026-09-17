@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { startup } from "./app/startup";
+import { useGlobalKeys } from "./app/useGlobalKeys";
 import { wireEvents } from "./app/wireEvents";
 import { ContextPicker } from "./features/cluster/ContextPicker";
 import { Header } from "./features/cluster/Header";
@@ -9,6 +10,7 @@ import { ErrorBoundary } from "./shared/ui/ErrorBoundary";
 import { Toasts } from "./shared/ui/Toasts";
 
 export function App() {
+  useGlobalKeys();
   useEffect(() => {
     let active = true;
     let stop: (() => void) | undefined;

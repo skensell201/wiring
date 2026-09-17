@@ -68,6 +68,9 @@ function CanvasInner() {
         nodesConnectable={false}
         zoomOnDoubleClick={false}
         elementsSelectable
+        deleteKeyCode={null}
+        selectionKeyCode={null}
+        multiSelectionKeyCode={null}
         fitView
         fitViewOptions={{ padding: 0.2, maxZoom: 1 }}
         minZoom={0.1}

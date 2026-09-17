@@ -1,4 +1,5 @@
 import { open } from "@tauri-apps/plugin-dialog";
+import { useEffect } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { useAppStore } from "../../app/store";
 import { settings } from "../../shared/settings";
@@ -11,6 +12,17 @@ export function ContextPicker() {
       addKubeconfig: s.addKubeconfig, setPickerOpen: s.setPickerOpen, busy: s.connection.busy, current: s.connection.context,
     })),
   );
+  // Escape dismisses the picker, but only when there is a connection to fall back to.
+  useEffect(() => {
+    if (!pickerOpen || !current) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      e.preventDefault(); // handled here; the global Escape handler must not act on it as well
+      setPickerOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [pickerOpen, current, setPickerOpen]);
   if (!pickerOpen) return null;
 
   const pick = async (name: string) => {
@@ -33,8 +45,8 @@ export function ContextPicker() {
 
   return (
     <div className="absolute inset-0 z-20 grid place-items-center bg-void/80 backdrop-blur-sm">
-      <div className="w-[480px] rounded-card border border-border bg-surface p-6">
-        <h2 className="mb-1 text-lg text-text-hi">Choose a cluster</h2>
+      <div role="dialog" aria-modal="true" aria-labelledby="context-picker-title" className="w-[480px] rounded-card border border-border bg-surface p-6">
+        <h2 id="context-picker-title" className="mb-1 text-lg text-text-hi">Choose a cluster</h2>
         <p className="mb-4 text-sm text-text-muted">Contexts from your kubeconfig files.</p>
         {contexts.length === 0 ? (
           <p className="mb-4 text-sm">No kubeconfig contexts found. Add a kubeconfig file, or set <code>KUBECONFIG</code> and restart.</p>
