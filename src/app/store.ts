@@ -122,7 +122,14 @@ function keepSelection<S extends GraphState>(s: S): S {
 export const useAppStore = create<AppState>()((set, get) => ({
   ...initialState(),
 
-  applySnapshot: (g) => set((s) => applySnapshot(s, g)),
+  applySnapshot: (g) =>
+    set((s) => {
+      // Belt and braces: a snapshot of the previous namespace can still be queued behind
+      // select_namespace; the namespaced nodes tell which namespace it belongs to.
+      const namespaced = g.nodes.find((n) => n.namespace !== null);
+      if (namespaced && namespaced.namespace !== s.connection.namespace) return s;
+      return applySnapshot(s, g);
+    }),
   applyDelta: (d) => set((s) => applyDelta(s, d)),
   setObjectEvents: (nodeId, events) =>
     set((s) => (s.details && s.details.nodeId === nodeId ? { details: { ...s.details, events } } : {})),
@@ -189,13 +196,16 @@ export const useAppStore = create<AppState>()((set, get) => ({
     }));
     try {
       await commands.selectNamespace(namespace, expanded);
-      set({ deniedKinds: new Set(await commands.deniedKinds()) });
+      const denied = await commands.deniedKinds();
+      // Only if this is still the current selection — a newer one owns deniedKinds now.
+      if (get().connection.namespace === namespace) set({ deniedKinds: new Set(denied) });
     } catch (e) {
       get().toast(toAppError(e));
     }
   },
 
   select: async (id) => {
+    if (id === get().selectedId) return;
     if (id === null) {
       set({ selectedId: null, details: null });
       await commands.watchEvents(null).catch(() => {});

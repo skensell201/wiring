@@ -75,6 +75,40 @@ describe("actions", () => {
     expect(useAppStore.getState().details).toBeNull();
   });
 
+  it("select is a no-op when the node is already selected, and so is deselecting nothing", async () => {
+    useAppStore.setState(applySnapshot(initialState(), { nodes: [node("Pod/p/a")], edges: [] }));
+    await useAppStore.getState().select(null);
+    expect(invoke).not.toHaveBeenCalled();
+    await useAppStore.getState().select("Pod/p/a");
+    const details = useAppStore.getState().details;
+    vi.mocked(invoke).mockClear();
+    await useAppStore.getState().select("Pod/p/a");
+    expect(invoke).not.toHaveBeenCalled();
+    expect(useAppStore.getState().details).toBe(details); // not reset to loading
+  });
+
+  it("the store ignores a snapshot from a namespace that is no longer selected", () => {
+    useAppStore.setState({ connection: { ...initialState().connection, context: "prod", namespace: "b" } });
+    useAppStore.getState().applySnapshot({ nodes: [node("Pod/a/x", { namespace: "a" })], edges: [] });
+    expect(useAppStore.getState().nodes.size).toBe(0);
+    expect(useAppStore.getState().graphReady).toBe(false);
+
+    // Cluster-scoped nodes carry no namespace; a snapshot of only those is accepted.
+    useAppStore.getState().applySnapshot({ nodes: [node("PersistentVolume/pv", { kind: "PersistentVolume", namespace: null })], edges: [] });
+    expect(useAppStore.getState().nodes.size).toBe(1);
+    useAppStore.getState().applySnapshot({ nodes: [node("PersistentVolume/pv", { kind: "PersistentVolume", namespace: null }), node("Pod/b/y", { namespace: "b" })], edges: [] });
+    expect(useAppStore.getState().nodes.size).toBe(2);
+  });
+
+  it("selectNamespace drops the denied-kinds result of a superseded selection", async () => {
+    useAppStore.setState({ connection: { ...initialState().connection, context: "prod" } });
+    const first = useAppStore.getState().selectNamespace("a");
+    // A newer selection lands while the first one is still talking to the backend.
+    useAppStore.setState((s) => ({ connection: { ...s.connection, namespace: "b" } }));
+    await first;
+    expect(useAppStore.getState().deniedKinds.size).toBe(0);
+  });
+
   it("selectNamespace clears the graph, resets readiness and asks the backend", async () => {
     useAppStore.setState({ ...applySnapshot(initialState(), { nodes: [node("Pod/p/a")], edges: [] }), connection: { ...initialState().connection, context: "prod" } });
     await useAppStore.getState().selectNamespace("payments");

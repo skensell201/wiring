@@ -50,6 +50,7 @@ function CanvasInner() {
   }, [s.toggleGroup]);
   const onNodeMouseEnter = useCallback<NodeMouseHandler<ResourceFlowNode>>((_, node) => s.setHovered(node.id), [s.setHovered]);
   const onNodeMouseLeave = useCallback(() => s.setHovered(null), [s.setHovered]);
+  const onPaneClick = useCallback(() => { if (s.selectedId !== null) void s.select(null); }, [s.selectedId, s.select]);
 
   let overlay: string | null = null;
   if (!s.context) overlay = "Connect to a cluster to see its graph.";
@@ -78,7 +79,7 @@ function CanvasInner() {
         onNodeDoubleClick={onNodeDoubleClick}
         onNodeMouseEnter={onNodeMouseEnter}
         onNodeMouseLeave={onNodeMouseLeave}
-        onPaneClick={() => void s.select(null)}
+        onPaneClick={onPaneClick}
         colorMode="dark"
       >
         <Background variant={BackgroundVariant.Dots} gap={16} size={1} color="#2c2834" />

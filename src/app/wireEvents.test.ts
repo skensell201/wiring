@@ -18,6 +18,7 @@ beforeEach(() => { useAppStore.setState(initialState()); hoisted.handlers = null
 describe("wireEvents", () => {
   it("routes snapshot, delta, connection state, object events and errors into the store", async () => {
     const stop = await wireEvents();
+    useAppStore.setState({ connection: { ...initialState().connection, context: "prod", state: "connected", namespace: "p" } });
     hoisted.handlers!.graph_snapshot({ nodes: [node], edges: [] });
     expect(useAppStore.getState().nodes.size).toBe(1);
     hoisted.handlers!.graph_delta({ addedNodes: [{ ...node, id: "Pod/p/b", name: "b" }], updatedNodes: [], removedNodes: [], addedEdges: [], removedEdges: [] });
@@ -37,8 +38,9 @@ describe("wireEvents", () => {
 
   it("a disconnected state reopens the context picker and clears the graph", async () => {
     await wireEvents();
-    useAppStore.setState({ ...useAppStore.getState(), connection: { ...initialState().connection, context: "prod", state: "connected" } });
+    useAppStore.setState({ ...useAppStore.getState(), connection: { ...initialState().connection, context: "prod", state: "connected", namespace: "p" } });
     hoisted.handlers!.graph_snapshot({ nodes: [node], edges: [] });
+    expect(useAppStore.getState().nodes.size).toBe(1);
     hoisted.handlers!.connection_state("disconnected");
     const s = useAppStore.getState();
     expect(s.connection.state).toBe("disconnected");
@@ -60,7 +62,7 @@ describe("wireEvents", () => {
     // connect() tears the old session down first; the resulting "disconnected" belongs to the
     // reconnect in progress, whose outcome connect() itself will write.
     await wireEvents();
-    useAppStore.setState({ ...useAppStore.getState(), connection: { ...initialState().connection, context: "prod", state: "connected", busy: true } });
+    useAppStore.setState({ ...useAppStore.getState(), connection: { ...initialState().connection, context: "prod", state: "connected", namespace: "p", busy: true } });
     hoisted.handlers!.graph_snapshot({ nodes: [node], edges: [] });
     hoisted.handlers!.connection_state("disconnected");
     const s = useAppStore.getState();
