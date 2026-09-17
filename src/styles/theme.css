@@ -1,0 +1,42 @@
+@import "tailwindcss";
+@import "@fontsource-variable/inter";
+
+@theme {
+  --color-void: #0e0918;
+  --color-surface: #1a1624;
+  --color-panel: #1b1728;
+  --color-muted: #2c2834;
+  --color-border: #3e3a46;
+  --color-text: #d1cece;
+  --color-text-muted: #9d9797;
+  --color-text-hi: #ffffff;
+  --color-ember-a: #fd8925;
+  --color-ember-b: #ff0c00;
+  --color-current-a: #077ac7;
+  --color-current-b: #6b21ef;
+  --color-status-ok: #2ecc71;
+  --color-status-warn: #fd8925;
+  --color-status-err: #ff0c00;
+  --color-status-unknown: #9d9797;
+  --font-sans: "Inter Variable", Inter, system-ui, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --radius-node: 12px;
+  --radius-card: 16px;
+}
+
+:root { color-scheme: dark; }
+html, body, #root { height: 100%; margin: 0; }
+body {
+  background: var(--color-void);
+  color: var(--color-text);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+  user-select: none;
+}
+.gradient-ember { background-image: linear-gradient(30deg, var(--color-ember-a), var(--color-ember-b)); }
+.gradient-current { background-image: linear-gradient(141deg, var(--color-current-a), var(--color-current-b)); }
+.drag-region { -webkit-app-region: drag; }
+.no-drag { -webkit-app-region: no-drag; }
+.selectable { user-select: text; }
