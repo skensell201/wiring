@@ -158,8 +158,10 @@ export const useAppStore = create<AppState>()((set, get) => ({
   disconnect: async () => {
     try {
       await commands.disconnect();
+    } catch (e) {
+      get().toast(toAppError(e));
     } finally {
-      set({ ...initialState(), contexts: get().contexts, hiddenKinds: get().hiddenKinds, pickerOpen: true });
+      set({ ...initialState(), contexts: get().contexts, hiddenKinds: get().hiddenKinds, toasts: get().toasts, pickerOpen: true });
     }
   },
 

@@ -83,6 +83,7 @@ describe("actions", () => {
     expect(s.graphReady).toBe(false);
     expect(s.connection.namespace).toBe("payments");
     expect(invoke).toHaveBeenCalledWith("select_namespace", { namespace: "payments", expandedGroups: [] });
+    expect([...s.deniedKinds]).toEqual(["Secret"]);
   });
 
   it("toggleGroup updates expandedGroups and pushes them to the backend", async () => {
@@ -93,7 +94,7 @@ describe("actions", () => {
     expect(useAppStore.getState().expandedGroups.size).toBe(0);
   });
 
-  it("connect stores connection info and refreshes denied kinds after a namespace is chosen", async () => {
+  it("connect stores connection info", async () => {
     await useAppStore.getState().connect("prod");
     const c = useAppStore.getState().connection;
     expect(c.context).toBe("prod");
@@ -107,6 +108,16 @@ describe("actions", () => {
     await useAppStore.getState().connect("prod");
     expect(useAppStore.getState().connection.context).toBeNull();
     expect(useAppStore.getState().toasts[0]).toMatchObject({ kind: "auth", message: "exec plugin missing" });
+  });
+
+  it("disconnect failure is toasted and state is reset", async () => {
+    useAppStore.setState({ connection: { ...initialState().connection, context: "prod" } });
+    vi.mocked(invoke).mockRejectedValueOnce({ kind: "internal", message: "boom" });
+    await useAppStore.getState().disconnect();
+    const s = useAppStore.getState();
+    expect(s.connection.context).toBeNull();
+    expect(s.pickerOpen).toBe(true);
+    expect(s.toasts[s.toasts.length - 1]).toMatchObject({ message: "boom" });
   });
 
   it("toggleKind hides and shows kinds; setSearch stores the query", () => {
