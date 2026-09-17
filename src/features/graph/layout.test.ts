@@ -104,18 +104,57 @@ describe("layout waypoints (dummy slots for edges spanning several columns)", ()
     expect(positions.get("Deployment/p/d")!.y + NODE_HEIGHT / 2).not.toBe(yb);
   });
 
-  it("shares one dummy chain between edges with the same source and target", () => {
+  it("bundles all long edges from one source into one target column into a single chain", () => {
     const cm = n("ConfigMap/p/c", "ConfigMap");
-    const sa = n("ServiceAccount/p/sa", "ServiceAccount");
-    const grp = n("PodGroup/p/g", "PodGroup");
-    // Deployment (col 0) → PodGroup (col 2), ConfigMap/ServiceAccount in col 1.
-    const mounts = e("Deployment/p/d", "PodGroup/p/g", "mounts");
-    const envFrom = e("Deployment/p/d", "PodGroup/p/g", "envFrom");
-    const { waypoints } = layout([deployment, cm, sa, grp], [mounts, envFrom, e("ConfigMap/p/c", "PodGroup/p/g", "mounts")]);
-    expect(waypoints.get(mounts.id)).toEqual(waypoints.get(envFrom.id));
-    // Only one slot was reserved: col 1 holds ConfigMap, ServiceAccount and a single dummy.
-    const ys = new Set([...waypoints.values()].map((w) => w[0].y));
-    expect(ys.size).toBe(1);
+    const b = n("Pod/p/b", "Pod");
+    // Deployment (col 0) → Pod a / Pod b (col 2), ConfigMap in col 1: one shared dummy slot.
+    const toA = e("Deployment/p/d", "Pod/p/a");
+    const toB = e("Deployment/p/d", "Pod/p/b");
+    const again = e("Deployment/p/d", "Pod/p/a", "mounts");
+    const { positions, waypoints } = layout([deployment, cm, pod, b], [toA, toB, again, e("ConfigMap/p/c", "Pod/p/a", "mounts")]);
+    expect(waypoints.get(toA.id)).toBe(waypoints.get(toB.id));
+    expect(waypoints.get(again.id)).toBe(waypoints.get(toA.id));
+    expect(waypoints.get(toA.id)).toHaveLength(1);
+    expect(positions.get("ConfigMap/p/c")!.y + NODE_HEIGHT / 2).not.toBe(waypoints.get(toA.id)![0].y);
+    // Column 1 holds exactly two slots: the ConfigMap and the one bundle dummy.
+    const ys = new Set([positions.get("ConfigMap/p/c")!.y, waypoints.get(toA.id)![0].y - NODE_HEIGHT / 2]);
+    expect(ys).toEqual(new Set([0, ROW]));
+  });
+
+  it("keeps bundles above the real nodes of the column they pass through (blog-like namespace)", () => {
+    // Ingress → Service → p1,p2; Deployment → p1,p2; ConfigMap ×2 → p1,p2; ServiceAccount → p1,p2.
+    // Columns: Ingress | Service | Deployment | ConfigMap, ConfigMap, SA | Pods. In the fourth column
+    // every slot has barycenter 0.5, so only the dummies-first tie-break keeps the bundles from
+    // sinking below the ConfigMaps and making the long edges detour to the bottom.
+    const nodes = [
+      n("Ingress/p/i", "Ingress"), n("Service/p/s", "Service"), n("Deployment/p/d", "Deployment"),
+      n("ConfigMap/p/c1", "ConfigMap"), n("ConfigMap/p/c2", "ConfigMap"), n("ServiceAccount/p/sa", "ServiceAccount"),
+      n("Pod/p/p1", "Pod"), n("Pod/p/p2", "Pod"),
+    ];
+    const edges = [
+      e("Ingress/p/i", "Service/p/s", "routes"),
+      e("Service/p/s", "Pod/p/p1", "selects"), e("Service/p/s", "Pod/p/p2", "selects"),
+      e("Deployment/p/d", "Pod/p/p1"), e("Deployment/p/d", "Pod/p/p2"),
+      e("ConfigMap/p/c1", "Pod/p/p1", "mounts"), e("ConfigMap/p/c1", "Pod/p/p2", "mounts"),
+      e("ConfigMap/p/c2", "Pod/p/p1", "envFrom"), e("ConfigMap/p/c2", "Pod/p/p2", "envFrom"),
+      e("ServiceAccount/p/sa", "Pod/p/p1", "usesSA"), e("ServiceAccount/p/sa", "Pod/p/p2", "usesSA"),
+    ];
+    const { positions, waypoints } = layout(nodes, edges);
+    const dep = waypoints.get("Deployment/p/d->Pod/p/p1:owns")!;
+    const svc = waypoints.get("Service/p/s->Pod/p/p1:selects")!;
+    expect(dep).toBe(waypoints.get("Deployment/p/d->Pod/p/p2:owns"));
+    expect(svc).toBe(waypoints.get("Service/p/s->Pod/p/p2:selects"));
+    expect(dep).toHaveLength(1);
+    expect(svc).toHaveLength(2);
+
+    const col3 = 3 * COL;
+    const row = (y: number) => (y - NODE_HEIGHT / 2) / ROW;
+    expect(dep[0].x).toBe(col3 + NODE_WIDTH / 2);
+    expect(svc[1].x).toBe(col3 + NODE_WIDTH / 2);
+    expect(row(dep[0].y)).toBe(0);
+    expect(row(svc[1].y)).toBe(1);
+    const realRows = ["ConfigMap/p/c1", "ConfigMap/p/c2", "ServiceAccount/p/sa"].map((id) => positions.get(id)!.y / ROW).sort();
+    expect(realRows).toEqual([2, 3, 4]);
   });
 
   it("gives edges spanning at most one column no waypoints", () => {

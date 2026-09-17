@@ -38,7 +38,8 @@ type SlotId = string;
  * Edges spanning more than one column are split into a chain of dummy slots, one per intermediate
  * column. Dummies are ordered like nodes (so they sit between their chain neighbours) and occupy a
  * full row slot, so real nodes move aside and the edge passes through empty space instead of behind
- * a card. Edges that share a (source, target) pair share one chain.
+ * a card. All long edges from one source into one target column share a single chain (a bundle);
+ * they fan out to their individual targets only in the last segment.
  */
 export function layout(nodes: GraphNode[], edges: GraphEdge[]): Layout {
   const ids = new Set(nodes.map((n) => n.id));
@@ -61,7 +62,7 @@ export function layout(nodes: GraphNode[], edges: GraphEdge[]): Layout {
     (succs.get(from) ?? succs.set(from, []).get(from)!).push(to);
   };
   const dummies = new Set<SlotId>();
-  const chains = new Map<string, SlotId[]>(); // "source->target" → dummy slot ids, source-to-target order
+  const chains = new Map<string, SlotId[]>(); // "source->col N" → dummy slot ids, source-to-target order
   const chainKeyOf = new Map<string, string>(); // edge id → chain key
   for (const e of [...edges].sort((a, b) => a.id.localeCompare(b.id))) {
     if (!ids.has(e.source) || !ids.has(e.target)) continue;
@@ -71,31 +72,35 @@ export function layout(nodes: GraphNode[], edges: GraphEdge[]): Layout {
       link(e.source, e.target);
       continue;
     }
-    const key = `${e.source}->${e.target}`;
+    const key = `${e.source}->col${tc}`;
     chainKeyOf.set(e.id, key);
-    if (chains.has(key)) continue;
-    const chain: SlotId[] = [];
-    const step = tc > sc ? 1 : -1;
-    let prev: SlotId = e.source;
-    for (let c = sc + step; c !== tc; c += step) {
-      const d = `#${key}@${c}`; // node ids are "Kind/ns/name", so "#..." never collides
-      dummies.add(d);
-      columns[c].push(d);
-      columnOf.set(d, c);
-      chain.push(d);
-      link(prev, d);
-      prev = d;
+    let chain = chains.get(key);
+    if (!chain) {
+      chain = [];
+      const step = tc > sc ? 1 : -1;
+      let prev: SlotId = e.source;
+      for (let c = sc + step; c !== tc; c += step) {
+        const d = `#${key}@${c}`; // node ids are "Kind/ns/name", so "#..." never collides
+        dummies.add(d);
+        columns[c].push(d);
+        columnOf.set(d, c);
+        chain.push(d);
+        link(prev, d);
+        prev = d;
+      }
+      chains.set(key, chain);
     }
-    link(prev, e.target);
-    chains.set(key, chain);
+    // The bundle's last dummy fans out to every target, so its barycenter covers all of them.
+    link(chain[chain.length - 1], e.target);
   }
 
   const rowOf = new Map<SlotId, number>();
   const assignRows = (col: SlotId[]) => col.forEach((id, i) => rowOf.set(id, i));
   columns.forEach(assignRows);
 
-  // Ties: real nodes before dummies, then by id (a dummy id embeds its edge's endpoints).
-  const compareIds = (a: SlotId, b: SlotId) => Number(dummies.has(a)) - Number(dummies.has(b)) || a.localeCompare(b);
+  // Ties: dummies before real nodes (a bundle hugs the top of the group it targets), then by id
+  // (a dummy id embeds its source and target column).
+  const compareIds = (a: SlotId, b: SlotId) => Number(dummies.has(b)) - Number(dummies.has(a)) || a.localeCompare(b);
 
   const order = (col: SlotId[], neighbours: Map<SlotId, SlotId[]>) => {
     const key = (id: SlotId): number | null => {

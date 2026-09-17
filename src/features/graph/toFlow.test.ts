@@ -80,13 +80,14 @@ describe("toFlow", () => {
       expect(cById[long.id]).not.toBe(aById[long.id]);
       expect(cById[long.id].waypoints).toBeUndefined();
 
-      // Adding a second Deployment moves the dummy row: same length, different y → new data object.
+      // A second Service into the same pod adds a bundle that sorts first, so this edge's dummy
+      // moves down a row: same length, different y → new data object.
       const more = new Map(wNodes);
-      const d2 = n("Deployment/p/a0", "Deployment");
-      more.set(d2.id, d2);
+      const api = n("Service/p/api", "Service");
+      more.set(api.id, api);
       const moreEdges = new Map(wEdges);
-      const owns = e("Deployment/p/a0", "Pod/p/a");
-      moreEdges.set(owns.id, owns);
+      const selects = e("Service/p/api", "Pod/p/a", "selects");
+      moreEdges.set(selects.id, selects);
       const d = toFlow({ ...input, nodes: more, edges: moreEdges });
       const dById = Object.fromEntries(d.edges.map((x) => [x.id, x.data]));
       expect(dById[long.id].waypoints).toHaveLength(1);
