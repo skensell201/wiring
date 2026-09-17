@@ -1,0 +1,209 @@
+# Demo namespace "shop": exercises every relation Wiring draws, plus a few unhealthy objects.
+apiVersion: v1
+kind: Namespace
+metadata: { name: shop }
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata: { name: api-sa, namespace: shop }
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: web-config, namespace: shop }
+data:
+  SHOP_NAME: "Wiring Demo Shop"
+  nginx.conf: |
+    events {}
+    http { server { listen 8080; location / { return 200 "shop web\n"; } } }
+---
+apiVersion: v1
+kind: Secret
+metadata: { name: api-secrets, namespace: shop }
+type: Opaque
+stringData:
+  API_TOKEN: "demo-token"
+---
+apiVersion: v1
+kind: Secret
+metadata: { name: db-credentials, namespace: shop }
+type: Opaque
+stringData:
+  POSTGRES_USER: shop
+  POSTGRES_PASSWORD: shop-secret
+  POSTGRES_DB: shop
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: web, namespace: shop, labels: { app: web, tier: frontend } }
+spec:
+  replicas: 3
+  selector: { matchLabels: { app: web } }
+  template:
+    metadata: { labels: { app: web, tier: frontend } }
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:1.27-alpine
+          ports: [ { containerPort: 8080 } ]
+          envFrom: [ { configMapRef: { name: web-config } } ]
+          volumeMounts: [ { name: conf, mountPath: /etc/nginx/nginx.conf, subPath: nginx.conf } ]
+          resources: { requests: { cpu: 10m, memory: 16Mi } }
+      volumes:
+        - name: conf
+          configMap: { name: web-config }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: web, namespace: shop }
+spec:
+  selector: { app: web }
+  ports: [ { port: 80, targetPort: 8080 } ]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: api, namespace: shop, labels: { app: api, tier: backend } }
+spec:
+  replicas: 2
+  selector: { matchLabels: { app: api } }
+  template:
+    metadata: { labels: { app: api, tier: backend } }
+    spec:
+      serviceAccountName: api-sa
+      containers:
+        - name: api
+          image: traefik/whoami:v1.10
+          args: [ "--port=8080", "--name=shop-api" ]
+          ports: [ { containerPort: 8080 } ]
+          env:
+            - name: API_TOKEN
+              valueFrom: { secretKeyRef: { name: api-secrets, key: API_TOKEN } }
+            - name: DB_HOST
+              value: db
+---
+apiVersion: v1
+kind: Service
+metadata: { name: api, namespace: shop }
+spec:
+  selector: { app: api }
+  ports: [ { port: 80, targetPort: 8080 } ]
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata: { name: shop, namespace: shop }
+spec:
+  rules:
+    - host: shop.local
+      http:
+        paths:
+          - { path: /, pathType: Prefix, backend: { service: { name: web, port: { number: 80 } } } }
+          - { path: /api, pathType: Prefix, backend: { service: { name: api, port: { number: 80 } } } }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: db, namespace: shop }
+spec:
+  clusterIP: None
+  selector: { app: db }
+  ports: [ { port: 5432 } ]
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata: { name: db, namespace: shop }
+spec:
+  serviceName: db
+  replicas: 1
+  selector: { matchLabels: { app: db } }
+  template:
+    metadata: { labels: { app: db } }
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          envFrom: [ { secretRef: { name: db-credentials } } ]
+          ports: [ { containerPort: 5432 } ]
+          volumeMounts: [ { name: data, mountPath: /var/lib/postgresql/data } ]
+  volumeClaimTemplates:
+    - metadata: { name: data }
+      spec:
+        accessModes: [ ReadWriteOnce ]
+        resources: { requests: { storage: 1Gi } }
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata: { name: web, namespace: shop }
+spec:
+  scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: web }
+  minReplicas: 2
+  maxReplicas: 6
+  metrics:
+    - type: Resource
+      resource: { name: cpu, target: { type: Utilization, averageUtilization: 70 } }
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata: { name: report, namespace: shop }
+spec:
+  schedule: "*/5 * * * *"
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 1
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: report
+              image: busybox:1.36
+              command: [ "sh", "-c", "echo generating report; sleep 20; echo done" ]
+---
+# Seven identical pods under one owner -> collapses into a PodGroup in Wiring.
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: workers, namespace: shop, labels: { app: workers } }
+spec:
+  replicas: 7
+  selector: { matchLabels: { app: workers } }
+  template:
+    metadata: { labels: { app: workers } }
+    spec:
+      containers:
+        - name: worker
+          image: registry.k8s.io/pause:3.9
+          envFrom: [ { configMapRef: { name: web-config } } ]
+---
+# Unhealthy: crash loop.
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: crasher, namespace: shop, labels: { app: crasher } }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: crasher } }
+  template:
+    metadata: { labels: { app: crasher } }
+    spec:
+      containers:
+        - name: crasher
+          image: busybox:1.36
+          command: [ "sh", "-c", "echo boom; exit 1" ]
+---
+# Unhealthy: image cannot be pulled.
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: bad-image, namespace: shop, labels: { app: bad-image } }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: bad-image } }
+  template:
+    metadata: { labels: { app: bad-image } }
+    spec:
+      containers:
+        - name: app
+          image: nginx:this-tag-does-not-exist
+---
+# A Service whose selector matches nothing -> warn.
+apiVersion: v1
+kind: Service
+metadata: { name: orphan, namespace: shop }
+spec:
+  selector: { app: nothing-here }
+  ports: [ { port: 80 } ]

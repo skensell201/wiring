@@ -1,0 +1,65 @@
+# Restricted identities for testing Wiring's RBAC handling.
+#
+# viewer (namespace-scoped): can read workloads/config in "shop" but NOT secrets
+#   -> Wiring must show the graph without Secrets and mark the chip "no access";
+#      it cannot list namespaces -> Wiring falls back to a free-text namespace input.
+# auditor (cluster-scoped): can list namespaces and read everything except secrets.
+apiVersion: v1
+kind: ServiceAccount
+metadata: { name: viewer, namespace: shop }
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: { name: viewer, namespace: shop }
+rules:
+  - apiGroups: [ "" ]
+    resources: [ pods, services, configmaps, persistentvolumeclaims, serviceaccounts, events ]
+    verbs: [ get, list, watch ]
+  - apiGroups: [ apps ]
+    resources: [ deployments, statefulsets, daemonsets, replicasets ]
+    verbs: [ get, list, watch ]
+  - apiGroups: [ batch ]
+    resources: [ jobs, cronjobs ]
+    verbs: [ get, list, watch ]
+  - apiGroups: [ networking.k8s.io ]
+    resources: [ ingresses ]
+    verbs: [ get, list, watch ]
+  - apiGroups: [ autoscaling ]
+    resources: [ horizontalpodautoscalers ]
+    verbs: [ get, list, watch ]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: { name: viewer, namespace: shop }
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: viewer }
+subjects: [ { kind: ServiceAccount, name: viewer, namespace: shop } ]
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata: { name: auditor, namespace: default }
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata: { name: wiring-auditor }
+rules:
+  - apiGroups: [ "" ]
+    resources: [ namespaces, pods, services, configmaps, persistentvolumeclaims, persistentvolumes, serviceaccounts, events ]
+    verbs: [ get, list, watch ]
+  - apiGroups: [ apps ]
+    resources: [ deployments, statefulsets, daemonsets, replicasets ]
+    verbs: [ get, list, watch ]
+  - apiGroups: [ batch ]
+    resources: [ jobs, cronjobs ]
+    verbs: [ get, list, watch ]
+  - apiGroups: [ networking.k8s.io ]
+    resources: [ ingresses ]
+    verbs: [ get, list, watch ]
+  - apiGroups: [ autoscaling ]
+    resources: [ horizontalpodautoscalers ]
+    verbs: [ get, list, watch ]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata: { name: wiring-auditor }
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: wiring-auditor }
+subjects: [ { kind: ServiceAccount, name: auditor, namespace: default } ]
