@@ -70,14 +70,17 @@ fn app_error_from_kubeconfig(e: &KubeconfigError) -> AppError {
     AppError::new(kind, e.to_string())
 }
 
-/// The exec-plugin binary configured for `context`'s user, if any.
-fn exec_plugin_command(kubeconfig: &Kubeconfig, context: &str) -> Option<String> {
-    let user = kubeconfig
+fn find_context<'a>(kubeconfig: &'a Kubeconfig, context: &str) -> Option<&'a kube::config::Context> {
+    kubeconfig
         .contexts
         .iter()
         .find(|c| c.name == context)
         .and_then(|c| c.context.as_ref())
-        .and_then(|c| c.user.as_deref())?;
+}
+
+/// The exec-plugin binary configured for `context`'s user, if any.
+fn exec_plugin_command(kubeconfig: &Kubeconfig, context: &str) -> Option<String> {
+    let user = find_context(kubeconfig, context).and_then(|c| c.user.as_deref())?;
     kubeconfig
         .auth_infos
         .iter()
@@ -85,6 +88,22 @@ fn exec_plugin_command(kubeconfig: &Kubeconfig, context: &str) -> Option<String>
         .and_then(|a| a.auth_info.as_ref())
         .and_then(|a| a.exec.as_ref())
         .and_then(|e| e.command.clone())
+}
+
+/// Users without cluster-wide `list namespaces` (common with namespace-scoped RBAC) can
+/// still browse the namespace their context names, so a 403 here must not fail `connect`.
+fn namespaces_or_fallback(listed: Result<Vec<String>, kube::Error>, context_namespace: Option<&str>) -> AppResult<Vec<String>> {
+    match listed {
+        Ok(namespaces) => Ok(namespaces),
+        Err(e) => {
+            let err = app_error_from_kube(&e);
+            if err.kind != ErrorKind::Forbidden {
+                return Err(err);
+            }
+            tracing::warn!(error = %err.message, "cannot list namespaces; falling back to the context namespace");
+            Ok(context_namespace.map(str::to_owned).into_iter().collect())
+        }
+    }
 }
 
 /// Map a client error, naming the exec plugin on `Auth` failures so the user learns which
@@ -122,6 +141,7 @@ impl Session {
             user: None,
         };
         let exec_command = exec_plugin_command(&kubeconfig, context);
+        let context_namespace = find_context(&kubeconfig, context).and_then(|c| c.namespace.clone());
         let config = Config::from_custom_kubeconfig(kubeconfig, &options)
             .await
             .map_err(|e| app_error_from_kubeconfig(&e))?;
@@ -136,14 +156,11 @@ impl Session {
             .apiserver_version()
             .await
             .map_err(|e| app_error_from_client(&e, exec_command.as_deref()))?;
-        let namespaces = Api::<Namespace>::all(client.clone())
+        let listed = Api::<Namespace>::all(client.clone())
             .list(&ListParams::default())
             .await
-            .map_err(|e| app_error_from_kube(&e))?
-            .items
-            .into_iter()
-            .filter_map(|n| n.metadata.name)
-            .collect::<Vec<_>>();
+            .map(|list| list.items.into_iter().filter_map(|n| n.metadata.name).collect::<Vec<_>>());
+        let namespaces = namespaces_or_fallback(listed, context_namespace.as_deref())?;
 
         let info = ConnectInfo {
             context: context.to_string(),
@@ -457,6 +474,37 @@ mod tests {
             .expect("connect must fail");
         assert_eq!(err.kind, ErrorKind::Auth, "{err:?}");
         assert!(err.message.contains("wiring-auth-plugin"), "{}", err.message);
+    }
+
+    #[test]
+    fn forbidden_namespace_listing_falls_back_to_context_namespace() {
+        let forbidden = || {
+            kube::Error::Api(Box::new(kube::core::Status {
+                code: 403,
+                message: "namespaces is forbidden".into(),
+                reason: "Forbidden".into(),
+                ..Default::default()
+            }))
+        };
+        assert_eq!(
+            namespaces_or_fallback(Err(forbidden()), Some("team-a")).unwrap(),
+            vec!["team-a".to_string()]
+        );
+        assert_eq!(namespaces_or_fallback(Err(forbidden()), None).unwrap(), Vec::<String>::new());
+        assert_eq!(
+            namespaces_or_fallback(Ok(vec!["a".into(), "b".into()]), Some("team-a")).unwrap(),
+            vec!["a".to_string(), "b".to_string()]
+        );
+        let unauthorized = kube::Error::Api(Box::new(kube::core::Status {
+            code: 401,
+            message: "no".into(),
+            reason: "Unauthorized".into(),
+            ..Default::default()
+        }));
+        assert_eq!(
+            namespaces_or_fallback(Err(unauthorized), Some("team-a")).unwrap_err().kind,
+            ErrorKind::Auth
+        );
     }
 
     #[test]
