@@ -8,7 +8,9 @@ import { NamespacePicker } from "./NamespacePicker";
 
 vi.mock("../../shared/ipc/tauri", () => ({ invoke: vi.fn(async () => null), listen: vi.fn(async () => () => {}) }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn(async () => "/tmp/extra.kubeconfig") }));
-vi.mock("../../shared/settings", () => ({ settings: { get: vi.fn(async () => null), set: vi.fn(async () => {}) } }));
+vi.mock("../../shared/settings", () => ({
+  settings: { get: vi.fn(async () => null), set: vi.fn(async () => {}), getLastNamespace: vi.fn(async () => null), setLastNamespace: vi.fn(async () => {}) },
+}));
 
 beforeEach(() => useAppStore.setState(initialState()));
 
@@ -60,17 +62,18 @@ describe("ContextPicker", () => {
     render(<ContextPicker />);
     fireEvent.click(screen.getByRole("button", { name: /prod/ }));
     await waitFor(() => expect(selectNamespace).toHaveBeenCalledWith("shop"));
-    expect(settings.set).toHaveBeenCalledWith("lastNamespace", "shop");
+    expect(settings.setLastNamespace).toHaveBeenCalledWith("prod", "shop");
   });
 });
 
 describe("NamespacePicker", () => {
-  it("lists namespaces and selects one", () => {
+  it("lists namespaces, selects one and remembers it for the context", () => {
     const selectNamespace = vi.fn(async () => {});
     useAppStore.setState({ connection: { ...initialState().connection, context: "prod", namespaces: ["default", "payments"] }, selectNamespace });
     render(<NamespacePicker />);
     fireEvent.change(screen.getByLabelText("Namespace"), { target: { value: "payments" } });
     expect(selectNamespace).toHaveBeenCalledWith("payments");
+    expect(settings.setLastNamespace).toHaveBeenCalledWith("prod", "payments");
   });
 
   it("falls back to a text input when the namespace list is empty", () => {

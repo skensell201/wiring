@@ -3,7 +3,12 @@ import { initialState, useAppStore } from "./store";
 
 const { mem } = vi.hoisted(() => ({ mem: new Map<string, string | null>() }));
 vi.mock("../shared/settings", () => ({
-  settings: { get: vi.fn(async (k: string) => mem.get(k) ?? null), set: vi.fn(async (k: string, v: string | null) => { mem.set(k, v); }) },
+  settings: {
+    get: vi.fn(async (k: string) => mem.get(k) ?? null),
+    set: vi.fn(async (k: string, v: string | null) => { mem.set(k, v); }),
+    getLastNamespace: vi.fn(async (ctx: string) => mem.get(`ns:${ctx}`) ?? null),
+    setLastNamespace: vi.fn(async (ctx: string, ns: string) => { mem.set(`ns:${ctx}`, ns); }),
+  },
 }));
 vi.mock("../shared/ipc/tauri", () => ({
   invoke: vi.fn(async (cmd: string) => {
@@ -29,7 +34,8 @@ describe("startup", () => {
 
   it("auto-connects the remembered context and namespace", async () => {
     mem.set("lastContext", "prod");
-    mem.set("lastNamespace", "payments");
+    mem.set("ns:prod", "payments");
+    mem.set("ns:staging", "default"); // another context's memory must not leak in
     await startup();
     const s = useAppStore.getState();
     expect(s.pickerOpen).toBe(false);
@@ -40,6 +46,7 @@ describe("startup", () => {
 
   it("falls back to the context's default namespace", async () => {
     mem.set("lastContext", "prod");
+    mem.set("ns:staging", "default");
     await startup();
     expect(useAppStore.getState().connection.namespace).toBe("payments");
   });

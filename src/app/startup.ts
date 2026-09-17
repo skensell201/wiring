@@ -15,7 +15,7 @@ export async function startup(): Promise<void> {
     s().setPickerOpen(true);
     return;
   }
-  const remembered = await settings.get<string>("lastNamespace");
+  const remembered = await settings.getLastNamespace(ctx.name);
   const { namespaces } = s().connection;
   const ns = remembered && (namespaces.length === 0 || namespaces.includes(remembered)) ? remembered : ctx.namespace ?? null;
   if (ns) await s().selectNamespace(ns);

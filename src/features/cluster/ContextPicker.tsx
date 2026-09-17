@@ -33,7 +33,7 @@ export function ContextPicker() {
       const ns = ctx?.namespace ?? (namespaces.length === 1 ? namespaces[0] : null);
       if (ns) {
         await selectNamespace(ns);
-        await settings.set("lastNamespace", ns);
+        await settings.setLastNamespace(name, ns);
       }
       setPickerOpen(false);
     }

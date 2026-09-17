@@ -192,7 +192,7 @@ On every delta the whole layout is recomputed; React Flow animates node position
 ## 6. Data flow
 
 ### 6.1 Startup
-1. `list_contexts()` → context picker. Last used context and namespace are stored via `tauri-plugin-store` (`settings.json`) and auto-selected if still present.
+1. `list_contexts()` → context picker. The last used context and, per context, the last used namespace are stored via `tauri-plugin-store` (`settings.json`) and auto-selected if still present.
 2. No kubeconfig found → empty state with instructions and an "Add kubeconfig file…" button.
 
 ### 6.2 Connect
