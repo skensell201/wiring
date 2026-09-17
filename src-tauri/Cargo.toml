@@ -1,0 +1,31 @@
+[package]
+name = "wiring"
+version = "0.1.0"
+description = "Kubernetes IDE with a live relationship graph"
+edition = "2021"
+
+[lib]
+name = "wiring_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2.11", features = [] }
+tauri-plugin-store = "2"
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+serde_yaml_ng = "0.10"
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+futures = "0.3"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+kube = { version = "4.2", default-features = false, features = ["client", "runtime", "rustls-tls", "ring", "oauth", "oidc", "config"] }
+k8s-openapi = { version = "0.28", features = ["v1_36"] }
+dirs = "6"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "process"] }
