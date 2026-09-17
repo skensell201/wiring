@@ -141,7 +141,7 @@ Badges and status per kind:
 | Ingress | first host (`+N` if more) | — |
 | ConfigMap / Secret | `N keys` | — |
 | PersistentVolumeClaim | requested size, StorageClass | warn if phase `Pending` |
-| PersistentVolume | capacity, reclaim policy | — |
+| PersistentVolume | capacity, reclaim policy | — shown only when bound to a PVC in the selected namespace |
 | ServiceAccount | — | — |
 | HorizontalPodAutoscaler | `min–max`, `current` replicas | warn if condition `ScalingLimited=True` |
 | PodGroup | `×N`, `ok/warn/err` counts | worst status in the group |

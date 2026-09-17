@@ -52,6 +52,8 @@ pub fn build(store: &Store, opts: &BuildOptions) -> Graph {
         .filter(|e| nodes.contains_key(&e.source) && nodes.contains_key(&e.target))
         .collect();
 
+    retain_bound_persistent_volumes(&mut nodes, &edges);
+
     hide_single_replicasets(&mut nodes, &mut edges);
     collapse_pod_groups(&mut nodes, &mut edges, opts);
 
@@ -72,6 +74,16 @@ fn is_stale_replicaset(obj: &Object) -> bool {
     let desired = rs.spec.as_ref().and_then(|s| s.replicas).unwrap_or(1);
     let current = rs.status.as_ref().map(|s| s.replicas).unwrap_or(0);
     desired == 0 && current == 0
+}
+
+/// PersistentVolume is watched cluster-wide, so every PV shows up regardless of the selected
+/// namespace unless we filter it here. Keep a PV node only if it has a `binds` edge to a PVC
+/// that is in the graph, i.e. bound to a claim in the selected namespace. Edges already only
+/// reference existing nodes, and a removed PV has no edges by definition, so no edge cleanup is
+/// needed here.
+fn retain_bound_persistent_volumes(nodes: &mut HashMap<NodeId, Node>, edges: &[Edge]) {
+    let bound: HashSet<&NodeId> = edges.iter().filter(|e| e.relation == Relation::Binds).map(|e| &e.source).collect();
+    nodes.retain(|id, n| n.kind != Kind::PersistentVolume || bound.contains(id));
 }
 
 /// A Deployment with exactly one ReplicaSet child: drop the RS node, re-point RS->X edges to the Deployment.
@@ -334,6 +346,33 @@ mod tests {
             g.edges.iter().any(|e| e.id == "ReplicaSet/x/web-a->Pod/x/web-a-1:owns"),
             "no pass-through when >1 RS remains"
         );
+    }
+
+    #[test]
+    fn unbound_persistent_volumes_are_dropped() {
+        let mut s = Store::from_fixture("relations").unwrap();
+        let orphan = crate::store::Object::from_json_value(serde_json::json!({
+            "apiVersion": "v1",
+            "kind": "PersistentVolume",
+            "metadata": { "name": "pv-orphan" },
+            "spec": {
+                "capacity": { "storage": "1Gi" },
+                "accessModes": ["ReadWriteOnce"]
+            }
+        }))
+        .unwrap();
+        s.upsert(orphan);
+
+        let g = build(&s, &BuildOptions::default());
+        assert!(g.node("PersistentVolume//pv-data").is_some(), "bound PV must stay visible");
+        assert!(
+            g.node("PersistentVolume//pv-orphan").is_none(),
+            "unbound PV from another namespace must not appear"
+        );
+        for e in &g.edges {
+            assert!(g.node(&e.source).is_some(), "edge {} has dangling source", e.id);
+            assert!(g.node(&e.target).is_some(), "edge {} has dangling target", e.id);
+        }
     }
 
     #[test]
