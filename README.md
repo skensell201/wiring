@@ -1,7 +1,25 @@
-# Tauri + React + Typescript
+# Wiring
 
-This template should help get you started developing with Tauri, React and Typescript in Vite.
+A desktop Kubernetes IDE whose centerpiece is a live graph of how resources in a namespace are wired together — Ingress → Service → Deployment → Pod, plus ConfigMaps, Secrets, PVCs, ServiceAccounts and HPAs.
 
-## Recommended IDE Setup
+Built with Tauri 2, React and Rust (`kube-rs`). macOS and Windows.
 
-- [VS Code](https://code.visualstudio.com/) + [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)
+## Development
+
+```bash
+pnpm install
+pnpm tauri dev
+```
+
+Backend tests:
+
+```bash
+cd src-tauri
+cargo test                                   # unit + IPC contract tests
+WIRING_SMOKE_CONTEXT=docker-desktop cargo test --test smoke -- --ignored   # needs a running cluster + kubectl
+```
+
+## Docs
+
+- Design spec: `docs/superpowers/specs/2026-09-17-wiring-mvp-design.md`
+- Backend plan: `docs/superpowers/plans/2026-09-17-wiring-backend.md`
