@@ -4,6 +4,7 @@ pub mod emitter;
 pub mod reducer;
 pub mod shared;
 pub mod watch;
+pub mod write;
 
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
