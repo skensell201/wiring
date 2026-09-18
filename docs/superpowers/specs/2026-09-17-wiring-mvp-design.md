@@ -212,6 +212,8 @@ Kind filter chips and search live entirely in the frontend. Filtering hides node
 
 ## 7. UI
 
+> Extended by `2026-09-18-navigator-tables-design.md` (left Navigator with clusters + resource tree, per-kind table views, Graph/Table switch).
+
 Layout (chosen from three mockups; see `.superpowers/brainstorm/` for the originals):
 
 ```

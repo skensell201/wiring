@@ -21,6 +21,10 @@ WIRING_SMOKE_CONTEXT=docker-desktop cargo test --test smoke -- --ignored   # nee
 
 Tagging `v*` builds unsigned installers for macOS (universal `.dmg`) and Windows (`.msi`, `.exe`) via GitHub Actions and attaches them to a draft release. macOS: `xattr -d com.apple.quarantine Wiring.app` after download. Windows: SmartScreen → *More info* → *Run anyway*.
 
+## Navigator and tables
+
+The left Navigator lists your kubeconfig contexts and the resources of the selected namespace by category (Workloads, Config, Network, Storage, Access Control) with live counts and worst-status dots. Clicking a kind opens a `kubectl get`-style table (sortable, filtered by the search box); a row click shows details, a double-click (or Enter) jumps to the object in the graph. Kinds you cannot read are struck through. The sidebar collapses to an icon rail.
+
 ## Demo cluster
 
 `examples/demo/setup.sh [context]` (default `docker-desktop`) deploys the `shop` and `blog` namespaces, the `wiring-viewer` / `wiring-auditor` RBAC identities, and adds matching restricted kubeconfig contexts so you can see filters and denied-kind handling against a real cluster. See `examples/demo/*.yaml` for the workload and RBAC definitions.
