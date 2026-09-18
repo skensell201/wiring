@@ -155,6 +155,18 @@ describe("actions", () => {
     expect([...s.deniedKinds]).toEqual(["Secret"]);
   });
 
+  it("selectNamespace drops a pending focus request", async () => {
+    useAppStore.setState({ connection: { ...initialState().connection, context: "prod" }, focusRequest: { nodeId: "Pod/a/x", seq: 3 } });
+    await useAppStore.getState().selectNamespace("b");
+    expect(useAppStore.getState().focusRequest).toBeNull();
+  });
+
+  it("clearFocusRequest consumes the request", () => {
+    useAppStore.setState({ focusRequest: { nodeId: "Pod/a/x", seq: 3 } });
+    useAppStore.getState().clearFocusRequest();
+    expect(useAppStore.getState().focusRequest).toBeNull();
+  });
+
   it("toggleGroup updates expandedGroups and pushes them to the backend", async () => {
     await useAppStore.getState().toggleGroup("PodGroup/p/Deployment/web");
     expect([...useAppStore.getState().expandedGroups]).toEqual(["PodGroup/p/Deployment/web"]);
@@ -199,7 +211,8 @@ describe("actions", () => {
       toasts: [{ id: 1, kind: "info" as const, message: "kept" }],
       connection: { ...initialState().connection, state: "connected" as const, context: "prod", busy: true },
     };
-    const d = disconnectedState(s as AppState);
+    const d = disconnectedState({ ...s, focusRequest: { nodeId: "Pod/p/a", seq: 1 } } as AppState);
+    expect(d.focusRequest).toBeNull();
     expect(d.contexts).toBe(s.contexts);
     expect(d.hiddenKinds).toBe(s.hiddenKinds);
     expect(d.toasts).toBe(s.toasts);

@@ -78,6 +78,8 @@ export interface AppState extends GraphState {
   showTable: (kind: Kind) => Promise<void>;
   refreshTable: (kind: Kind) => Promise<void>;
   focusInGraph: (id: NodeId) => Promise<void>;
+  /** The canvas has centred on the requested node; drop the request so it does not replay. */
+  clearFocusRequest: () => void;
   toggleSidebar: () => Promise<void>;
 }
 
@@ -120,7 +122,8 @@ export function disconnectedState(s: AppState): Omit<AppState, keyof Actions> {
 type Actions = Pick<AppState,
   | "applySnapshot" | "applyDelta" | "setObjectEvents" | "setConnectionState" | "loadContexts" | "addKubeconfig" | "connect"
   | "reconnect" | "disconnect" | "selectNamespace" | "select" | "setHovered" | "toggleGroup" | "toggleKind" | "setSearch" | "toast"
-  | "dismissToast" | "setPickerOpen" | "showGraph" | "showTable" | "refreshTable" | "focusInGraph" | "toggleSidebar">;
+  | "dismissToast" | "setPickerOpen" | "showGraph" | "showTable" | "refreshTable" | "focusInGraph" | "clearFocusRequest"
+  | "toggleSidebar">;
 
 // ---- selectors --------------------------------------------------------------
 
@@ -255,7 +258,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
     const expanded = [...get().expandedGroups];
     set((s) => ({
       nodes: new Map(), edges: new Map(), graphReady: false, selectedId: null, details: null, hoveredId: null,
-      deniedKinds: new Set(), tables: new Map(), connection: { ...s.connection, namespace },
+      deniedKinds: new Set(), tables: new Map(), focusRequest: null, connection: { ...s.connection, namespace },
     }));
     try {
       await commands.selectNamespace(namespace, expanded);
@@ -346,10 +349,12 @@ export const useAppStore = create<AppState>()((set, get) => ({
       get().toast({ kind: "info", message: `${name} is not shown in the graph (filtered or collapsed)` });
       return;
     }
-    get().showGraph();
+    // The request is in place before the canvas mounts, so its whole-graph fit yields to the focus.
+    set((s) => ({ view: { name: "graph" }, focusRequest: { nodeId: id, seq: (s.focusRequest?.seq ?? 0) + 1 } }));
     await get().select(id);
-    set((s) => ({ focusRequest: { nodeId: id, seq: (s.focusRequest?.seq ?? 0) + 1 } }));
   },
+
+  clearFocusRequest: () => set({ focusRequest: null }),
 
   toggleSidebar: async () => {
     const next = !get().sidebarCollapsed;

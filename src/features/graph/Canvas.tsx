@@ -5,10 +5,11 @@ import {
   MiniMap,
   ReactFlow,
   ReactFlowProvider,
+  useNodesInitialized,
   useReactFlow,
   type NodeMouseHandler,
 } from "@xyflow/react";
-import { useCallback, useEffect, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { useAppStore } from "../../app/store";
 import type { Kind } from "../../shared/ipc/types";
@@ -20,6 +21,9 @@ import { toFlow, type ResourceFlowNode } from "./toFlow";
 const nodeTypes = { resource: ResourceNode };
 const edgeTypes = { relation: RelationEdge };
 
+/** If React Flow never reports the nodes measured (it can when nothing changed), settle anyway. */
+const FOCUS_SETTLE_FALLBACK_MS = 150;
+
 function CanvasInner() {
   const s = useAppStore(
     useShallow((s) => ({
@@ -27,6 +31,7 @@ function CanvasInner() {
       search: s.search, hoveredId: s.hoveredId, selectedId: s.selectedId, expandedGroups: s.expandedGroups,
       namespace: s.connection.namespace, context: s.connection.context, focusRequest: s.focusRequest,
       select: s.select, setHovered: s.setHovered, toggleGroup: s.toggleGroup, toggleKind: s.toggleKind,
+      clearFocusRequest: s.clearFocusRequest,
     })),
   );
 
@@ -34,28 +39,42 @@ function CanvasInner() {
   const present = useMemo(() => new Set<Kind>([...s.nodes.values()].map((n) => n.kind)), [s.nodes]);
 
   const { fitView } = useReactFlow();
+  const nodesInitialized = useNodesInitialized();
+
+  // Whether a "Show in graph" request is pending, readable from the overview fit's timer without
+  // making that effect re-run (and re-fit) when the request is consumed.
+  const focusPending = useRef(s.focusRequest !== null);
+  focusPending.current = s.focusRequest !== null;
+
   useEffect(() => {
-    if (!s.graphReady) return;
+    if (!s.graphReady || focusPending.current) return; // a focus request owns the viewport
     // A single pass can fire before React Flow has measured the freshly laid-out nodes (e.g. the
     // first snapshot of a namespace), leaving the viewport off. Fit once now and once more shortly
     // after so a late measurement still gets picked up.
     fitView({ padding: 0.2, maxZoom: 1 });
-    const timeout = setTimeout(() => fitView({ padding: 0.2, maxZoom: 1 }), 50);
+    const timeout = setTimeout(() => { if (!focusPending.current) void fitView({ padding: 0.2, maxZoom: 1 }); }, 50);
     return () => clearTimeout(timeout);
   }, [s.graphReady, s.namespace, fitView]);
 
   // "Show in graph": centre on the requested node every time the request is bumped. Coming from a
-  // table the canvas has just mounted, so the node may be unmeasured and the whole-graph fit above
-  // is still pending — repeat the focus once that has settled.
+  // table the canvas has just mounted, so the node is unmeasured: focus once now, and once more
+  // when React Flow has measured the nodes (or after a fallback delay), then consume the request
+  // so it does not replay on a later mount.
   const focusSeq = s.focusRequest?.seq;
   const focusNodeId = s.focusRequest?.nodeId;
+  const firstPassSeq = useRef<number | null>(null);
   useEffect(() => {
     if (focusSeq === undefined || !focusNodeId) return;
     const focus = () => void fitView({ nodes: [{ id: focusNodeId }], duration: 300, maxZoom: 1.2, padding: 0.5 });
-    focus();
-    const timeout = setTimeout(focus, 80);
+    if (firstPassSeq.current !== focusSeq) {
+      firstPassSeq.current = focusSeq;
+      focus();
+    }
+    const settle = () => { focus(); s.clearFocusRequest(); };
+    if (nodesInitialized) { settle(); return; }
+    const timeout = setTimeout(settle, FOCUS_SETTLE_FALLBACK_MS);
     return () => clearTimeout(timeout);
-  }, [focusSeq, focusNodeId, fitView]);
+  }, [focusSeq, focusNodeId, nodesInitialized, fitView, s.clearFocusRequest]);
 
   const onNodeClick = useCallback<NodeMouseHandler<ResourceFlowNode>>((_, node) => void s.select(node.id), [s.select]);
   const onNodeDoubleClick = useCallback<NodeMouseHandler<ResourceFlowNode>>((_, node) => {
