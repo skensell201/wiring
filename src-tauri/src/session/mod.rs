@@ -4,6 +4,7 @@ pub mod emitter;
 pub mod reducer;
 pub mod shared;
 pub mod watch;
+pub mod write;
 
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
@@ -194,6 +195,12 @@ impl Session {
 
     pub async fn set_expanded_groups(&mut self, expanded_groups: HashSet<NodeId>) -> AppResult<()> {
         *self.shared.expanded_groups() = expanded_groups;
+        self.request_rebuild().await
+    }
+
+    /// Ask the reducer to rebuild the graph from the store now (a no-op before any namespace
+    /// is selected).
+    pub(crate) async fn request_rebuild(&self) -> AppResult<()> {
         if let Some(tx) = &self.reducer_tx {
             tx.send(ReducerMsg::Rebuild)
                 .await

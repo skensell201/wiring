@@ -1,7 +1,9 @@
+import { Trash2 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { useAppStore } from "../../app/store";
-import { KINDS, type Kind, type NodeId } from "../../shared/ipc/types";
+import { KINDS, type GraphNode, type Kind, type NodeId } from "../../shared/ipc/types";
+import { ConfirmDialog } from "../../shared/ui/ConfirmDialog";
 import { KIND_META } from "../graph/kindMeta";
 import { EventsTab } from "./EventsTab";
 import { OverviewTab } from "./OverviewTab";
@@ -21,8 +23,23 @@ export function headingFromId(id: NodeId): { name: string; kind: Kind | null; na
   return { name: rest[rest.length - 1], kind, namespace: rest[0] };
 }
 
+/** The delete confirmation for `id`: a PodGroup names its member count (the controller brings
+ *  them back), anything else is gone for good. */
+function deleteWording(id: NodeId, node: GraphNode | undefined): { title: string; body: string } {
+  const h = headingFromId(id);
+  if (h.kind === "PodGroup") {
+    const [, , ownerKind, owner] = id.split("/");
+    const count = node?.group?.count ?? 0;
+    return { title: `Delete ${count} ${count === 1 ? "pod" : "pods"} of ${ownerKind} ${owner}?`, body: "The controller will recreate them." };
+  }
+  const label = h.kind ? `${KIND_META[h.kind].label} ` : "";
+  return { title: `Delete ${label}${h.name}?`, body: "This cannot be undone." };
+}
+
 export function DetailsPanel() {
-  const { details, selectedId, node } = useAppStore(useShallow((s) => ({ details: s.details, selectedId: s.selectedId, node: s.selectedId ? s.nodes.get(s.selectedId) : undefined })));
+  const { details, selectedId, node, requestDelete } = useAppStore(useShallow((s) => ({
+    details: s.details, selectedId: s.selectedId, node: s.selectedId ? s.nodes.get(s.selectedId) : undefined, requestDelete: s.requestDelete,
+  })));
   const [tab, setTab] = useState<Tab>("overview");
   const [height, setHeight] = useState(DEFAULT);
   const [collapsed, setCollapsed] = useState(false);
@@ -61,7 +78,13 @@ export function DetailsPanel() {
             {heading.kind && <span className="text-text-muted">{KIND_META[heading.kind].label}{heading.namespace ? ` · ${heading.namespace}` : ""}</span>}
           </div>
         )}
-        <button type="button" className="ml-2 text-xs text-text-muted hover:text-text-hi" onClick={() => setCollapsed((c) => !c)} title={collapsed ? "Expand panel" : "Collapse panel"}>
+        {selectedId && (
+          <button type="button" title="Delete" aria-label="Delete" onClick={() => requestDelete(selectedId)}
+            className="ml-1 rounded-md p-1 text-text-muted hover:bg-muted hover:text-status-err">
+            <Trash2 className="size-3.5" />
+          </button>
+        )}
+        <button type="button" className="ml-1 text-xs text-text-muted hover:text-text-hi" onClick={() => setCollapsed((c) => !c)} title={collapsed ? "Expand panel" : "Collapse panel"}>
           {collapsed ? "▴" : "▾"}
         </button>
       </div>
@@ -74,12 +97,32 @@ export function DetailsPanel() {
           ) : tab === "overview" ? (
             <OverviewTab data={details.data} />
           ) : tab === "yaml" ? (
-            <YamlTab yaml={details.data.yaml} />
+            <YamlTab />
           ) : (
             <EventsTab events={details.events} />
           )}
         </div>
       )}
+      <DeleteDialog />
+      <DiscardDialog />
     </section>
+  );
+}
+
+function DeleteDialog() {
+  const { dialog, node, confirmDelete, cancelDelete } = useAppStore(useShallow((s) => ({
+    dialog: s.deleteDialog, node: s.deleteDialog.nodeId ? s.nodes.get(s.deleteDialog.nodeId) : undefined, confirmDelete: s.confirmDelete, cancelDelete: s.cancelDelete,
+  })));
+  const { title, body } = dialog.nodeId ? deleteWording(dialog.nodeId, node) : { title: "", body: "" };
+  return <ConfirmDialog open={dialog.open} title={title} body={body} confirmLabel="Delete" danger onConfirm={() => void confirmDelete()} onCancel={cancelDelete} />;
+}
+
+function DiscardDialog() {
+  const { open, name, confirmDiscard, cancelDiscard } = useAppStore(useShallow((s) => ({
+    open: s.discardDialog.open, name: s.details ? headingFromId(s.details.nodeId).name : "", confirmDiscard: s.confirmDiscard, cancelDiscard: s.cancelDiscard,
+  })));
+  return (
+    <ConfirmDialog open={open} title="Discard your edits?" body={`Your changes to ${name} will be lost.`} confirmLabel="Discard" danger
+      onConfirm={confirmDiscard} onCancel={cancelDiscard} />
   );
 }

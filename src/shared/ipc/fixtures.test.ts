@@ -31,7 +31,7 @@ describe("IPC fixtures match the TypeScript types", () => {
     expect(KINDS).toContain("PodGroup");
     expect(STATUSES).toEqual(["ok", "warn", "err", "unknown"]);
     expect(RELATIONS).toEqual(["owns", "selects", "routes", "mounts", "envFrom", "claims", "binds", "usesSA", "scales"]);
-    expect(ERROR_KINDS).toEqual(["auth", "network", "forbidden", "notFound", "internal"]);
+    expect(ERROR_KINDS).toEqual(["auth", "network", "forbidden", "notFound", "conflict", "invalid", "internal"]);
     expect(CONNECTION_STATES).toEqual(["connected", "degraded", "disconnected"]);
   });
 

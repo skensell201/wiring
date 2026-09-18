@@ -11,6 +11,7 @@ use tokio::sync::Mutex;
 
 use crate::error::{AppError, AppResult, ErrorKind};
 use crate::graph::rows::Table;
+use crate::graph::NodeId;
 use crate::kubeconfig::{self, ContextInfo};
 use crate::session::emitter::{Emitter, OutEvent};
 use crate::session::{ConnectInfo, ObjectDetails, Session};
@@ -150,6 +151,27 @@ pub async fn list_rows(state: State<'_, AppState>, kind: Kind) -> AppResult<Tabl
     Ok(session.list_rows(kind))
 }
 
+#[tauri::command]
+pub async fn update_object(state: State<'_, AppState>, node_id: String, yaml: String, force: bool) -> AppResult<ObjectDetails> {
+    let mut guard = state.session.lock().await;
+    let session = session_mut(&mut guard)?;
+    session.update_object(&node_id, &yaml, force).await
+}
+
+#[tauri::command]
+pub async fn create_object(state: State<'_, AppState>, namespace: String, yaml: String) -> AppResult<NodeId> {
+    let mut guard = state.session.lock().await;
+    let session = session_mut(&mut guard)?;
+    session.create_object(&namespace, &yaml).await
+}
+
+#[tauri::command]
+pub async fn delete_object(state: State<'_, AppState>, node_id: String) -> AppResult<()> {
+    let mut guard = state.session.lock().await;
+    let session = session_mut(&mut guard)?;
+    session.delete_object(&node_id).await
+}
+
 pub fn register(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wry> {
     builder.manage(AppState::default()).invoke_handler(tauri::generate_handler![
         list_contexts,
@@ -162,5 +184,8 @@ pub fn register(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wr
         watch_events,
         denied_kinds,
         list_rows,
+        update_object,
+        create_object,
+        delete_object,
     ])
 }

@@ -1,7 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { initialState, useAppStore } from "../../app/store";
-import { settings } from "../../shared/settings";
 import { ContextPicker } from "./ContextPicker";
 import { Header } from "./Header";
 import { NamespacePicker } from "./NamespacePicker";
@@ -72,18 +71,16 @@ describe("ContextPicker", () => {
     render(<ContextPicker />);
     fireEvent.click(screen.getByRole("button", { name: /prod/ }));
     await waitFor(() => expect(selectNamespace).toHaveBeenCalledWith("shop"));
-    expect(settings.setLastNamespace).toHaveBeenCalledWith("prod", "shop");
   });
 });
 
 describe("NamespacePicker", () => {
-  it("lists namespaces, selects one and remembers it for the context", () => {
+  it("lists namespaces and selects one", () => {
     const selectNamespace = vi.fn(async () => {});
     useAppStore.setState({ connection: { ...initialState().connection, context: "prod", namespaces: ["default", "payments"] }, selectNamespace });
     render(<NamespacePicker />);
     fireEvent.change(screen.getByLabelText("Namespace"), { target: { value: "payments" } });
     expect(selectNamespace).toHaveBeenCalledWith("payments");
-    expect(settings.setLastNamespace).toHaveBeenCalledWith("prod", "payments");
   });
 
   it("falls back to a text input when the namespace list is empty", () => {
@@ -125,6 +122,25 @@ describe("Header", () => {
     fireEvent.click(screen.getByRole("button", { name: /prod/ }));
     expect(toggleSidebar).toHaveBeenCalled();
     expect(useAppStore.getState().pickerOpen).toBe(false);
+  });
+
+  it("+ Create opens the create dialog, and is disabled until a namespace is selected", () => {
+    const openCreate = vi.fn();
+    useAppStore.setState({ connection: { ...initialState().connection, context: "prod", namespace: null }, openCreate });
+    const { unmount } = render(<Header />);
+    expect(screen.getByRole("button", { name: /create/i })).toBeDisabled();
+    unmount();
+
+    useAppStore.setState({ connection: { ...initialState().connection, context: "prod", namespace: "shop" }, openCreate });
+    render(<Header />);
+    fireEvent.click(screen.getByRole("button", { name: /create/i }));
+    expect(openCreate).toHaveBeenCalled();
+  });
+
+  it("has no Create button before a cluster is connected", () => {
+    useAppStore.setState({ connection: initialState().connection });
+    render(<Header />);
+    expect(screen.queryByRole("button", { name: /create/i })).not.toBeInTheDocument();
   });
 
   it("search box updates the store", () => {

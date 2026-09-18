@@ -25,6 +25,10 @@ Tagging `v*` builds unsigned installers for macOS (universal `.dmg`) and Windows
 
 The left Navigator lists your kubeconfig contexts and the resources of the selected namespace by category (Workloads, Config, Network, Storage, Access Control) with live counts and worst-status dots. Clicking a kind opens a `kubectl get`-style table (sortable, filtered by the search box); a row click shows details, a double-click (or Enter) jumps to the object in the graph. Kinds you cannot read are struck through. The sidebar collapses to an icon rail.
 
+## Editing
+
+The YAML tab has an **Edit** button: the object opens in a CodeMirror editor, **Save** (⌘/Ctrl+S) shows a line diff of what will be sent, and **Apply** replaces the object on the server with `fieldValidation=Strict`, so unknown fields are rejected rather than silently dropped. If the object changed meanwhile you get a conflict banner with *Reload* (drop your edits) or *Overwrite* (resend with the current `resourceVersion`); server validation errors appear inline. **+ Create** in the header opens a template for any watched kind in the current namespace (defaulting to the kind of the open table), and the trash icon in the details panel deletes the object after confirmation — for a pod group it deletes every member pod and the controller recreates them.
+
 ## Demo cluster
 
 `examples/demo/setup.sh [context]` (default `docker-desktop`) deploys the `shop` and `blog` namespaces, the `wiring-viewer` / `wiring-auditor` RBAC identities, and adds matching restricted kubeconfig contexts so you can see filters and denied-kind handling against a real cluster. See `examples/demo/*.yaml` for the workload and RBAC definitions.
@@ -38,4 +42,6 @@ examples/demo/setup.sh kind-kind
 - Design spec: `docs/superpowers/specs/2026-09-17-wiring-mvp-design.md`
 - Backend plan: `docs/superpowers/plans/2026-09-17-wiring-backend.md`
 - Frontend plan: `docs/superpowers/plans/2026-09-17-wiring-frontend.md`
+- Navigator/tables: `docs/superpowers/specs/2026-09-18-navigator-tables-design.md`
+- YAML editing: `docs/superpowers/specs/2026-09-18-yaml-editing-design.md`
 - IPC contract: `docs/ipc-contract.md`

@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { EventHandlers } from "../shared/ipc/events";
-import { initialState, useAppStore } from "./store";
+import { initialState, useAppStore, viewEditor } from "./store";
 
 // vi.mock is hoisted above imports, so shared state must be hoisted too.
 const hoisted = vi.hoisted(() => ({ handlers: null as EventHandlers | null }));
@@ -28,7 +28,7 @@ describe("wireEvents", () => {
     expect(useAppStore.getState().nodes.size).toBe(2);
     hoisted.handlers!.connection_state("degraded");
     expect(useAppStore.getState().connection.state).toBe("degraded");
-    useAppStore.setState({ selectedId: "Pod/p/a", details: { nodeId: "Pod/p/a", data: null, events: [], loading: false } });
+    useAppStore.setState({ selectedId: "Pod/p/a", details: { nodeId: "Pod/p/a", data: null, events: [], loading: false, editor: viewEditor() } });
     hoisted.handlers!.object_events({ nodeId: "Pod/p/a", events: [{ name: "e", type: "Normal", reason: "Scheduled", message: "ok", count: 1, firstTimestamp: null, lastTimestamp: null }] });
     expect(useAppStore.getState().details?.events).toHaveLength(1);
     hoisted.handlers!.object_events({ nodeId: "Pod/p/zzz", events: [] });

@@ -1,4 +1,6 @@
 import { create } from "zustand";
+import { template, type CreatableKind } from "../features/editor/templates";
+import { KIND_META } from "../features/graph/kindMeta";
 import { commands } from "../shared/ipc/commands";
 import type {
   AppError, ConnectionState, ContextInfo, Graph, GraphDelta, GraphEdge, GraphNode, K8sEvent, Kind, NodeId, ObjectDetails, Status,
@@ -10,7 +12,47 @@ import { cancelTableRefresh } from "./tableRefresh";
 
 export interface Toast { id: number; kind: AppError["kind"] | "info"; message: string }
 
-export interface Details { nodeId: NodeId; data: ObjectDetails | null; events: K8sEvent[]; loading: boolean }
+export type EditorMode = "view" | "edit" | "review";
+
+/** The YAML tab's state machine: view → edit (buffer diverges from original) → review (diff) → apply. */
+export interface EditorState {
+  mode: EditorMode;
+  /** The text being edited; meaningful outside view mode only. */
+  buffer: string;
+  /** The YAML the buffer started from — the object's version as loaded (or last saved/reloaded). */
+  original: string;
+  /** The last failed apply/reload, shown as a banner in the tab; cleared on the next attempt. */
+  error: AppError | null;
+  saving: boolean;
+}
+
+export interface Details { nodeId: NodeId; data: ObjectDetails | null; events: K8sEvent[]; loading: boolean; editor: EditorState }
+
+export interface CreateDialog { open: boolean; kind: CreatableKind; buffer: string; error: AppError | null; submitting: boolean }
+export interface DeleteDialog { open: boolean; nodeId: NodeId | null }
+/** "Discard your edits?" — opened by Cancel on a dirty buffer, or by a selection or namespace change
+ *  while dirty (which then waits in `pendingSelect` / `pendingDeselect` / `pendingNamespace` until confirmed). */
+export interface DiscardDialog { open: boolean; pendingSelect: NodeId | null; pendingDeselect: boolean; pendingNamespace: string | null }
+
+export function viewEditor(original = ""): EditorState {
+  return { mode: "view", buffer: "", original, error: null, saving: false };
+}
+
+const isDirty = (e: EditorState) => e.mode !== "view" && e.buffer !== e.original;
+
+/** "Pod web-1" from `Pod/ns/web-1`, for toasts. */
+function describeNode(id: NodeId): string {
+  const parts = id.split("/");
+  const kind = parts[0] as Kind;
+  return `${KIND_META[kind]?.label ?? kind} ${parts[parts.length - 1]}`;
+}
+
+/** What a delete toast names: "Pod web-1", or "7 pods of Deployment web" for a group. */
+function describeDeleted(id: NodeId, groupCount: number): string {
+  const parts = id.split("/");
+  if (parts[0] !== "PodGroup") return describeNode(id);
+  return `${groupCount} ${groupCount === 1 ? "pod" : "pods"} of ${parts[2]} ${parts[3]}`;
+}
 
 /** The centre pane: the graph, or a per-kind table. */
 export type View = { name: "graph" } | { name: "table"; kind: Kind };
@@ -52,6 +94,9 @@ export interface AppState extends GraphState {
   sidebarCollapsed: boolean;
   tables: Map<Kind, Table>;
   focusRequest: FocusRequest | null;
+  createDialog: CreateDialog;
+  deleteDialog: DeleteDialog;
+  discardDialog: DiscardDialog;
 
   // graph events
   applySnapshot: (g: Graph) => void;
@@ -81,6 +126,30 @@ export interface AppState extends GraphState {
   /** The canvas has centred on the requested node; drop the request so it does not replay. */
   clearFocusRequest: () => void;
   toggleSidebar: () => Promise<void>;
+  // editing
+  startEdit: () => void;
+  setBuffer: (text: string) => void;
+  /** Save: to the diff review, or an info toast when nothing changed. */
+  reviewEdit: () => void;
+  backToEdit: () => void;
+  /** Send the buffer; `force` copies the server's current resourceVersion in first (overwrite after a conflict). */
+  applyEdit: (force?: boolean) => Promise<void>;
+  /** Back to view mode; asks first when the buffer is dirty. */
+  cancelEdit: () => void;
+  /** Refetch the object and restart the edit from the fresh YAML (after a conflict or a deletion). */
+  reloadEdit: () => Promise<void>;
+  confirmDiscard: () => void;
+  cancelDiscard: () => void;
+  // create
+  openCreate: (kind?: CreatableKind) => void;
+  setCreateKind: (kind: CreatableKind) => void;
+  setCreateBuffer: (text: string) => void;
+  submitCreate: () => Promise<void>;
+  closeCreate: () => void;
+  // delete
+  requestDelete: (nodeId: NodeId) => void;
+  confirmDelete: () => Promise<void>;
+  cancelDelete: () => void;
 }
 
 let toastSeq = 0;
@@ -106,6 +175,9 @@ export function initialState(): Omit<AppState, keyof Actions> {
     sidebarCollapsed: false,
     tables: new Map(),
     focusRequest: null,
+    createDialog: { open: false, kind: "Deployment", buffer: "", error: null, submitting: false },
+    deleteDialog: { open: false, nodeId: null },
+    discardDialog: { open: false, pendingSelect: null, pendingDeselect: false, pendingNamespace: null },
   };
 }
 
@@ -113,17 +185,26 @@ export function initialState(): Omit<AppState, keyof Actions> {
  *  kind filters, toasts and the sidebar collapse preference kept. The Navigator lists the contexts
  *  to go to next; the modal picker opens only when there are none (its "add a kubeconfig" state). */
 export function disconnectedState(s: AppState): Omit<AppState, keyof Actions> {
+  const lost = lostEditsToast(s);
   return {
-    ...initialState(), contexts: s.contexts, hiddenKinds: s.hiddenKinds, toasts: s.toasts, pickerOpen: s.contexts.length === 0,
-    sidebarCollapsed: s.sidebarCollapsed,
+    ...initialState(), contexts: s.contexts, hiddenKinds: s.hiddenKinds, toasts: lost ? [...s.toasts, { id: ++toastSeq, ...lost }] : s.toasts,
+    pickerOpen: s.contexts.length === 0, sidebarCollapsed: s.sidebarCollapsed,
   };
+}
+
+/** A session reset (disconnect, reconnect, a dropped connection) takes a dirty editor with it; this says so. */
+function lostEditsToast(s: Pick<AppState, "details">): Omit<Toast, "id"> | null {
+  if (!s.details || !isDirty(s.details.editor)) return null;
+  return { kind: "info", message: `Unsaved edits to ${describeNode(s.details.nodeId)} were discarded` };
 }
 
 type Actions = Pick<AppState,
   | "applySnapshot" | "applyDelta" | "setObjectEvents" | "setConnectionState" | "loadContexts" | "addKubeconfig" | "connect"
   | "reconnect" | "disconnect" | "selectNamespace" | "select" | "setHovered" | "toggleGroup" | "toggleKind" | "setSearch" | "toast"
   | "dismissToast" | "setPickerOpen" | "showGraph" | "showTable" | "refreshTable" | "focusInGraph" | "clearFocusRequest"
-  | "toggleSidebar">;
+  | "toggleSidebar" | "startEdit" | "setBuffer" | "reviewEdit" | "backToEdit" | "applyEdit" | "cancelEdit" | "reloadEdit"
+  | "confirmDiscard" | "cancelDiscard" | "openCreate" | "setCreateKind" | "setCreateBuffer" | "submitCreate" | "closeCreate"
+  | "requestDelete" | "confirmDelete" | "cancelDelete">;
 
 // ---- selectors --------------------------------------------------------------
 
@@ -177,8 +258,15 @@ export function applyDelta<S extends GraphState>(s: S, d: GraphDelta): S {
   return dropSelection({ ...s, nodes, edges }, dropped);
 }
 
+/** The selected node is gone from the server. In view mode the selection clears; under an open
+ *  editor the edits are worth more than the stale selection, so it stays and the tab tells. */
 function dropSelection<S extends GraphState>(s: S, dropped: boolean): S {
-  return dropped ? { ...s, selectedId: null, details: null } : s;
+  if (!dropped) return s;
+  if (s.details && s.details.editor.mode !== "view") {
+    const error: AppError = { kind: "notFound", message: "This object was deleted on the server." };
+    return { ...s, details: { ...s.details, editor: { ...s.details.editor, error } } };
+  }
+  return { ...s, selectedId: null, details: null };
 }
 
 // ---- store ----------------------------------------------------------------
@@ -194,7 +282,14 @@ export const useAppStore = create<AppState>()((set, get) => ({
       if (namespaced && namespaced.namespace !== s.connection.namespace) return s;
       return applySnapshot(s, g);
     }),
-  applyDelta: (d) => set((s) => applyDelta(s, d)),
+  applyDelta: (d) => {
+    set((s) => applyDelta(s, d));
+    // A selection made before its node existed (an object just created here): fetch it now.
+    const { selectedId, details } = get();
+    if (selectedId !== null && details && details.data === null && !details.loading && d.addedNodes.some((n) => n.id === selectedId)) {
+      void loadDetails(selectedId);
+    }
+  },
   setObjectEvents: (nodeId, events) =>
     set((s) => (s.details && s.details.nodeId === nodeId ? { details: { ...s.details, events } } : {})),
   setConnectionState: (state) => set((s) => ({ connection: { ...s.connection, state } })),
@@ -216,6 +311,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
   },
 
   connect: async (context) => {
+    const lost = lostEditsToast(get());
     set((s) => ({ connection: { ...s.connection, busy: true } }));
     try {
       const info = await commands.connect(context);
@@ -226,6 +322,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
         sidebarCollapsed: get().sidebarCollapsed,
         connection: { state: "connected", context: info.context, serverVersion: info.serverVersion, namespaces: info.namespaces, namespace: null, busy: false },
       });
+      if (lost) get().toast(lost);
       return true;
     } catch (e) {
       // The backend tears the previous session down before dialling, so a failed connect leaves
@@ -254,11 +351,20 @@ export const useAppStore = create<AppState>()((set, get) => ({
   },
 
   selectNamespace: async (namespace) => {
+    const editor = get().details?.editor;
+    if (editor && isDirty(editor)) {
+      set({ discardDialog: { open: true, pendingSelect: null, pendingDeselect: false, pendingNamespace: namespace } });
+      return;
+    }
     cancelTableRefresh();
-    const expanded = [...get().expandedGroups];
+    const { expandedGroups, connection } = get();
+    const expanded = [...expandedGroups];
+    // Remembered only once the switch is really happening (not while the discard dialog is up).
+    if (connection.context) void settings.setLastNamespace(connection.context, namespace);
     set((s) => ({
       nodes: new Map(), edges: new Map(), graphReady: false, selectedId: null, details: null, hoveredId: null,
       deniedKinds: new Set(), tables: new Map(), focusRequest: null, connection: { ...s.connection, namespace },
+      deleteDialog: initialState().deleteDialog, discardDialog: initialState().discardDialog,
     }));
     try {
       await commands.selectNamespace(namespace, expanded);
@@ -274,19 +380,20 @@ export const useAppStore = create<AppState>()((set, get) => ({
 
   select: async (id) => {
     if (id === get().selectedId) return;
+    const editor = get().details?.editor;
+    if (editor && isDirty(editor)) {
+      set({ discardDialog: { open: true, pendingSelect: id, pendingDeselect: id === null, pendingNamespace: null } });
+      return;
+    }
     if (id === null) {
       set({ selectedId: null, details: null });
       await commands.watchEvents(null).catch(() => {});
       return;
     }
-    set({ selectedId: id, details: { nodeId: id, data: null, events: [], loading: true } });
-    try {
-      const [data] = await Promise.all([commands.getObject(id), commands.watchEvents(id)]);
-      set((s) => (s.selectedId === id ? { details: { nodeId: id, data, events: s.details?.events ?? [], loading: false } } : {}));
-    } catch (e) {
-      set((s) => (s.selectedId === id ? { details: { nodeId: id, data: null, events: [], loading: false } } : {}));
-      get().toast(toAppError(e));
-    }
+    const error = await loadDetails(id);
+    // An object just created here may not have reached the graph through the watch yet, so
+    // get_object does not know it either: `applyDelta` fetches the details once the node arrives.
+    if (error && !(error.kind === "notFound" && !get().nodes.has(id))) get().toast(error);
   },
 
   setHovered: (id) => set({ hoveredId: id }),
@@ -337,7 +444,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
         const onScreen = s.view.name === "table" && s.view.kind === kind;
         const orphaned = onScreen && s.selectedId !== null && s.selectedId.startsWith(`${kind}/`)
           && !table.rows.some((r) => r.nodeId === s.selectedId);
-        return orphaned ? { tables, selectedId: null, details: null } : { tables };
+        return orphaned ? dropSelection({ ...s, tables }, true) : { tables };
       });
     } catch (e) {
       get().toast(toAppError(e));
@@ -364,4 +471,165 @@ export const useAppStore = create<AppState>()((set, get) => ({
     set({ sidebarCollapsed: next });
     await settings.setSidebarCollapsed(next);
   },
+
+  // ---- editing --------------------------------------------------------------
+
+  startEdit: () =>
+    set((s) => {
+      if (!s.details?.data || s.details.editor.mode !== "view") return {};
+      const original = s.details.editor.original;
+      return { details: { ...s.details, editor: { mode: "edit", buffer: original, original, error: null, saving: false } } };
+    }),
+
+  setBuffer: (buffer) => set((s) => (s.details && s.details.editor.mode !== "view" ? { details: { ...s.details, editor: { ...s.details.editor, buffer } } } : {})),
+
+  reviewEdit: () => {
+    const d = get().details;
+    if (!d || d.editor.mode !== "edit") return;
+    if (d.editor.buffer === d.editor.original) {
+      get().toast({ kind: "info", message: "No changes" });
+      return;
+    }
+    set({ details: { ...d, editor: { ...d.editor, mode: "review" } } });
+  },
+
+  backToEdit: () => set((s) => (s.details?.editor.mode === "review" && !s.details.editor.saving ? { details: { ...s.details, editor: { ...s.details.editor, mode: "edit" } } } : {})),
+
+  applyEdit: async (force = false) => {
+    const d = get().details;
+    if (!d || d.editor.mode === "view" || d.editor.saving) return;
+    const { nodeId } = d;
+    const yaml = d.editor.buffer;
+    set({ details: { ...d, editor: { ...d.editor, saving: true, error: null } } });
+    // The result belongs to this session only: still on the node, still marked saving. Anything
+    // else (a discard, a delete, a fresh edit after moving away and back) has ended it meanwhile.
+    const live = (s: AppState) => s.details?.nodeId === nodeId && s.details.editor.saving;
+    try {
+      const data = await commands.updateObject(nodeId, yaml, force);
+      set((s) => (live(s) ? { details: { ...s.details!, data, editor: viewEditor(data.yaml) } } : {}));
+      get().toast({ kind: "info", message: `Saved ${describeNode(nodeId)}` });
+    } catch (e) {
+      const error = toAppError(e);
+      // Conflicts and validation failures are the tab's banner; anything else is the usual toast too.
+      set((s) => (live(s) ? { details: { ...s.details!, editor: { ...s.details!.editor, mode: "edit", saving: false, error } } } : {}));
+      if (error.kind !== "conflict" && error.kind !== "invalid") get().toast(error);
+    }
+  },
+
+  cancelEdit: () => {
+    const d = get().details;
+    if (!d || d.editor.mode === "view" || d.editor.saving) return;
+    if (isDirty(d.editor)) {
+      set({ discardDialog: { open: true, pendingSelect: null, pendingDeselect: false, pendingNamespace: null } });
+      return;
+    }
+    set({ details: { ...d, editor: viewEditor(d.editor.original) } });
+  },
+
+  reloadEdit: async () => {
+    const d = get().details;
+    if (!d || d.editor.mode === "view") return;
+    const { nodeId } = d;
+    // Only while the edit is still open on this node; a cancel meanwhile must not reopen it.
+    const live = (s: AppState) => s.details?.nodeId === nodeId && s.details.editor.mode !== "view";
+    try {
+      const data = await commands.getObject(nodeId);
+      set((s) => (live(s)
+        ? { details: { ...s.details!, data, editor: { mode: "edit", buffer: data.yaml, original: data.yaml, error: null, saving: false } } }
+        : {}));
+    } catch (e) {
+      const error = toAppError(e);
+      set((s) => (live(s) ? { details: { ...s.details!, editor: { ...s.details!.editor, error } } } : {}));
+    }
+  },
+
+  confirmDiscard: () => {
+    const { discardDialog, details } = get();
+    if (!discardDialog.open) return;
+    set({
+      discardDialog: initialState().discardDialog,
+      ...(details ? { details: { ...details, editor: viewEditor(details.editor.original) } } : {}),
+    });
+    if (discardDialog.pendingNamespace !== null) void get().selectNamespace(discardDialog.pendingNamespace);
+    else if (discardDialog.pendingSelect !== null || discardDialog.pendingDeselect) void get().select(discardDialog.pendingSelect);
+  },
+
+  cancelDiscard: () => set({ discardDialog: initialState().discardDialog }),
+
+  // ---- create ---------------------------------------------------------------
+
+  openCreate: (requested) =>
+    set((s) => {
+      // Creating from a kind's table most likely means "one more of these".
+      const tableKind = s.view.name === "table" && s.view.kind !== "PodGroup" ? s.view.kind : null;
+      const kind = requested ?? tableKind ?? "Deployment";
+      return { createDialog: { open: true, kind, buffer: template(kind, s.connection.namespace), error: null, submitting: false } };
+    }),
+
+  setCreateKind: (kind) =>
+    set((s) => {
+      const d = s.createDialog;
+      // Re-template unless the user has started typing into the previous one.
+      const untouched = d.buffer === "" || d.buffer === template(d.kind, s.connection.namespace);
+      return { createDialog: { ...d, kind, buffer: untouched ? template(kind, s.connection.namespace) : d.buffer } };
+    }),
+
+  setCreateBuffer: (buffer) => set((s) => ({ createDialog: { ...s.createDialog, buffer } })),
+
+  submitCreate: async () => {
+    const d = get().createDialog;
+    if (!d.open || d.submitting) return;
+    set({ createDialog: { ...d, submitting: true, error: null } });
+    let nodeId: NodeId;
+    try {
+      nodeId = await commands.createObject(get().connection.namespace ?? "", d.buffer);
+    } catch (e) {
+      set((s) => ({ createDialog: { ...s.createDialog, submitting: false, error: toAppError(e) } }));
+      return;
+    }
+    set({ createDialog: initialState().createDialog });
+    get().toast({ kind: "info", message: `Created ${describeNode(nodeId)}` });
+    // `select` asks first when another object's edits are dirty, and tolerates the new object not
+    // having reached the graph through the watch yet.
+    await get().select(nodeId);
+  },
+
+  closeCreate: () => set({ createDialog: initialState().createDialog }),
+
+  // ---- delete ---------------------------------------------------------------
+
+  requestDelete: (nodeId) => set({ deleteDialog: { open: true, nodeId } }),
+
+  confirmDelete: async () => {
+    const { nodeId } = get().deleteDialog;
+    set({ deleteDialog: initialState().deleteDialog });
+    if (nodeId === null) return;
+    // Read the member count before the watch stream shrinks or removes the group.
+    const count = get().nodes.get(nodeId)?.group?.count ?? 0;
+    try {
+      await commands.deleteObject(nodeId);
+      // Its editor has nothing left to save; back to view, and the watch's removal clears the selection.
+      set((s) => (s.details?.nodeId === nodeId ? { details: { ...s.details, editor: viewEditor(s.details.editor.original) } } : {}));
+      get().toast({ kind: "info", message: `Deleted ${describeDeleted(nodeId, count)}` });
+    } catch (e) {
+      get().toast(toAppError(e));
+    }
+  },
+
+  cancelDelete: () => set({ deleteDialog: initialState().deleteDialog }),
 }));
+
+/** Select `id` and fetch its details + events. Returns the fetch error (not toasted) or null;
+ *  a stale result — the selection moved on meanwhile — is dropped either way. */
+async function loadDetails(id: NodeId): Promise<AppError | null> {
+  const { setState: set } = useAppStore;
+  set({ selectedId: id, details: { nodeId: id, data: null, events: [], loading: true, editor: viewEditor() } });
+  try {
+    const [data] = await Promise.all([commands.getObject(id), commands.watchEvents(id)]);
+    set((s) => (s.selectedId === id ? { details: { nodeId: id, data, events: s.details?.events ?? [], loading: false, editor: viewEditor(data.yaml) } } : {}));
+    return null;
+  } catch (e) {
+    set((s) => (s.selectedId === id ? { details: { nodeId: id, data: null, events: [], loading: false, editor: viewEditor() } } : {}));
+    return toAppError(e);
+  }
+}

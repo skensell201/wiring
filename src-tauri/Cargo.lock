@@ -5529,6 +5529,7 @@ version = "0.1.0"
 dependencies = [
  "dirs",
  "futures",
+ "http",
  "k8s-openapi",
  "kube",
  "serde",

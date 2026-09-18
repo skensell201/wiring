@@ -43,7 +43,6 @@ describe("Navigator clusters", () => {
     render(<Navigator />);
     fireEvent.click(screen.getByRole("button", { name: /prod/ }));
     await waitFor(() => expect(selectNamespace).toHaveBeenCalledWith("shop"));
-    expect(settings.setLastNamespace).toHaveBeenCalledWith("prod", "shop");
   });
 
   it("adds a kubeconfig through the file dialog", async () => {

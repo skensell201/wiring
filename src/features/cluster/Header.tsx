@@ -1,4 +1,4 @@
-import { Search } from "lucide-react";
+import { Plus, Search } from "lucide-react";
 import { useEffect, useRef } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { useAppStore } from "../../app/store";
@@ -8,10 +8,10 @@ import { Dot } from "../../shared/ui/Dot";
 import { NamespacePicker } from "./NamespacePicker";
 
 export function Header() {
-  const { connection, search, hasContexts, sidebarCollapsed, setSearch, reconnect, setPickerOpen, toggleSidebar } = useAppStore(
+  const { connection, search, hasContexts, sidebarCollapsed, setSearch, reconnect, setPickerOpen, toggleSidebar, openCreate } = useAppStore(
     useShallow((s) => ({
       connection: s.connection, search: s.search, hasContexts: s.contexts.length > 0, sidebarCollapsed: s.sidebarCollapsed,
-      setSearch: s.setSearch, reconnect: s.reconnect, setPickerOpen: s.setPickerOpen, toggleSidebar: s.toggleSidebar,
+      setSearch: s.setSearch, reconnect: s.reconnect, setPickerOpen: s.setPickerOpen, toggleSidebar: s.toggleSidebar, openCreate: s.openCreate,
     })),
   );
   const searchRef = useRef<HTMLInputElement>(null);
@@ -40,6 +40,12 @@ export function Header() {
         ⎈ <span>{connection.context ?? "choose cluster"}</span>{connection.serverVersion ? <span className="ml-2 text-xs text-text-muted">{connection.serverVersion}</span> : null}
       </button>
       {connection.context && <NamespacePicker />}
+      {connection.context && (
+        <Button className="flex items-center gap-1 py-1" disabled={connection.namespace === null} onClick={() => openCreate()}
+          title={connection.namespace === null ? "Select a namespace first" : "Create an object in this namespace"}>
+          <Plus className="size-4" /> Create
+        </Button>
+      )}
       <div className="no-drag relative ml-auto">
         <Search className="pointer-events-none absolute left-2 top-1.5 size-4 text-text-muted" />
         <input ref={searchRef} value={search} onChange={(e) => setSearch(e.target.value)} placeholder={`Search  ${isMac ? "⌘" : "Ctrl+"}K`}

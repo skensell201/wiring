@@ -7,6 +7,10 @@ pub enum ErrorKind {
     Network,
     Forbidden,
     NotFound,
+    /// The write lost a resourceVersion race (HTTP 409).
+    Conflict,
+    /// The server rejected the manifest (HTTP 400/422); the message lists the bad fields.
+    Invalid,
     Internal,
 }
 
@@ -38,6 +42,8 @@ pub fn from_status(code: u16, message: &str) -> AppError {
         401 => ErrorKind::Auth,
         403 => ErrorKind::Forbidden,
         404 => ErrorKind::NotFound,
+        409 => ErrorKind::Conflict,
+        400 | 422 => ErrorKind::Invalid,
         _ => ErrorKind::Internal,
     };
     AppError::new(kind, message)
@@ -103,9 +109,19 @@ mod tests {
         case(401, ErrorKind::Auth);
         case(403, ErrorKind::Forbidden);
         case(404, ErrorKind::NotFound);
+        case(409, ErrorKind::Conflict);
+        case(400, ErrorKind::Invalid);
+        case(422, ErrorKind::Invalid);
         case(500, ErrorKind::Internal);
         // kube::Error::HyperError / ::Service wrap hyper::Error / tower::BoxError, which have
         // no public constructor for a synthetic instance outside of a real transport failure,
         // so the Network-mapping branch isn't covered by a standalone case here.
+    }
+
+    #[test]
+    fn error_kinds_serialize_as_camel_case() {
+        assert_eq!(serde_json::to_string(&ErrorKind::Conflict).unwrap(), "\"conflict\"");
+        assert_eq!(serde_json::to_string(&ErrorKind::Invalid).unwrap(), "\"invalid\"");
+        assert_eq!(serde_json::to_string(&ErrorKind::NotFound).unwrap(), "\"notFound\"");
     }
 }

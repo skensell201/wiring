@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use super::model::{node_id, Edge, Graph, GroupInfo, Node, NodeId, Relation, Status};
 use super::relations::all_edges;
 use super::status::describe;
-use crate::store::{Kind, Object, Store};
+use crate::store::{Kind, Object, ObjectKey, Store};
 
 #[derive(Debug, Clone)]
 pub struct BuildOptions {
@@ -66,6 +66,61 @@ pub fn build(store: &Store, opts: &BuildOptions) -> Graph {
     };
     graph.normalize();
     graph
+}
+
+/// Longest owner chain a pod can have to a watched controller (Pod -> ReplicaSet -> Deployment).
+const OWNER_CHAIN_DEPTH: usize = 3;
+
+/// The pods a `PodGroup/<ns>/<OwnerKind>/<owner>` node stands for: every pod in `<ns>` whose
+/// `ownerReferences` chain reaches `<owner>` — directly (ReplicaSet, StatefulSet, DaemonSet,
+/// Job) or through a hidden ReplicaSet (Deployment). Sorted by name; empty when the id is
+/// malformed or nothing is owned by that controller.
+///
+/// For a Deployment this follows every ReplicaSet, so pods still terminating under an old,
+/// scaled-down revision are included too (the graph drops such ReplicaSets, but their pods are
+/// still the Deployment's). Deleting them is harmless: they are on their way out anyway.
+pub fn group_members(store: &Store, group_id: &str) -> Vec<ObjectKey> {
+    let Some((ns, owner_kind, owner_name)) = parse_group_id(group_id) else {
+        return vec![];
+    };
+    let mut keys: Vec<ObjectKey> = store
+        .iter_kind(Kind::Pod)
+        .filter(|pod| pod.namespace() == Some(ns))
+        .filter(|pod| is_owned_by(store, pod, owner_kind, owner_name, OWNER_CHAIN_DEPTH))
+        .map(Object::key)
+        .collect();
+    keys.sort_by(|a, b| a.name.cmp(&b.name));
+    keys
+}
+
+fn parse_group_id(group_id: &str) -> Option<(&str, Kind, &str)> {
+    let rest = group_id.strip_prefix("PodGroup/")?;
+    let mut parts = rest.splitn(3, '/');
+    let (ns, kind, name) = (parts.next()?, parts.next()?, parts.next()?);
+    if ns.is_empty() || name.is_empty() {
+        return None;
+    }
+    Some((ns, Kind::parse(kind)?, name))
+}
+
+/// Walk `obj`'s ownerReferences (only watched kinds) up to `depth` levels looking for
+/// `<kind>/<name>` in the same namespace.
+fn is_owned_by(store: &Store, obj: &Object, kind: Kind, name: &str, depth: usize) -> bool {
+    if depth == 0 {
+        return false;
+    }
+    obj.meta()
+        .owner_references
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|r| Kind::parse(&r.kind).map(|k| (k, r.name.as_str())))
+        .any(|(ref_kind, ref_name)| {
+            (ref_kind == kind && ref_name == name)
+                || store
+                    .find(ref_kind, obj.namespace(), ref_name)
+                    .is_some_and(|parent| is_owned_by(store, parent, kind, name, depth - 1))
+        })
 }
 
 /// Old revisions: desired 0 and current 0.
@@ -373,6 +428,38 @@ mod tests {
             assert!(g.node(&e.source).is_some(), "edge {} has dangling source", e.id);
             assert!(g.node(&e.target).is_some(), "edge {} has dangling target", e.id);
         }
+    }
+
+    #[test]
+    fn group_members_follow_the_owner_chain_to_the_deployment() {
+        let s = Store::from_fixture("podgroup").unwrap();
+        let names = |id: &str| {
+            group_members(&s, id)
+                .into_iter()
+                .map(|k| {
+                    assert_eq!(k.kind, Kind::Pod);
+                    assert_eq!(k.namespace.as_deref(), Some("g"));
+                    k.name
+                })
+                .collect::<Vec<_>>()
+        };
+        let expected: Vec<String> = (1..=7).map(|i| format!("api-new-{i}")).collect();
+        assert_eq!(names("PodGroup/g/Deployment/api"), expected, "via the hidden ReplicaSet");
+        assert_eq!(names("PodGroup/g/ReplicaSet/api-new"), expected, "direct owner");
+        assert!(names("PodGroup/g/ReplicaSet/api-old").is_empty(), "scaled-to-zero RS owns nothing");
+    }
+
+    #[test]
+    fn group_members_is_empty_for_unknown_or_malformed_groups() {
+        let s = Store::from_fixture("podgroup").unwrap();
+        assert!(group_members(&s, "PodGroup/g/Deployment/nope").is_empty());
+        assert!(
+            group_members(&s, "PodGroup/other/Deployment/api").is_empty(),
+            "namespace must match"
+        );
+        assert!(group_members(&s, "PodGroup/g/Node/api").is_empty(), "unwatched owner kind");
+        assert!(group_members(&s, "Deployment/g/api").is_empty(), "not a group id");
+        assert!(group_members(&s, "PodGroup/g/Deployment").is_empty(), "missing owner name");
     }
 
     #[test]

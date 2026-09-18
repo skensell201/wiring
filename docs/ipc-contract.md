@@ -9,7 +9,7 @@ The JSON fixtures in `src/shared/ipc/fixtures/` are the authoritative payload sh
 | `Kind` | `Deployment`, `StatefulSet`, `DaemonSet`, `ReplicaSet`, `Job`, `CronJob`, `Pod`, `Service`, `Ingress`, `ConfigMap`, `Secret`, `PersistentVolumeClaim`, `PersistentVolume`, `ServiceAccount`, `HorizontalPodAutoscaler`, `PodGroup` |
 | `Status` | `ok`, `warn`, `err`, `unknown` |
 | `Relation` | `owns`, `selects`, `routes`, `mounts`, `envFrom`, `claims`, `binds`, `usesSA`, `scales` |
-| `ErrorKind` | `auth`, `network`, `forbidden`, `notFound`, `internal` |
+| `ErrorKind` | `auth`, `network`, `forbidden`, `notFound`, `conflict`, `invalid`, `internal` — `conflict` is HTTP 409 (stale `resourceVersion` on a write); `invalid` is HTTP 400/422 (the message is the server's, listing the bad fields) |
 | `ConnectionState` | `connected`, `degraded`, `disconnected` |
 
 ## Commands (`invoke`)
@@ -28,8 +28,18 @@ Argument names are camelCase on the JS side; Tauri maps them to the Rust snake_c
 | `watch_events` | `{ nodeId: string \| null }` | `null` — `null` stops the current watcher |
 | `denied_kinds` | — | `Kind[]` — kinds the session could not watch (RBAC 403 / API group missing) |
 | `list_rows` | `{ kind }` | `Table` — kubectl-like columns/rows for `kind`, computed from the cached store |
+| `update_object` | `{ nodeId, yaml, force: boolean }` | `ObjectDetails` — fresh YAML/summary of the saved object (see [Writes](#writes)) |
+| `create_object` | `{ namespace, yaml }` | `NodeId` of the created object; it reaches the graph through the watch |
+| `delete_object` | `{ nodeId }` | `null` — a PodGroup id deletes every member pod |
 
 `ConnectInfo.namespaces` may be **empty** when the user cannot list namespaces (namespace-scoped RBAC); offer a free-text namespace input in that case. If the kubeconfig context has a default namespace it is included.
+
+### Writes
+
+- `update_object` parses `yaml` as exactly one document; its `kind`, `metadata.name` and `metadata.namespace` must match `nodeId`, otherwise the promise rejects with `invalid` before anything is sent (rename/move are not supported through editing). Names and namespaces must be DNS-1123 subdomains (also `invalid`). The object is replaced (`PUT`) with `fieldValidation=Strict`, so unknown or duplicate fields reject with `invalid` and the server's message lists them. With `force: false` the manifest must carry a non-empty `metadata.resourceVersion` (else `invalid`: "metadata.resourceVersion is missing; reload the object or use Overwrite") and the server enforces it: a stale one rejects with `conflict`. With `force: true` the current `resourceVersion` and `uid` are fetched and copied in first, overwriting whatever changed in between (this also works after the object was deleted and recreated). On success the saved object is placed in the store and the graph is rebuilt immediately (a `graph_delta` follows), so the returned details and node badges are fresh before the watch echo arrives; an object the session does not watch (another namespace) is not cached.
+- `create_object` uses the manifest's own `metadata.namespace` when set, else `namespace`; both are ignored for cluster-scoped kinds (PersistentVolume). A missing `apiVersion` is filled in from the kind. Creating an existing object rejects with `conflict`; a kind outside the watched list with `invalid`.
+- `delete_object` on `Kind/ns/name` is a plain delete (`404` counts as success). On `PodGroup/<ns>/<OwnerKind>/<owner>` the member pods are resolved from the cached store (pods whose ownerReferences chain reaches the owner — the same rule the graph uses) and deleted in parallel; if some fail, the error names them (`failed to delete: a, b (...)`) and carries the first failure's kind. A group with no members rejects with `notFound`.
+- Manifests may contain Secret data: the backend never logs them.
 
 ## Events (`listen`)
 

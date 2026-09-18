@@ -1,4 +1,5 @@
-//! End-to-end: apply a fixture namespace, run a headless Session, assert the graph.
+//! End-to-end: apply a fixture namespace, run a headless Session, assert the graph, then
+//! exercise the write path (update / conflict / create / delete / PodGroup delete).
 //! Run: WIRING_SMOKE_CONTEXT=docker-desktop cargo test --test smoke -- --ignored --nocapture
 
 use std::collections::HashSet;
@@ -12,6 +13,7 @@ use wiring_lib::graph::{Graph, GraphDelta, Relation};
 use wiring_lib::kubeconfig;
 use wiring_lib::session::emitter::{ChannelEmitter, ConnectionState, OutEvent};
 use wiring_lib::session::Session;
+use wiring_lib::store::Kind;
 
 const NAMESPACE: &str = "wiring-smoke";
 
@@ -86,6 +88,128 @@ fn pod_count(g: &Graph) -> usize {
     g.nodes.iter().filter(|n| n.id.starts_with("Pod/wiring-smoke/")).count()
 }
 
+fn has_node(g: &Graph, id: &str) -> bool {
+    g.node(id).is_some()
+}
+
+const CONFIGMAP_ID: &str = "ConfigMap/wiring-smoke/web-cfg";
+const CREATED_ID: &str = "ConfigMap/wiring-smoke/smoke-created";
+const GROUP_ID: &str = "PodGroup/wiring-smoke/Deployment/web";
+
+/// Names of the pods currently in the store (the graph may have collapsed them).
+fn pod_names(session: &Session) -> Vec<String> {
+    session
+        .list_rows(Kind::Pod)
+        .rows
+        .into_iter()
+        .map(|r| r.node_id.trim_start_matches("Pod/wiring-smoke/").to_owned())
+        .collect()
+}
+
+/// Update / conflict / create / delete / invalid on ConfigMaps, then delete a PodGroup.
+async fn exercise_writes(session: &Session, rx: &mut UnboundedReceiver<OutEvent>, graph: &mut Graph, context: &str) {
+    // (1) Add a key; the returned details are fresh even before the watch echo.
+    let old_yaml = session.get_object(CONFIGMAP_ID).unwrap().yaml;
+    assert!(old_yaml.contains("  GREETING: hello\n"), "{old_yaml}");
+    let new_yaml = old_yaml.replace("  GREETING: hello\n", "  GREETING: hello\n  SMOKE_KEY: added\n");
+    let details = session.update_object(CONFIGMAP_ID, &new_yaml, false).await.unwrap();
+    assert!(details.yaml.contains("SMOKE_KEY: added"), "{}", details.yaml);
+    // The graph must pick the edit up from the save itself: the watch echo carries the same
+    // resourceVersion and is ignored by the reducer as unchanged.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    let ok = graph_until(rx, graph, deadline, |g| {
+        g.node(CONFIGMAP_ID).is_some_and(|n| n.badges.iter().any(|b| b == "2 keys"))
+    })
+    .await;
+    assert!(ok, "ConfigMap badge never showed 2 keys; last graph: {graph:#?}");
+    // A manifest without resourceVersion cannot be saved unconditionally.
+    let no_rv: String = new_yaml
+        .lines()
+        .filter(|l| !l.contains("resourceVersion"))
+        .map(|l| format!("{l}\n"))
+        .collect();
+    let err = session.update_object(CONFIGMAP_ID, &no_rv, false).await.unwrap_err();
+    assert_eq!(err.kind, ErrorKind::Invalid, "{err:?}");
+    assert!(err.message.contains("resourceVersion"), "{}", err.message);
+
+    // (2) The old YAML carries a stale resourceVersion: conflict, unless forced.
+    let err = session.update_object(CONFIGMAP_ID, &old_yaml, false).await.unwrap_err();
+    assert_eq!(err.kind, ErrorKind::Conflict, "{err:?}");
+    eprintln!("conflict: {}", err.message);
+    let details = session.update_object(CONFIGMAP_ID, &old_yaml, true).await.unwrap();
+    assert!(!details.yaml.contains("SMOKE_KEY"), "{}", details.yaml);
+
+    // (3) Create from a manifest without a namespace: the selected one is used.
+    let created = session
+        .create_object(
+            NAMESPACE,
+            "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: smoke-created\ndata:\n  A: b\n",
+        )
+        .await
+        .unwrap();
+    assert_eq!(created, CREATED_ID);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    let ok = graph_until(rx, graph, deadline, |g| has_node(g, CREATED_ID)).await;
+    assert!(ok, "created ConfigMap never reached the graph; last graph: {graph:#?}");
+    let err = session
+        .create_object(NAMESPACE, "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: smoke-created\n")
+        .await
+        .unwrap_err();
+    assert_eq!(err.kind, ErrorKind::Conflict, "creating twice is a conflict: {err:?}");
+
+    // (4) Delete it; deleting again is not an error.
+    session.delete_object(CREATED_ID).await.unwrap();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    let ok = graph_until(rx, graph, deadline, |g| !has_node(g, CREATED_ID)).await;
+    assert!(ok, "deleted ConfigMap still in the graph; last graph: {graph:#?}");
+    session.delete_object(CREATED_ID).await.unwrap();
+
+    // (5) Type errors and unknown fields (fieldValidation=Strict) are `invalid`.
+    let current = session.get_object(CONFIGMAP_ID).unwrap().yaml;
+    // `data:` sits on its own line (the tail of `metadata:` must not match).
+    let bad_type = current.replace("data:\n  GREETING: hello\n", "data: 1\n");
+    assert_ne!(bad_type, current, "{current}");
+    let err = session.update_object(CONFIGMAP_ID, &bad_type, false).await.unwrap_err();
+    assert_eq!(err.kind, ErrorKind::Invalid, "{err:?}");
+    eprintln!("invalid (type): {}", err.message);
+    let unknown_field = format!("{current}bogusField: 1\n");
+    let err = session.update_object(CONFIGMAP_ID, &unknown_field, false).await.unwrap_err();
+    assert_eq!(err.kind, ErrorKind::Invalid, "{err:?}");
+    assert!(err.message.contains("bogusField"), "{}", err.message);
+    eprintln!("invalid (strict): {}", err.message);
+    let err = session
+        .update_object("ConfigMap/wiring-smoke/other", &current, false)
+        .await
+        .unwrap_err();
+    assert_eq!(err.kind, ErrorKind::Invalid, "renaming through update is refused: {err:?}");
+
+    // (6) Scale up so the pods collapse into a group, delete the group, expect fresh pods.
+    kubectl(context, &["-n", NAMESPACE, "scale", "deployment/web", "--replicas=6"]);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(120);
+    let ok = graph_until(rx, graph, deadline, |g| {
+        g.node(GROUP_ID).and_then(|n| n.group.as_ref()).is_some_and(|i| i.count == 6)
+    })
+    .await;
+    assert!(ok, "PodGroup with 6 pods never appeared; last graph: {graph:#?}");
+    let before = pod_names(session);
+    assert_eq!(before.len(), 6, "{before:?}");
+    session.delete_object(GROUP_ID).await.unwrap();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(120);
+    let ok = graph_until(rx, graph, deadline, |_| {
+        let now = pod_names(session);
+        now.len() == 6 && now.iter().all(|n| !before.contains(n))
+    })
+    .await;
+    assert!(
+        ok,
+        "pods were not recreated after the group delete; before: {before:?}, now: {:?}",
+        pod_names(session)
+    );
+    eprintln!("group delete: {before:?} -> {:?}", pod_names(session));
+    let err = session.delete_object("PodGroup/wiring-smoke/Deployment/nope").await.unwrap_err();
+    assert_eq!(err.kind, ErrorKind::NotFound, "{err:?}");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 #[ignore]
 async fn graph_snapshot_reflects_applied_fixture() {
@@ -129,6 +253,8 @@ async fn graph_snapshot_reflects_applied_fixture() {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
     let ok = graph_until(&mut rx, &mut graph, deadline, |g| pod_count(g) == 1).await;
     assert!(ok, "scale-down never reached the graph; last graph: {graph:#?}");
+
+    exercise_writes(&session, &mut rx, &mut graph, &context).await;
 
     session.shutdown();
     kubectl(&context, &["delete", "namespace", NAMESPACE, "--wait=false"]);
