@@ -114,6 +114,23 @@ async fn exercise_writes(session: &Session, rx: &mut UnboundedReceiver<OutEvent>
     let new_yaml = old_yaml.replace("  GREETING: hello\n", "  GREETING: hello\n  SMOKE_KEY: added\n");
     let details = session.update_object(CONFIGMAP_ID, &new_yaml, false).await.unwrap();
     assert!(details.yaml.contains("SMOKE_KEY: added"), "{}", details.yaml);
+    // The graph must pick the edit up from the save itself: the watch echo carries the same
+    // resourceVersion and is ignored by the reducer as unchanged.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    let ok = graph_until(rx, graph, deadline, |g| {
+        g.node(CONFIGMAP_ID).is_some_and(|n| n.badges.iter().any(|b| b == "2 keys"))
+    })
+    .await;
+    assert!(ok, "ConfigMap badge never showed 2 keys; last graph: {graph:#?}");
+    // A manifest without resourceVersion cannot be saved unconditionally.
+    let no_rv: String = new_yaml
+        .lines()
+        .filter(|l| !l.contains("resourceVersion"))
+        .map(|l| format!("{l}\n"))
+        .collect();
+    let err = session.update_object(CONFIGMAP_ID, &no_rv, false).await.unwrap_err();
+    assert_eq!(err.kind, ErrorKind::Invalid, "{err:?}");
+    assert!(err.message.contains("resourceVersion"), "{}", err.message);
 
     // (2) The old YAML carries a stale resourceVersion: conflict, unless forced.
     let err = session.update_object(CONFIGMAP_ID, &old_yaml, false).await.unwrap_err();

@@ -1,6 +1,7 @@
 //! YAML manifest -> validated `Manifest`. Pure: no client, no store.
 
 use serde::Deserialize;
+use serde_json::Value;
 
 use crate::error::{AppError, AppResult, ErrorKind};
 use crate::session::parse_node_id;
@@ -42,23 +43,50 @@ pub fn parse(yaml: &str) -> AppResult<Manifest> {
         .ok_or_else(|| invalid("`kind` is missing"))?;
     let kind = Kind::parse(kind_str).ok_or_else(|| invalid(format!("kind {kind_str} is not supported")))?;
     let metadata = body.get("metadata").filter(|m| m.is_object());
-    let name = metadata
-        .and_then(|m| m.get("name"))
-        .and_then(|n| n.as_str())
-        .filter(|n| !n.is_empty())
-        .ok_or_else(|| invalid("`metadata.name` is missing"))?
-        .to_owned();
-    let namespace = metadata
-        .and_then(|m| m.get("namespace"))
-        .and_then(|n| n.as_str())
-        .filter(|n| !n.is_empty())
-        .map(str::to_owned);
+    let name = match metadata.and_then(|m| m.get("name")) {
+        None | Some(Value::Null) => return Err(invalid("`metadata.name` is missing")),
+        Some(Value::String(name)) if name.is_empty() => return Err(invalid("`metadata.name` is missing")),
+        Some(Value::String(name)) => name.clone(),
+        Some(_) => return Err(invalid("metadata.name must be a string")),
+    };
+    validate_dns_subdomain("metadata.name", &name)?;
+    let namespace = match metadata.and_then(|m| m.get("namespace")) {
+        None | Some(Value::Null) => None,
+        Some(Value::String(ns)) if ns.is_empty() => None,
+        Some(Value::String(ns)) => Some(ns.clone()),
+        Some(_) => return Err(invalid("metadata.namespace must be a string")),
+    };
+    if let Some(ns) = &namespace {
+        validate_dns_subdomain("metadata.namespace", ns)?;
+    }
     Ok(Manifest {
         kind,
         name,
         namespace,
         body,
     })
+}
+
+const DNS_SUBDOMAIN_MAX: usize = 253;
+
+/// RFC 1123 subdomain, as the API server requires for names and namespaces: lowercase
+/// alphanumerics, `-` and `.`, at most 253 characters, starting and ending alphanumeric.
+/// Catching it here gives a clearer message than the server's and never builds a URL from a
+/// name containing `/`.
+fn validate_dns_subdomain(field: &str, value: &str) -> AppResult<()> {
+    let alnum = |c: char| c.is_ascii_lowercase() || c.is_ascii_digit();
+    let ok = value.len() <= DNS_SUBDOMAIN_MAX
+        && value.chars().all(|c| alnum(c) || c == '-' || c == '.')
+        && value.chars().next().is_some_and(alnum)
+        && value.chars().last().is_some_and(alnum);
+    if ok {
+        Ok(())
+    } else {
+        Err(invalid(format!(
+            "{field} `{value}` is not a valid DNS subdomain (lowercase letters, digits, `-` and `.`, \
+             at most {DNS_SUBDOMAIN_MAX} characters, starting and ending with a letter or digit)"
+        )))
+    }
 }
 
 /// The manifest must describe the object `node_id` names: same kind, name and (for
@@ -123,6 +151,34 @@ mod tests {
         let err = parse("apiVersion: v1\nkind: ConfigMap\nmetadata:\n  namespace: x\n").unwrap_err();
         assert_eq!(err.kind, ErrorKind::Invalid);
         assert!(err.message.contains("metadata.name"), "{}", err.message);
+    }
+
+    #[test]
+    fn names_and_namespaces_must_be_dns_subdomains() {
+        let with = |name: &str, ns: &str| format!("kind: ConfigMap\nmetadata:\n  name: {name}\n  namespace: {ns}\n");
+        assert!(parse(&with("web-1.example", "shop")).is_ok());
+        assert!(parse(&with(&"a".repeat(253), "shop")).is_ok());
+        for bad in ["Web", "-web", "web-", "web_1", "a/b", "web.", &"a".repeat(254)] {
+            let err = parse(&with(bad, "shop")).unwrap_err();
+            assert_eq!(err.kind, ErrorKind::Invalid, "{bad}");
+            assert!(err.message.starts_with("metadata.name "), "{bad}: {}", err.message);
+            assert!(err.message.contains("DNS subdomain"), "{}", err.message);
+        }
+        let err = parse(&with("web", "Shop")).unwrap_err();
+        assert_eq!(err.kind, ErrorKind::Invalid);
+        assert!(err.message.starts_with("metadata.namespace `Shop`"), "{}", err.message);
+    }
+
+    #[test]
+    fn name_and_namespace_must_be_strings() {
+        let err = parse("kind: ConfigMap\nmetadata:\n  name: 42\n").unwrap_err();
+        assert_eq!(err.kind, ErrorKind::Invalid);
+        assert_eq!(err.message, "metadata.name must be a string");
+        let err = parse("kind: ConfigMap\nmetadata:\n  name: cfg\n  namespace: [a]\n").unwrap_err();
+        assert_eq!(err.kind, ErrorKind::Invalid);
+        assert_eq!(err.message, "metadata.namespace must be a string");
+        let m = parse("kind: ConfigMap\nmetadata:\n  name: cfg\n  namespace: null\n").unwrap();
+        assert_eq!(m.namespace, None);
     }
 
     #[test]

@@ -75,6 +75,10 @@ const OWNER_CHAIN_DEPTH: usize = 3;
 /// `ownerReferences` chain reaches `<owner>` — directly (ReplicaSet, StatefulSet, DaemonSet,
 /// Job) or through a hidden ReplicaSet (Deployment). Sorted by name; empty when the id is
 /// malformed or nothing is owned by that controller.
+///
+/// For a Deployment this follows every ReplicaSet, so pods still terminating under an old,
+/// scaled-down revision are included too (the graph drops such ReplicaSets, but their pods are
+/// still the Deployment's). Deleting them is harmless: they are on their way out anyway.
 pub fn group_members(store: &Store, group_id: &str) -> Vec<ObjectKey> {
     let Some((ns, owner_kind, owner_name)) = parse_group_id(group_id) else {
         return vec![];

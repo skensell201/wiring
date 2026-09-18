@@ -3,7 +3,7 @@
 //! Every write goes through `Api<DynamicObject>` for the kind's `ApiResource`, so the same
 //! code serves all watched kinds. Manifests are never logged (Secrets).
 
-use futures::future::join_all;
+use futures::stream::{self, StreamExt};
 use k8s_openapi::api::apps::v1::{DaemonSet, Deployment, ReplicaSet, StatefulSet};
 use k8s_openapi::api::autoscaling::v2::HorizontalPodAutoscaler;
 use k8s_openapi::api::batch::v1::{CronJob, Job};
@@ -18,7 +18,10 @@ use crate::error::{AppError, AppResult, ErrorKind};
 use crate::graph::build::group_members;
 use crate::graph::{node_id, NodeId};
 use crate::manifest::{self, Manifest};
-use crate::store::{Kind, Object};
+use crate::store::{Kind, Object, Store};
+
+/// Parallelism cap for PodGroup deletes.
+const DELETE_CONCURRENCY: usize = 16;
 
 /// Type-erased API description of a watched kind; `None` for the synthetic PodGroup.
 fn api_resource(kind: Kind) -> Option<ApiResource> {
@@ -75,10 +78,40 @@ fn fill_type_and_namespace(body: &mut Value, ar: &ApiResource, namespace: Option
     }
 }
 
-fn set_resource_version(body: &mut Value, resource_version: &str) {
+/// Point the manifest at the object currently on the server: its `resourceVersion` (so the
+/// replace wins) and `uid` (so an overwrite still works after a delete + recreate).
+fn set_current_identity(body: &mut Value, resource_version: &str, uid: Option<&str>) {
     if let Some(meta) = body.get_mut("metadata").and_then(Value::as_object_mut) {
         meta.insert("resourceVersion".into(), Value::String(resource_version.to_owned()));
+        match uid {
+            Some(uid) => meta.insert("uid".into(), Value::String(uid.to_owned())),
+            None => meta.remove("uid"),
+        };
     }
+}
+
+/// Without `force` the server must be able to detect a stale edit, which needs the
+/// manifest's own `metadata.resourceVersion`; a missing one would replace unconditionally.
+fn ensure_resource_version(body: &Value) -> AppResult<()> {
+    let present = body["metadata"]["resourceVersion"].as_str().is_some_and(|rv| !rv.is_empty());
+    if present {
+        Ok(())
+    } else {
+        Err(AppError::new(
+            ErrorKind::Invalid,
+            "metadata.resourceVersion is missing; reload the object or use Overwrite",
+        ))
+    }
+}
+
+/// Cache the saved object only if this namespace session already watched it; a write that
+/// targets another namespace must not leak into the graph. Returns whether it was stored.
+fn store_saved(store: &mut Store, obj: Object) -> bool {
+    if store.get(&obj.key()).is_none() {
+        return false;
+    }
+    store.upsert(obj);
+    true
 }
 
 /// The namespace a manifest's object lives in: none for cluster-scoped kinds, else the
@@ -117,10 +150,11 @@ impl Session {
         }
     }
 
-    /// Replace the object `node_id` names with `yaml`. Without `force` the server enforces
-    /// the manifest's `resourceVersion` (a stale one is a `conflict`); with `force` the
-    /// current version is copied in first. The saved object is stored right away so the
-    /// returned details are fresh before the watch echoes the change.
+    /// Replace the object `node_id` names with `yaml`. Without `force` the manifest must
+    /// carry a `resourceVersion` and the server enforces it (a stale one is a `conflict`);
+    /// with `force` the current version and uid are copied in first. The saved object is
+    /// stored and the graph rebuilt right away, so the returned details are fresh before the
+    /// watch echo (which the reducer ignores as unchanged: same resourceVersion).
     pub async fn update_object(&self, node_id: &str, yaml: &str, force: bool) -> AppResult<ObjectDetails> {
         let m = manifest::parse(yaml)?;
         manifest::ensure_matches(&m, node_id)?;
@@ -134,7 +168,9 @@ impl Session {
                 .metadata
                 .resource_version
                 .ok_or_else(|| AppError::internal(format!("{node_id} has no resourceVersion")))?;
-            set_resource_version(&mut body, &rv);
+            set_current_identity(&mut body, &rv, current.metadata.uid.as_deref());
+        } else {
+            ensure_resource_version(&body)?;
         }
         let bytes = serde_json::to_vec(&body).map_err(|e| AppError::internal(e.to_string()))?;
         let req = Request::new(DynamicObject::url_path(&ar, namespace.as_deref()))
@@ -142,7 +178,10 @@ impl Session {
             .map_err(|e| AppError::internal(e.to_string()))?;
         let saved: Value = self.client.request(with_strict_validation(req)?).await.map_err(kube_err)?;
         let obj = Object::from_json_value(saved).map_err(AppError::internal)?;
-        self.shared.store().upsert(obj);
+        let stored = store_saved(&mut self.shared.store(), obj);
+        if stored {
+            self.request_rebuild().await?;
+        }
         self.get_object(node_id)
     }
 
@@ -177,15 +216,23 @@ impl Session {
             return Err(AppError::new(ErrorKind::NotFound, format!("{node_id} has no member pods")));
         }
         let api = self.dynamic_api(&resource_for(Kind::Pod)?, ns.as_deref());
-        let results = join_all(members.iter().map(|key| delete_one(&api, &key.name))).await;
+        let results: Vec<(String, AppResult<()>)> = stream::iter(members)
+            .map(|key| {
+                let api = &api;
+                async move { (key.name.clone(), delete_one(api, &key.name).await) }
+            })
+            .buffer_unordered(DELETE_CONCURRENCY)
+            .collect()
+            .await;
         let mut failed = Vec::new();
         let mut first_error: Option<AppError> = None;
-        for (key, result) in members.iter().zip(results) {
+        for (name, result) in results {
             if let Err(e) = result {
-                failed.push(key.name.clone());
+                failed.push(name);
                 first_error.get_or_insert(e);
             }
         }
+        failed.sort();
         match first_error {
             None => Ok(()),
             Some(err) => Err(AppError::new(
@@ -256,8 +303,50 @@ mod tests {
         assert_eq!(body["apiVersion"], "v2", "a user-supplied apiVersion is sent as-is");
         assert!(body["metadata"].get("namespace").is_none());
 
-        set_resource_version(&mut body, "42");
+        set_current_identity(&mut body, "42", Some("uid-1"));
         assert_eq!(body["metadata"]["resourceVersion"], "42");
+        assert_eq!(body["metadata"]["uid"], "uid-1");
+        set_current_identity(&mut body, "43", None);
+        assert_eq!(body["metadata"]["resourceVersion"], "43");
+        assert!(body["metadata"].get("uid").is_none(), "a stale uid must not survive");
+    }
+
+    #[test]
+    fn non_forced_update_requires_a_resource_version() {
+        let with = serde_json::json!({ "metadata": { "name": "x", "resourceVersion": "7" } });
+        assert!(ensure_resource_version(&with).is_ok());
+        for body in [
+            serde_json::json!({ "metadata": { "name": "x" } }),
+            serde_json::json!({ "metadata": { "name": "x", "resourceVersion": "" } }),
+            serde_json::json!({ "metadata": { "name": "x", "resourceVersion": 7 } }),
+            serde_json::json!({ "kind": "ConfigMap" }),
+        ] {
+            let err = ensure_resource_version(&body).unwrap_err();
+            assert_eq!(err.kind, ErrorKind::Invalid, "{body}");
+            assert_eq!(
+                err.message,
+                "metadata.resourceVersion is missing; reload the object or use Overwrite"
+            );
+        }
+    }
+
+    #[test]
+    fn saved_objects_are_cached_only_when_already_watched() {
+        let cm = |ns: &str, rv: &str| {
+            Object::from_json_value(serde_json::json!({
+                "apiVersion": "v1", "kind": "ConfigMap",
+                "metadata": { "name": "cfg", "namespace": ns, "resourceVersion": rv }
+            }))
+            .unwrap()
+        };
+        let mut store = Store::default();
+        store.upsert(cm("shop", "1"));
+        assert!(store_saved(&mut store, cm("shop", "2")), "watched object is refreshed");
+        let stored = store.find(Kind::ConfigMap, Some("shop"), "cfg").unwrap();
+        assert_eq!(stored.meta().resource_version.as_deref(), Some("2"));
+        assert!(!store_saved(&mut store, cm("other", "1")), "foreign namespace is not cached");
+        assert!(store.find(Kind::ConfigMap, Some("other"), "cfg").is_none());
+        assert_eq!(store.len(), 1);
     }
 
     #[test]
