@@ -159,4 +159,49 @@ describe("table refresh", () => {
       vi.useRealTimers();
     }
   });
+
+  it("a disconnect cancels a pending debounced refresh", async () => {
+    vi.useFakeTimers();
+    try {
+      const { invoke } = await import("../shared/ipc/tauri");
+      vi.mocked(invoke).mockImplementation(async (cmd: string, args?: any) =>
+        (cmd === "list_rows" ? { kind: args.kind, columns: [], rows: [] } : null));
+      await wireEvents();
+      useAppStore.setState({
+        view: { name: "table", kind: "Pod" },
+        connection: { ...initialState().connection, context: "prod", state: "connected", namespace: "a" },
+      });
+      hoisted.handlers!.graph_delta({ ...emptyDelta, addedNodes: [node] });
+      hoisted.handlers!.connection_state("disconnected");
+      await vi.advanceTimersByTimeAsync(300);
+      expect(invoke).not.toHaveBeenCalledWith("list_rows", expect.anything());
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a namespace switch cancels a pending debounced refresh for the old namespace", async () => {
+    vi.useFakeTimers();
+    try {
+      const { invoke } = await import("../shared/ipc/tauri");
+      vi.mocked(invoke).mockImplementation(async (cmd: string, args?: any) =>
+        (cmd === "list_rows" ? { kind: args.kind, columns: [], rows: [] } : null));
+      await wireEvents();
+      useAppStore.setState({
+        view: { name: "table", kind: "Pod" },
+        connection: { ...initialState().connection, context: "prod", state: "connected", namespace: "a" },
+      });
+      hoisted.handlers!.graph_delta({ ...emptyDelta, addedNodes: [node] });
+      // selectNamespace cancels the pending debounce and, since a table is open, fires its own
+      // (unbounced) refresh for the new namespace.
+      await useAppStore.getState().selectNamespace("b");
+      await vi.advanceTimersByTimeAsync(300);
+      // Exactly one list_rows call: selectNamespace's own refresh. The debounced one from the
+      // delta must not have survived to fire a second time.
+      expect(vi.mocked(invoke).mock.calls.filter(([cmd]) => cmd === "list_rows")).toHaveLength(1);
+      expect(useAppStore.getState().connection.namespace).toBe("b");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

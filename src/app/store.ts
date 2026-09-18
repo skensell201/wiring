@@ -6,6 +6,7 @@ import type {
 } from "../shared/ipc/types";
 import { toAppError } from "../shared/ipc/types";
 import { settings } from "../shared/settings";
+import { cancelTableRefresh } from "./tableRefresh";
 
 export interface Toast { id: number; kind: AppError["kind"] | "info"; message: string }
 
@@ -241,6 +242,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
   },
 
   selectNamespace: async (namespace) => {
+    cancelTableRefresh();
     const expanded = [...get().expandedGroups];
     set((s) => ({
       nodes: new Map(), edges: new Map(), graphReady: false, selectedId: null, details: null, hoveredId: null,
@@ -310,8 +312,11 @@ export const useAppStore = create<AppState>()((set, get) => ({
   },
 
   refreshTable: async (kind) => {
+    const ns = get().connection.namespace;
     try {
       const table = await commands.listRows(kind);
+      // The namespace moved on while this fetch was in flight — its rows are stale.
+      if (ns === null || get().connection.namespace !== ns) return;
       set((s) => {
         const tables = new Map(s.tables);
         tables.set(kind, table);
@@ -323,6 +328,11 @@ export const useAppStore = create<AppState>()((set, get) => ({
   },
 
   focusInGraph: async (id) => {
+    if (!get().nodes.has(id)) {
+      const name = id.split("/").pop() ?? id;
+      get().toast({ kind: "info", message: `${name} is not shown in the graph (filtered or collapsed)` });
+      return;
+    }
     get().showGraph();
     await get().select(id);
     set((s) => ({ focusRequest: { nodeId: id, seq: (s.focusRequest?.seq ?? 0) + 1 } }));

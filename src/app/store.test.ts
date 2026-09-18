@@ -224,6 +224,7 @@ describe("actions", () => {
 
 describe("views", () => {
   it("starts on the graph and switches to a table, fetching rows", async () => {
+    useAppStore.setState({ connection: { ...initialState().connection, context: "prod", namespace: "payments" } });
     vi.mocked(invoke).mockImplementation(async (cmd: string, args?: any) =>
       cmd === "list_rows" ? { kind: args.kind, columns: [{ key: "name", label: "Name", numeric: false }], rows: [] } : null);
     expect(useAppStore.getState().view).toEqual({ name: "graph" });
@@ -236,10 +237,27 @@ describe("views", () => {
   });
 
   it("refreshTable keeps the table when the fetch fails and toasts", async () => {
+    const existing = { kind: "Pod" as const, columns: [], rows: [] };
+    useAppStore.setState({ tables: new Map([["Pod", existing]]) });
     vi.mocked(invoke).mockRejectedValueOnce({ kind: "internal", message: "nope" });
     await useAppStore.getState().refreshTable("Pod");
-    expect(useAppStore.getState().tables.has("Pod")).toBe(false);
+    expect(useAppStore.getState().tables.get("Pod")).toBe(existing);
     expect(useAppStore.getState().toasts.at(-1)?.message).toBe("nope");
+  });
+
+  it("refreshTable ignores a response that arrives after the namespace has moved on", async () => {
+    let resolveListRows!: (v: unknown) => void;
+    vi.mocked(invoke).mockImplementation((cmd: string) => {
+      if (cmd === "list_rows") return new Promise((resolve) => { resolveListRows = resolve; });
+      return Promise.resolve(null);
+    });
+    useAppStore.setState({ connection: { ...initialState().connection, context: "prod", namespace: "a" }, tables: new Map() });
+    const refresh = useAppStore.getState().refreshTable("Pod");
+    // The namespace changes while the fetch for the old one is still in flight.
+    useAppStore.setState((s) => ({ connection: { ...s.connection, namespace: "b" } }));
+    resolveListRows({ kind: "Pod", columns: [], rows: [] });
+    await refresh;
+    expect(useAppStore.getState().tables.has("Pod")).toBe(false);
   });
 
   it("focusInGraph switches to the graph, selects the node and bumps the focus request", async () => {
@@ -254,6 +272,16 @@ describe("views", () => {
     expect(s.focusRequest).toEqual({ nodeId: "Pod/p/a", seq: 1 });
     await s.focusInGraph("Pod/p/a");
     expect(useAppStore.getState().focusRequest?.seq).toBe(2);
+  });
+
+  it("focusInGraph toasts and stays put when the node is not in the graph", async () => {
+    useAppStore.setState({ view: { name: "table", kind: "Pod" }, selectedId: null, focusRequest: null });
+    await useAppStore.getState().focusInGraph("Pod/p/missing");
+    const s = useAppStore.getState();
+    expect(s.view).toEqual({ name: "table", kind: "Pod" });
+    expect(s.selectedId).toBeNull();
+    expect(s.focusRequest).toBeNull();
+    expect(s.toasts.at(-1)).toMatchObject({ kind: "info", message: "missing is not shown in the graph (filtered or collapsed)" });
   });
 
   it("toggleSidebar flips and persists", async () => {

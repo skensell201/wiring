@@ -2,17 +2,7 @@ import { commands } from "../shared/ipc/commands";
 import { listenAll } from "../shared/ipc/events";
 import type { GraphDelta, Kind } from "../shared/ipc/types";
 import { disconnectedState, useAppStore } from "./store";
-
-const TABLE_REFRESH_DEBOUNCE_MS = 300;
-let tableRefreshTimer: ReturnType<typeof setTimeout> | null = null;
-
-function scheduleTableRefresh(kind: Kind) {
-  if (tableRefreshTimer !== null) clearTimeout(tableRefreshTimer);
-  tableRefreshTimer = setTimeout(() => {
-    tableRefreshTimer = null;
-    void useAppStore.getState().refreshTable(kind);
-  }, TABLE_REFRESH_DEBOUNCE_MS);
-}
+import { cancelTableRefresh, scheduleTableRefresh } from "./tableRefresh";
 
 /** Whether a delta changes rows that a `kind` table would show. `PodGroup` nodes collapse pods,
  *  so any PodGroup touched by the delta also counts as touching `Pod`. */
@@ -34,14 +24,20 @@ export function wireEvents(): Promise<() => void> {
     graph_delta: (d) => {
       s().applyDelta(d);
       const view = s().view;
-      if (view.name === "table" && deltaTouches(d, view.kind)) scheduleTableRefresh(view.kind);
+      if (view.name === "table" && deltaTouches(d, view.kind)) {
+        const kind = view.kind;
+        scheduleTableRefresh(() => void useAppStore.getState().refreshTable(kind));
+      }
     },
     object_events: ({ nodeId, events }) => s().setObjectEvents(nodeId, events),
     connection_state: (state) => {
       s().setConnectionState(state);
       // A connect in flight tears the old session down first; that "disconnected" is its own to
       // resolve (success writes the new connection, failure resets), so leave the store alone.
-      if (state === "disconnected" && !s().connection.busy) useAppStore.setState(disconnectedState(s()));
+      if (state === "disconnected" && !s().connection.busy) {
+        cancelTableRefresh();
+        useAppStore.setState(disconnectedState(s()));
+      }
     },
     connection_error: (err) => {
       s().toast(err);
