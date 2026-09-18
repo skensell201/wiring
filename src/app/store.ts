@@ -110,11 +110,11 @@ export function initialState(): Omit<AppState, keyof Actions> {
 }
 
 /** The state after the session is gone: graph, selection and connection reset, the context list,
- *  kind filters, toasts and the sidebar collapse preference kept, and the picker opened so the
- *  user can choose where to go next. */
+ *  kind filters, toasts and the sidebar collapse preference kept. The Navigator lists the contexts
+ *  to go to next; the modal picker opens only when there are none (its "add a kubeconfig" state). */
 export function disconnectedState(s: AppState): Omit<AppState, keyof Actions> {
   return {
-    ...initialState(), contexts: s.contexts, hiddenKinds: s.hiddenKinds, toasts: s.toasts, pickerOpen: true,
+    ...initialState(), contexts: s.contexts, hiddenKinds: s.hiddenKinds, toasts: s.toasts, pickerOpen: s.contexts.length === 0,
     sidebarCollapsed: s.sidebarCollapsed,
   };
 }

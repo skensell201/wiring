@@ -6,13 +6,15 @@ import { connectContext } from "./connectContext";
 import { useAddKubeconfig } from "./useAddKubeconfig";
 
 export function ContextPicker() {
-  const { contexts, pickerOpen, setPickerOpen, busy, current } = useAppStore(
-    useShallow((s) => ({ contexts: s.contexts, pickerOpen: s.pickerOpen, setPickerOpen: s.setPickerOpen, busy: s.connection.busy, current: s.connection.context })),
+  const { contexts, pickerOpen, setPickerOpen, busy } = useAppStore(
+    useShallow((s) => ({ contexts: s.contexts, pickerOpen: s.pickerOpen, setPickerOpen: s.setPickerOpen, busy: s.connection.busy })),
   );
   const add = useAddKubeconfig();
-  // Escape dismisses the picker, but only when there is a connection to fall back to.
+  // With contexts the Navigator lists them too, so the picker can always be dismissed; without
+  // any it is the only way forward (add a kubeconfig) and stays.
+  const dismissable = contexts.length > 0;
   useEffect(() => {
-    if (!pickerOpen || !current) return;
+    if (!pickerOpen || !dismissable) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
       e.preventDefault(); // handled here; the global Escape handler must not act on it as well
@@ -20,7 +22,7 @@ export function ContextPicker() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [pickerOpen, current, setPickerOpen]);
+  }, [pickerOpen, dismissable, setPickerOpen]);
   if (!pickerOpen) return null;
 
   const pick = async (name: string) => {
@@ -49,7 +51,7 @@ export function ContextPicker() {
         )}
         <div className="flex justify-between">
           <Button onClick={() => void add()}>Add kubeconfig…</Button>
-          {current && <Button onClick={() => setPickerOpen(false)}>Cancel</Button>}
+          {dismissable && <Button onClick={() => setPickerOpen(false)}>Cancel</Button>}
         </div>
       </div>
     </div>

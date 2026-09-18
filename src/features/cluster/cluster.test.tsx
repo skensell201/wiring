@@ -30,16 +30,26 @@ describe("ContextPicker", () => {
     expect(dialog).toHaveAttribute("aria-modal", "true");
   });
 
-  it("Escape closes it when a context is already connected, and is ignored otherwise", () => {
+  it("Escape and Cancel close it whenever there are contexts to fall back to, and are absent otherwise", () => {
+    // With no contexts the picker is the only way forward (add a kubeconfig), so it cannot be dismissed.
     useAppStore.setState({ contexts: [], pickerOpen: true });
     const { unmount } = render(<ContextPicker />);
     fireEvent.keyDown(window, { key: "Escape" });
     expect(useAppStore.getState().pickerOpen).toBe(true);
+    expect(screen.queryByRole("button", { name: /cancel/i })).not.toBeInTheDocument();
     unmount();
 
-    useAppStore.setState({ contexts: [], pickerOpen: true, connection: { ...initialState().connection, context: "prod", state: "connected" } });
-    render(<ContextPicker />);
+    // With contexts the Navigator lists them, so the modal is optional even when nothing is connected.
+    const contexts = [{ name: "prod", cluster: "c", user: "u", namespace: null, sourceFile: "/k" }];
+    useAppStore.setState({ contexts, pickerOpen: true, connection: initialState().connection });
+    const second = render(<ContextPicker />);
     fireEvent.keyDown(window, { key: "Escape" });
+    expect(useAppStore.getState().pickerOpen).toBe(false);
+    second.unmount();
+
+    useAppStore.setState({ contexts, pickerOpen: true, connection: initialState().connection });
+    render(<ContextPicker />);
+    fireEvent.click(screen.getByRole("button", { name: /cancel/i }));
     expect(useAppStore.getState().pickerOpen).toBe(false);
   });
 

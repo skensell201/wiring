@@ -203,7 +203,7 @@ describe("actions", () => {
     expect(s.toasts[1]).toMatchObject({ kind: "auth", message: "exec plugin missing" });
   });
 
-  it("disconnectedState keeps contexts, hidden kinds and toasts and opens the picker", () => {
+  it("disconnectedState keeps contexts, hidden kinds and toasts; the picker opens only with nothing to pick from", () => {
     const s = {
       ...applySnapshot(initialState(), { nodes: [node("Pod/p/a")], edges: [] }),
       contexts: [{ name: "prod", cluster: "c", user: "u", namespace: null, sourceFile: "/k" }],
@@ -216,13 +216,14 @@ describe("actions", () => {
     expect(d.contexts).toBe(s.contexts);
     expect(d.hiddenKinds).toBe(s.hiddenKinds);
     expect(d.toasts).toBe(s.toasts);
-    expect(d.pickerOpen).toBe(true);
+    expect(d.pickerOpen).toBe(false); // the Navigator lists the contexts; no modal needed
     expect(d.connection).toEqual(initialState().connection);
     expect(d.nodes.size).toBe(0);
+    expect(disconnectedState({ ...s, contexts: [] as AppState["contexts"] } as AppState).pickerOpen).toBe(true);
   });
 
   it("disconnect failure is toasted and state is reset", async () => {
-    useAppStore.setState({ connection: { ...initialState().connection, context: "prod" } });
+    useAppStore.setState({ connection: { ...initialState().connection, context: "prod" }, contexts: [] });
     vi.mocked(invoke).mockRejectedValueOnce({ kind: "internal", message: "boom" });
     await useAppStore.getState().disconnect();
     const s = useAppStore.getState();

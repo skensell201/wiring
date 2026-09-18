@@ -28,10 +28,17 @@ import { startup } from "./startup";
 beforeEach(() => { useAppStore.setState(initialState()); mem.clear(); vi.mocked(invoke).mockClear(); });
 
 describe("startup", () => {
-  it("opens the picker when there is no remembered context", async () => {
+  it("shows nothing modal when there is no remembered context but the Navigator has contexts", async () => {
+    await startup();
+    expect(useAppStore.getState().pickerOpen).toBe(false);
+    expect(useAppStore.getState().contexts).toHaveLength(1);
+  });
+
+  it("opens the picker when there are no contexts at all", async () => {
+    vi.mocked(invoke).mockImplementationOnce(async (cmd: string) => (cmd === "list_contexts" ? [] : null));
     await startup();
     expect(useAppStore.getState().pickerOpen).toBe(true);
-    expect(useAppStore.getState().contexts).toHaveLength(1);
+    expect(useAppStore.getState().contexts).toHaveLength(0);
   });
 
   it("auto-connects the remembered context and namespace", async () => {
@@ -53,10 +60,10 @@ describe("startup", () => {
     expect(useAppStore.getState().connection.namespace).toBe("payments");
   });
 
-  it("opens the picker when the remembered context no longer exists", async () => {
+  it("does not connect, nor open the picker, when the remembered context no longer exists", async () => {
     mem.set("lastContext", "gone");
     await startup();
-    expect(useAppStore.getState().pickerOpen).toBe(true);
+    expect(useAppStore.getState().pickerOpen).toBe(false);
     expect(invoke).not.toHaveBeenCalledWith("connect", expect.anything());
   });
 
@@ -66,7 +73,7 @@ describe("startup", () => {
     expect(useAppStore.getState().sidebarCollapsed).toBe(true);
   });
 
-  it("opens the picker when connecting the remembered context fails", async () => {
+  it("stays on the Navigator when connecting the remembered context fails", async () => {
     mem.set("lastContext", "prod");
     vi.mocked(invoke).mockImplementationOnce(async (cmd: string) => {
       if (cmd === "list_contexts") return [{ name: "prod", cluster: "c", user: "u", namespace: "payments", sourceFile: "/k" }];
@@ -74,7 +81,8 @@ describe("startup", () => {
     });
     vi.mocked(invoke).mockImplementationOnce(async () => { throw new Error("connect failed"); });
     await startup();
-    expect(useAppStore.getState().pickerOpen).toBe(true);
+    expect(useAppStore.getState().pickerOpen).toBe(false);
+    expect(useAppStore.getState().connection.context).toBeNull();
     expect(invoke).not.toHaveBeenCalledWith("select_namespace", expect.anything());
   });
 });
