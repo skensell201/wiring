@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { useAppStore } from "../../app/store";
+import { KINDS, type Kind, type NodeId } from "../../shared/ipc/types";
 import { KIND_META } from "../graph/kindMeta";
 import { EventsTab } from "./EventsTab";
 import { OverviewTab } from "./OverviewTab";
@@ -9,8 +10,19 @@ import { YamlTab } from "./YamlTab";
 type Tab = "overview" | "yaml" | "events";
 const MIN = 120, MAX = 600, DEFAULT = 280;
 
+/** Name, kind and namespace of an object from its id alone, for a selection that is not a graph
+ *  node (a pod collapsed into a PodGroup, a hidden single ReplicaSet). Ids are `Kind/ns/name`,
+ *  `Kind/name` for cluster-scoped kinds and `PodGroup/ns/OwnerKind/owner` for groups. */
+export function headingFromId(id: NodeId): { name: string; kind: Kind | null; namespace: string | null } {
+  const [head, ...rest] = id.split("/");
+  const kind = (KINDS as readonly string[]).includes(head) ? (head as Kind) : null;
+  if (rest.length === 0) return { name: id, kind: null, namespace: null };
+  if (rest.length === 1) return { name: rest[0], kind, namespace: null };
+  return { name: rest[rest.length - 1], kind, namespace: rest[0] };
+}
+
 export function DetailsPanel() {
-  const { details, node } = useAppStore(useShallow((s) => ({ details: s.details, node: s.selectedId ? s.nodes.get(s.selectedId) : undefined })));
+  const { details, selectedId, node } = useAppStore(useShallow((s) => ({ details: s.details, selectedId: s.selectedId, node: s.selectedId ? s.nodes.get(s.selectedId) : undefined })));
   const [tab, setTab] = useState<Tab>("overview");
   const [height, setHeight] = useState(DEFAULT);
   const [collapsed, setCollapsed] = useState(false);
@@ -29,6 +41,7 @@ export function DetailsPanel() {
   useEffect(() => { setTab("overview"); }, [details?.nodeId]);
 
   const tabs: { id: Tab; label: string }[] = [{ id: "overview", label: "Overview" }, { id: "yaml", label: "YAML" }, { id: "events", label: "Events" }];
+  const heading = node ? { name: node.name, kind: node.kind, namespace: node.namespace } : selectedId ? headingFromId(selectedId) : null;
 
   return (
     <section className="shrink-0 border-t border-border bg-panel" style={{ height: collapsed ? 36 : height }}>
@@ -42,10 +55,10 @@ export function DetailsPanel() {
             </button>
           ))}
         </div>
-        {node && (
+        {heading && (
           <div className="ml-auto flex items-center gap-2 text-xs">
-            <span className="text-text-hi">{node.name}</span>
-            <span className="text-text-muted">{KIND_META[node.kind].label}{node.namespace ? ` · ${node.namespace}` : ""}</span>
+            <span className="text-text-hi">{heading.name}</span>
+            {heading.kind && <span className="text-text-muted">{KIND_META[heading.kind].label}{heading.namespace ? ` · ${heading.namespace}` : ""}</span>}
           </div>
         )}
         <button type="button" className="ml-2 text-xs text-text-muted hover:text-text-hi" onClick={() => setCollapsed((c) => !c)} title={collapsed ? "Expand panel" : "Collapse panel"}>

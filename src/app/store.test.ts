@@ -67,6 +67,31 @@ describe("graph reducers", () => {
     expect(s.details).toBeNull();
   });
 
+  it("delta leaves a table-originated selection alone", () => {
+    // A pod collapsed into a PodGroup (or a hidden single ReplicaSet) is selected from a table:
+    // it is never a graph node, so "not in nodes" must not mean "gone".
+    let s = applySnapshot(initialState(), { nodes: [node("PodGroup/p/Deployment/web", { kind: "PodGroup", group: { count: 3, ok: 3, warn: 0, err: 0 } })], edges: [] });
+    s = { ...s, selectedId: "Pod/p/web-1", details: { nodeId: "Pod/p/web-1", data: null, events: [], loading: false } };
+    s = applyDelta(s, { addedNodes: [], updatedNodes: [node("PodGroup/p/Deployment/web", { kind: "PodGroup", group: { count: 4, ok: 4, warn: 0, err: 0 } })], removedNodes: [], addedEdges: [], removedEdges: [] });
+    expect(s.selectedId).toBe("Pod/p/web-1");
+    expect(s.details?.nodeId).toBe("Pod/p/web-1");
+  });
+
+  it("snapshot dropping a graph node clears selection", () => {
+    let s = applySnapshot(initialState(), { nodes: [node("Pod/p/a"), node("Pod/p/b")], edges: [] });
+    s = { ...s, selectedId: "Pod/p/a", details: { nodeId: "Pod/p/a", data: null, events: [], loading: false } };
+    s = applySnapshot(s, { nodes: [node("Pod/p/b")], edges: [] });
+    expect(s.selectedId).toBeNull();
+    expect(s.details).toBeNull();
+  });
+
+  it("snapshot leaves a selection that was never a graph node alone", () => {
+    let s = applySnapshot(initialState(), { nodes: [node("Pod/p/b")], edges: [] });
+    s = { ...s, selectedId: "Pod/p/collapsed", details: { nodeId: "Pod/p/collapsed", data: null, events: [], loading: false } };
+    s = applySnapshot(s, { nodes: [node("Pod/p/b")], edges: [] });
+    expect(s.selectedId).toBe("Pod/p/collapsed");
+  });
+
   it("deltas are ignored until a snapshot arrived", () => {
     const s = applyDelta(initialState(), { addedNodes: [node("Pod/p/a")], updatedNodes: [], removedNodes: [], addedEdges: [], removedEdges: [] });
     expect(s.nodes.size).toBe(0);
@@ -268,6 +293,39 @@ describe("views", () => {
     resolveListRows({ kind: "Pod", columns: [], rows: [] });
     await refresh;
     expect(useAppStore.getState().tables.has("Pod")).toBe(false);
+  });
+
+  it("refreshTable clears a selection whose row disappeared", async () => {
+    vi.mocked(invoke).mockImplementation(async (cmd: string, args?: any) =>
+      cmd === "list_rows" ? { kind: args.kind, columns: [{ key: "name", label: "Name", numeric: false }], rows: [{ nodeId: "Pod/payments/b", status: "ok", cells: [{ text: "b", status: null }] }] } : null);
+    useAppStore.setState({
+      connection: { ...initialState().connection, context: "prod", namespace: "payments" },
+      view: { name: "table", kind: "Pod" },
+      selectedId: "Pod/payments/a", details: { nodeId: "Pod/payments/a", data: null, events: [], loading: false },
+    });
+    await useAppStore.getState().refreshTable("Pod");
+    expect(useAppStore.getState().selectedId).toBeNull();
+    expect(useAppStore.getState().details).toBeNull();
+  });
+
+  it("refreshTable keeps a selection of another kind and one whose row is still there", async () => {
+    vi.mocked(invoke).mockImplementation(async (cmd: string, args?: any) =>
+      cmd === "list_rows" ? { kind: args.kind, columns: [{ key: "name", label: "Name", numeric: false }], rows: [{ nodeId: "Pod/payments/a", status: "ok", cells: [{ text: "a", status: null }] }] } : null);
+    useAppStore.setState({
+      connection: { ...initialState().connection, context: "prod", namespace: "payments" },
+      view: { name: "table", kind: "Pod" },
+      selectedId: "Pod/payments/a", details: { nodeId: "Pod/payments/a", data: null, events: [], loading: false },
+    });
+    await useAppStore.getState().refreshTable("Pod");
+    expect(useAppStore.getState().selectedId).toBe("Pod/payments/a");
+    // A selection of a different kind (e.g. picked in the graph) is not the table's business.
+    useAppStore.setState({ selectedId: "Service/payments/svc", details: { nodeId: "Service/payments/svc", data: null, events: [], loading: false } });
+    await useAppStore.getState().refreshTable("Pod");
+    expect(useAppStore.getState().selectedId).toBe("Service/payments/svc");
+    // Nor is a table that is not the one on screen.
+    useAppStore.setState({ view: { name: "table", kind: "Service" }, selectedId: "Pod/payments/gone", details: { nodeId: "Pod/payments/gone", data: null, events: [], loading: false } });
+    await useAppStore.getState().refreshTable("Pod");
+    expect(useAppStore.getState().selectedId).toBe("Pod/payments/gone");
   });
 
   it("focusInGraph switches to the graph, selects the node and bumps the focus request", async () => {

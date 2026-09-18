@@ -47,6 +47,21 @@ describe("DetailsPanel", () => {
     expect(screen.getByText("restarting")).toBeInTheDocument();
   });
 
+  it("names a selected object that is not a graph node from its id", () => {
+    // Rows of pods collapsed into a PodGroup are selectable from the table but never in `nodes`.
+    useAppStore.setState({ selectedId: "Pod/p/web-9", details: { nodeId: "Pod/p/web-9", data: null, events: [], loading: true } });
+    render(<DetailsPanel />);
+    expect(screen.getByText("web-9")).toBeInTheDocument();
+    expect(screen.getByText("Pod · p")).toBeInTheDocument();
+  });
+
+  it("names a cluster-scoped object that is not a graph node without a namespace", () => {
+    useAppStore.setState({ selectedId: "PersistentVolume/pv-1", details: { nodeId: "PersistentVolume/pv-1", data: null, events: [], loading: true } });
+    render(<DetailsPanel />);
+    expect(screen.getByText("pv-1")).toBeInTheDocument();
+    expect(screen.getByText("PersistentVolume")).toBeInTheDocument();
+  });
+
   it("shows a hint when nothing is selected", () => {
     useAppStore.setState({ selectedId: null, details: null });
     render(<DetailsPanel />);

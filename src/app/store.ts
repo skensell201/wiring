@@ -149,10 +149,16 @@ export function kindStats(nodes: Map<NodeId, GraphNode>): Map<Kind, { count: num
 
 // ---- pure reducers --------------------------------------------------------
 
+// The selection is not restricted to graph nodes: a table row can select a pod collapsed into a
+// PodGroup or a hidden single ReplicaSet, neither of which is ever in `nodes`. So "not in nodes"
+// does not mean "gone" — only a node the graph actually dropped clears the selection; a
+// table-originated selection is checked against its rows in `refreshTable` instead.
+
 export function applySnapshot<S extends GraphState>(s: S, g: Graph): S {
   const nodes = new Map(g.nodes.map((n) => [n.id, n]));
   const edges = new Map(g.edges.map((e) => [e.id, e]));
-  return keepSelection({ ...s, nodes, edges, graphReady: true });
+  const dropped = s.selectedId !== null && s.nodes.has(s.selectedId) && !nodes.has(s.selectedId);
+  return dropSelection({ ...s, nodes, edges, graphReady: true }, dropped);
 }
 
 export function applyDelta<S extends GraphState>(s: S, d: GraphDelta): S {
@@ -164,12 +170,12 @@ export function applyDelta<S extends GraphState>(s: S, d: GraphDelta): S {
   for (const n of d.updatedNodes) nodes.set(n.id, n);
   for (const id of d.removedEdges) edges.delete(id);
   for (const e of d.addedEdges) edges.set(e.id, e);
-  return keepSelection({ ...s, nodes, edges });
+  const dropped = s.selectedId !== null && d.removedNodes.includes(s.selectedId) && !nodes.has(s.selectedId);
+  return dropSelection({ ...s, nodes, edges }, dropped);
 }
 
-function keepSelection<S extends GraphState>(s: S): S {
-  if (s.selectedId && !s.nodes.has(s.selectedId)) return { ...s, selectedId: null, details: null };
-  return s;
+function dropSelection<S extends GraphState>(s: S, dropped: boolean): S {
+  return dropped ? { ...s, selectedId: null, details: null } : s;
 }
 
 // ---- store ----------------------------------------------------------------
@@ -323,7 +329,12 @@ export const useAppStore = create<AppState>()((set, get) => ({
       set((s) => {
         const tables = new Map(s.tables);
         tables.set(kind, table);
-        return { tables };
+        // A selection made from the table on screen whose row is gone: the graph reducers cannot
+        // tell (the object may never have been a graph node), so it is this fetch's job.
+        const onScreen = s.view.name === "table" && s.view.kind === kind;
+        const orphaned = onScreen && s.selectedId !== null && s.selectedId.startsWith(`${kind}/`)
+          && !table.rows.some((r) => r.nodeId === s.selectedId);
+        return orphaned ? { tables, selectedId: null, details: null } : { tables };
       });
     } catch (e) {
       get().toast(toAppError(e));
