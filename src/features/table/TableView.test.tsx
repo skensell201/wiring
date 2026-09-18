@@ -24,7 +24,7 @@ const bodyRows = () => within(screen.getAllByRole("rowgroup")[1]).getAllByRole("
 const names = () => bodyRows().map((r) => within(r).getAllByRole("cell")[0].textContent);
 
 beforeEach(() => {
-  useAppStore.setState({ ...initialState(), connection: connected(), view: { name: "table", kind: "Pod" }, tables: new Map([["Pod", pods]]) });
+  useAppStore.setState({ ...initialState(), connection: connected(), graphReady: true, view: { name: "table", kind: "Pod" }, tables: new Map([["Pod", pods]]) });
 });
 
 describe("TableView", () => {
@@ -115,5 +115,14 @@ describe("TableView", () => {
     useAppStore.setState({ tables: new Map() });
     render(<TableView />);
     expect(screen.getByText(/loading pods/i)).toBeInTheDocument();
+  });
+
+  it("shows a loading state instead of a stale table until the namespace's snapshot arrives", () => {
+    // Between select_namespace and graph_snapshot the rows are not refetched yet; a leftover
+    // (or empty) table must not read as the new namespace's contents.
+    useAppStore.setState({ graphReady: false, tables: new Map([["Pod", { ...pods, rows: [] }]]) });
+    render(<TableView />);
+    expect(screen.getByText(/loading pods/i)).toBeInTheDocument();
+    expect(screen.queryByText(/no pods in/i)).not.toBeInTheDocument();
   });
 });

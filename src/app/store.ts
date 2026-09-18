@@ -262,9 +262,8 @@ export const useAppStore = create<AppState>()((set, get) => ({
       const denied = await commands.deniedKinds();
       // Only if this is still the current selection — a newer one owns deniedKinds now.
       if (get().connection.namespace === namespace) set({ deniedKinds: new Set(denied) });
-      const view = get().view;
-      // Fire-and-forget: the namespace switch itself must not wait on the table refetch.
-      if (view.name === "table") void get().refreshTable(view.kind);
+      // An open table is refetched by the graph_snapshot handler once the backend has the new
+      // namespace's objects; fetching here would race the watchers and land an empty table.
     } catch (e) {
       get().toast(toAppError(e));
     }

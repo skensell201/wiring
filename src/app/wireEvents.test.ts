@@ -192,14 +192,14 @@ describe("table refresh", () => {
         connection: { ...initialState().connection, context: "prod", state: "connected", namespace: "a" },
       });
       hoisted.handlers!.graph_delta({ ...emptyDelta, addedNodes: [node] });
-      // selectNamespace cancels the pending debounce and, since a table is open, fires its own
-      // (unbounced) refresh for the new namespace.
+      // selectNamespace cancels the pending debounce; the new namespace's rows are fetched only
+      // once its graph_snapshot arrives, so no list_rows call may happen in between.
       await useAppStore.getState().selectNamespace("b");
       await vi.advanceTimersByTimeAsync(300);
-      // Exactly one list_rows call: selectNamespace's own refresh. The debounced one from the
-      // delta must not have survived to fire a second time.
-      expect(vi.mocked(invoke).mock.calls.filter(([cmd]) => cmd === "list_rows")).toHaveLength(1);
+      expect(invoke).not.toHaveBeenCalledWith("list_rows", expect.anything());
       expect(useAppStore.getState().connection.namespace).toBe("b");
+      hoisted.handlers!.graph_snapshot({ nodes: [{ ...node, id: "Pod/b/x", namespace: "b" }], edges: [] });
+      expect(vi.mocked(invoke).mock.calls.filter(([cmd]) => cmd === "list_rows")).toHaveLength(1);
     } finally {
       vi.useRealTimers();
     }

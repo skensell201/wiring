@@ -363,12 +363,9 @@ describe("views", () => {
     expect(settings.setSidebarCollapsed).toHaveBeenCalledWith(false);
   });
 
-  it("selectNamespace clears tables but keeps the view kind", async () => {
-    // list_rows never resolves within this test: selectNamespace fires the refetch without
-    // waiting on it, so the assertions below see the state right after the clear.
-    vi.mocked(invoke).mockImplementation(
-      (cmd: string) => (cmd === "list_rows" ? new Promise(() => {}) : Promise.resolve(null)),
-    );
+  it("selectNamespace clears tables, keeps the view kind and leaves the refetch to the snapshot", async () => {
+    // Fetching rows right after select_namespace would race the backend's watchers and could
+    // land an empty table (a false "No Pods in payments"); the graph_snapshot handler refetches.
     useAppStore.setState({
       tables: new Map([["Pod", { kind: "Pod", columns: [], rows: [] }]]),
       view: { name: "table", kind: "Pod" },
@@ -377,6 +374,7 @@ describe("views", () => {
     await useAppStore.getState().selectNamespace("payments");
     expect(useAppStore.getState().tables.size).toBe(0);
     expect(useAppStore.getState().view).toEqual({ name: "table", kind: "Pod" });
+    expect(invoke).not.toHaveBeenCalledWith("list_rows", expect.anything());
   });
 
   it("disconnect clears tables and returns the view to the graph", async () => {

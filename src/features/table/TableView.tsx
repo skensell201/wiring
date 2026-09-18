@@ -10,12 +10,13 @@ const STATUS_TEXT: Record<Status, string> = { ok: "text-status-ok", warn: "text-
 
 /** The per-kind table: sortable, filtered by the header search, keyboard-navigable. */
 export function TableView() {
-  const { kind, table, search, selectedId, denied, namespace, select, focusInGraph } = useAppStore(
+  const { kind, table, search, selectedId, denied, namespace, graphReady, select, focusInGraph } = useAppStore(
     useShallow((s) => {
       const kind = s.view.name === "table" ? s.view.kind : null;
       return {
         kind, table: kind ? s.tables.get(kind) : undefined, search: s.search, selectedId: s.selectedId,
-        denied: kind ? s.deniedKinds.has(kind) : false, namespace: s.connection.namespace, select: s.select, focusInGraph: s.focusInGraph,
+        denied: kind ? s.deniedKinds.has(kind) : false, namespace: s.connection.namespace, graphReady: s.graphReady,
+        select: s.select, focusInGraph: s.focusInGraph,
       };
     }),
   );
@@ -32,7 +33,7 @@ export function TableView() {
   let message: string | null = null;
   if (denied) message = `No access to ${plural} (RBAC)`;
   else if (!namespace) message = "Select a namespace to see its resources.";
-  else if (!table) message = `Loading ${plural}…`;
+  else if (!table || !graphReady) message = `Loading ${plural}…`; // rows are refetched once the snapshot lands
   else if (table.rows.length === 0) message = `No ${plural} in ${namespace}`;
   else if (rows.length === 0) message = `No ${plural} match “${search.trim()}”`;
 
@@ -50,7 +51,7 @@ export function TableView() {
 
   return (
     <div className="h-full w-full overflow-auto bg-void">
-      {table && !denied && (
+      {table && graphReady && !denied && (
         <table role="table" tabIndex={0} onKeyDown={onKeyDown} aria-label={plural} className="w-full border-collapse text-[13px] outline-none">
           <thead className="sticky top-0 z-10 bg-panel">
             <tr>
