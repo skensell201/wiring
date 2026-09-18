@@ -6,8 +6,8 @@ import { YamlTab } from "./YamlTab";
 vi.mock("../../shared/ipc/tauri", () => ({ invoke: vi.fn(async () => null), listen: vi.fn(async () => () => {}) }));
 vi.mock("./yaml", () => ({ highlightYaml: vi.fn(async (src: string) => `<pre class="shiki"><code>${src}</code></pre>`) }));
 vi.mock("../editor/LazyYamlEditor", () => ({
-  LazyYamlEditor: ({ value, onChange, label }: { value: string; onChange: (t: string) => void; label: string }) => (
-    <textarea aria-label={label} value={value} onChange={(e) => onChange(e.target.value)} />
+  LazyYamlEditor: ({ value, onChange, label, readOnly }: { value: string; onChange: (t: string) => void; label: string; readOnly?: boolean }) => (
+    <textarea aria-label={label} value={value} readOnly={readOnly} onChange={(e) => onChange(e.target.value)} />
   ),
 }));
 
@@ -66,6 +66,17 @@ describe("YamlTab in edit mode", () => {
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     expect(a.cancelEdit).toHaveBeenCalled();
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("edit-mode buttons and editor are disabled while saving", () => {
+    // Overwrite from the conflict banner writes from edit mode; the buffer must not move under it.
+    setDetails({ mode: "edit", buffer: YAML + "x: 1\n", saving: true, error: { kind: "conflict", message: "the object has been modified" } });
+    render(<YamlTab />);
+    expect(screen.getByLabelText("YAML editor")).toHaveAttribute("readonly");
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /^Save/ })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Reload" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Overwrite" })).toBeDisabled();
   });
 
   it("conflict: a banner with Reload and Overwrite (which forces the write)", () => {

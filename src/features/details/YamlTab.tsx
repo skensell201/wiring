@@ -62,7 +62,7 @@ function EditMode({ editor }: { editor: EditorState }) {
       </div>
       {editor.error && <ErrorBanner error={editor.error} saving={editor.saving} />}
       <div className="min-h-0 flex-1">
-        <LazyYamlEditor value={editor.buffer} onChange={setBuffer} label="YAML editor" autoFocus />
+        <LazyYamlEditor value={editor.buffer} onChange={setBuffer} label="YAML editor" readOnly={editor.saving} autoFocus />
       </div>
     </div>
   );

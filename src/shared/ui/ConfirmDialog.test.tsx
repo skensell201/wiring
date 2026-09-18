@@ -22,17 +22,6 @@ describe("ConfirmDialog", () => {
     expect(onCancel).toHaveBeenCalled();
   });
 
-  it("Escape cancels and marks the event handled so the global handler leaves it alone", () => {
-    const onCancel = vi.fn();
-    render(<ConfirmDialog {...props} onCancel={onCancel} />);
-    const seen = vi.fn((e: KeyboardEvent) => e.defaultPrevented);
-    window.addEventListener("keydown", seen);
-    fireEvent.keyDown(window, { key: "Escape" });
-    window.removeEventListener("keydown", seen);
-    expect(onCancel).toHaveBeenCalledTimes(1);
-    expect(seen).toHaveReturnedWith(true);
-  });
-
   it("focuses Cancel by default so Enter never confirms a destructive action by accident", () => {
     render(<ConfirmDialog {...props} danger />);
     expect(screen.getByRole("button", { name: "Cancel" })).toHaveFocus();

@@ -8,9 +8,11 @@ export function useGlobalKeys(): void {
     const onKey = (e: KeyboardEvent) => {
       if (e.defaultPrevented) return;
       const s = useAppStore.getState();
-      if ((isMac ? e.metaKey : e.ctrlKey) && e.key.toLowerCase() === "s") {
-        // Save = review the diff. Outside edit mode the browser's own Save is as useless as ever; leave it.
-        if (s.details?.editor.mode === "edit") {
+      const modal = s.pickerOpen || s.discardDialog.open || s.deleteDialog.open || s.createDialog.open;
+      if ((isMac ? e.metaKey : e.ctrlKey) && !e.shiftKey && e.key.toLowerCase() === "s") {
+        // Save = review the diff, unless something sits on top of the editor. Outside edit mode
+        // the browser's own Save is as useless as ever; leave it.
+        if (!modal && s.details?.editor.mode === "edit") {
           e.preventDefault();
           s.reviewEdit();
         }
@@ -23,9 +25,10 @@ export function useGlobalKeys(): void {
       if (s.discardDialog.open) { s.cancelDiscard(); return; }
       if (s.deleteDialog.open) { s.cancelDelete(); return; }
       if (s.createDialog.open) { s.closeCreate(); return; }
-      const mode = s.details?.editor.mode;
-      if (mode === "review") { s.backToEdit(); return; }
-      if (mode === "edit") { s.cancelEdit(); return; }
+      const editor = s.details?.editor;
+      if (editor?.saving) return; // a write in flight: nothing to leave until it lands
+      if (editor?.mode === "review") { s.backToEdit(); return; }
+      if (editor?.mode === "edit") { s.cancelEdit(); return; }
       if (s.selectedId !== null) void s.select(null);
       const active = document.activeElement;
       if (active instanceof HTMLElement) active.blur();

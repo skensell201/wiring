@@ -12,22 +12,15 @@ export interface ConfirmDialogProps {
   onCancel: () => void;
 }
 
-/** A modal yes/no question. Escape cancels; Cancel holds the focus on open so Enter never confirms by accident. */
+/** A modal yes/no question. Cancel holds the focus on open so Enter never confirms by accident.
+ *  Escape cancels from the global key handler (`useGlobalKeys`), which knows which dialog is on top. */
 export function ConfirmDialog({ open, title, body, confirmLabel, danger = false, onConfirm, onCancel }: ConfirmDialogProps) {
   const titleId = useId();
   const cancelRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
-    if (!open) return;
-    cancelRef.current?.focus();
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key !== "Escape") return;
-      e.preventDefault(); // handled here; the global Escape handler must not act on it as well
-      onCancel();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [open, onCancel]);
+    if (open) cancelRef.current?.focus();
+  }, [open]);
 
   if (!open) return null;
   return (

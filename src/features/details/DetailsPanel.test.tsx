@@ -110,7 +110,7 @@ describe("DetailsPanel delete", () => {
 describe("DetailsPanel discard", () => {
   it("asks to discard dirty edits; Discard confirms, Cancel keeps them", () => {
     const confirmDiscard = vi.fn(), cancelDiscard = vi.fn();
-    useAppStore.setState({ confirmDiscard, cancelDiscard, discardDialog: { open: true, pendingSelect: "Service/p/web", pendingDeselect: false } });
+    useAppStore.setState({ confirmDiscard, cancelDiscard, discardDialog: { ...initialState().discardDialog, open: true, pendingSelect: "Service/p/web" } });
     render(<DetailsPanel />);
     const dialog = screen.getByRole("alertdialog", { name: "Discard your edits?" });
     expect(dialog).toHaveTextContent(/web-1/);

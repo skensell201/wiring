@@ -30,9 +30,9 @@ export interface Details { nodeId: NodeId; data: ObjectDetails | null; events: K
 
 export interface CreateDialog { open: boolean; kind: CreatableKind; buffer: string; error: AppError | null; submitting: boolean }
 export interface DeleteDialog { open: boolean; nodeId: NodeId | null }
-/** "Discard your edits?" — opened by Cancel on a dirty buffer, or by a selection change while dirty
- *  (which then waits in `pendingSelect` / `pendingDeselect` until confirmed). */
-export interface DiscardDialog { open: boolean; pendingSelect: NodeId | null; pendingDeselect: boolean }
+/** "Discard your edits?" — opened by Cancel on a dirty buffer, or by a selection or namespace change
+ *  while dirty (which then waits in `pendingSelect` / `pendingDeselect` / `pendingNamespace` until confirmed). */
+export interface DiscardDialog { open: boolean; pendingSelect: NodeId | null; pendingDeselect: boolean; pendingNamespace: string | null }
 
 export function viewEditor(original = ""): EditorState {
   return { mode: "view", buffer: "", original, error: null, saving: false };
@@ -40,7 +40,7 @@ export function viewEditor(original = ""): EditorState {
 
 const isDirty = (e: EditorState) => e.mode !== "view" && e.buffer !== e.original;
 
-/** "Pod web-1" from `Pod/ns/web-1` (or "Pods web" from `PodGroup/ns/Deployment/web`), for toasts. */
+/** "Pod web-1" from `Pod/ns/web-1`, for toasts. */
 function describeNode(id: NodeId): string {
   const parts = id.split("/");
   const kind = parts[0] as Kind;
@@ -177,7 +177,7 @@ export function initialState(): Omit<AppState, keyof Actions> {
     focusRequest: null,
     createDialog: { open: false, kind: "Deployment", buffer: "", error: null, submitting: false },
     deleteDialog: { open: false, nodeId: null },
-    discardDialog: { open: false, pendingSelect: null, pendingDeselect: false },
+    discardDialog: { open: false, pendingSelect: null, pendingDeselect: false, pendingNamespace: null },
   };
 }
 
@@ -185,10 +185,17 @@ export function initialState(): Omit<AppState, keyof Actions> {
  *  kind filters, toasts and the sidebar collapse preference kept. The Navigator lists the contexts
  *  to go to next; the modal picker opens only when there are none (its "add a kubeconfig" state). */
 export function disconnectedState(s: AppState): Omit<AppState, keyof Actions> {
+  const lost = lostEditsToast(s);
   return {
-    ...initialState(), contexts: s.contexts, hiddenKinds: s.hiddenKinds, toasts: s.toasts, pickerOpen: s.contexts.length === 0,
-    sidebarCollapsed: s.sidebarCollapsed,
+    ...initialState(), contexts: s.contexts, hiddenKinds: s.hiddenKinds, toasts: lost ? [...s.toasts, { id: ++toastSeq, ...lost }] : s.toasts,
+    pickerOpen: s.contexts.length === 0, sidebarCollapsed: s.sidebarCollapsed,
   };
+}
+
+/** A session reset (disconnect, reconnect, a dropped connection) takes a dirty editor with it; this says so. */
+function lostEditsToast(s: Pick<AppState, "details">): Omit<Toast, "id"> | null {
+  if (!s.details || !isDirty(s.details.editor)) return null;
+  return { kind: "info", message: `Unsaved edits to ${describeNode(s.details.nodeId)} were discarded` };
 }
 
 type Actions = Pick<AppState,
@@ -304,6 +311,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
   },
 
   connect: async (context) => {
+    const lost = lostEditsToast(get());
     set((s) => ({ connection: { ...s.connection, busy: true } }));
     try {
       const info = await commands.connect(context);
@@ -314,6 +322,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
         sidebarCollapsed: get().sidebarCollapsed,
         connection: { state: "connected", context: info.context, serverVersion: info.serverVersion, namespaces: info.namespaces, namespace: null, busy: false },
       });
+      if (lost) get().toast(lost);
       return true;
     } catch (e) {
       // The backend tears the previous session down before dialling, so a failed connect leaves
@@ -342,6 +351,11 @@ export const useAppStore = create<AppState>()((set, get) => ({
   },
 
   selectNamespace: async (namespace) => {
+    const editor = get().details?.editor;
+    if (editor && isDirty(editor)) {
+      set({ discardDialog: { open: true, pendingSelect: null, pendingDeselect: false, pendingNamespace: namespace } });
+      return;
+    }
     cancelTableRefresh();
     const expanded = [...get().expandedGroups];
     set((s) => ({
@@ -365,7 +379,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
     if (id === get().selectedId) return;
     const editor = get().details?.editor;
     if (editor && isDirty(editor)) {
-      set({ discardDialog: { open: true, pendingSelect: id, pendingDeselect: id === null } });
+      set({ discardDialog: { open: true, pendingSelect: id, pendingDeselect: id === null, pendingNamespace: null } });
       return;
     }
     if (id === null) {
@@ -374,7 +388,9 @@ export const useAppStore = create<AppState>()((set, get) => ({
       return;
     }
     const error = await loadDetails(id);
-    if (error) get().toast(error);
+    // An object just created here may not have reached the graph through the watch yet, so
+    // get_object does not know it either: `applyDelta` fetches the details once the node arrives.
+    if (error && !(error.kind === "notFound" && !get().nodes.has(id))) get().toast(error);
   },
 
   setHovered: (id) => set({ hoveredId: id }),
@@ -474,7 +490,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
     set({ details: { ...d, editor: { ...d.editor, mode: "review" } } });
   },
 
-  backToEdit: () => set((s) => (s.details?.editor.mode === "review" ? { details: { ...s.details, editor: { ...s.details.editor, mode: "edit" } } } : {})),
+  backToEdit: () => set((s) => (s.details?.editor.mode === "review" && !s.details.editor.saving ? { details: { ...s.details, editor: { ...s.details.editor, mode: "edit" } } } : {})),
 
   applyEdit: async (force = false) => {
     const d = get().details;
@@ -482,23 +498,26 @@ export const useAppStore = create<AppState>()((set, get) => ({
     const { nodeId } = d;
     const yaml = d.editor.buffer;
     set({ details: { ...d, editor: { ...d.editor, saving: true, error: null } } });
+    // The result belongs to this session only: still on the node, still marked saving. Anything
+    // else (a discard, a delete, a fresh edit after moving away and back) has ended it meanwhile.
+    const live = (s: AppState) => s.details?.nodeId === nodeId && s.details.editor.saving;
     try {
       const data = await commands.updateObject(nodeId, yaml, force);
-      set((s) => (s.details?.nodeId === nodeId ? { details: { ...s.details, data, editor: viewEditor(data.yaml) } } : {}));
+      set((s) => (live(s) ? { details: { ...s.details!, data, editor: viewEditor(data.yaml) } } : {}));
       get().toast({ kind: "info", message: `Saved ${describeNode(nodeId)}` });
     } catch (e) {
       const error = toAppError(e);
       // Conflicts and validation failures are the tab's banner; anything else is the usual toast too.
-      set((s) => (s.details?.nodeId === nodeId ? { details: { ...s.details, editor: { ...s.details.editor, mode: "edit", saving: false, error } } } : {}));
+      set((s) => (live(s) ? { details: { ...s.details!, editor: { ...s.details!.editor, mode: "edit", saving: false, error } } } : {}));
       if (error.kind !== "conflict" && error.kind !== "invalid") get().toast(error);
     }
   },
 
   cancelEdit: () => {
     const d = get().details;
-    if (!d || d.editor.mode === "view") return;
+    if (!d || d.editor.mode === "view" || d.editor.saving) return;
     if (isDirty(d.editor)) {
-      set({ discardDialog: { open: true, pendingSelect: null, pendingDeselect: false } });
+      set({ discardDialog: { open: true, pendingSelect: null, pendingDeselect: false, pendingNamespace: null } });
       return;
     }
     set({ details: { ...d, editor: viewEditor(d.editor.original) } });
@@ -508,14 +527,16 @@ export const useAppStore = create<AppState>()((set, get) => ({
     const d = get().details;
     if (!d || d.editor.mode === "view") return;
     const { nodeId } = d;
+    // Only while the edit is still open on this node; a cancel meanwhile must not reopen it.
+    const live = (s: AppState) => s.details?.nodeId === nodeId && s.details.editor.mode !== "view";
     try {
       const data = await commands.getObject(nodeId);
-      set((s) => (s.details?.nodeId === nodeId
-        ? { details: { ...s.details, data, editor: { mode: "edit", buffer: data.yaml, original: data.yaml, error: null, saving: false } } }
+      set((s) => (live(s)
+        ? { details: { ...s.details!, data, editor: { mode: "edit", buffer: data.yaml, original: data.yaml, error: null, saving: false } } }
         : {}));
     } catch (e) {
       const error = toAppError(e);
-      set((s) => (s.details?.nodeId === nodeId ? { details: { ...s.details, editor: { ...s.details.editor, error } } } : {}));
+      set((s) => (live(s) ? { details: { ...s.details!, editor: { ...s.details!.editor, error } } } : {}));
     }
   },
 
@@ -526,7 +547,8 @@ export const useAppStore = create<AppState>()((set, get) => ({
       discardDialog: initialState().discardDialog,
       ...(details ? { details: { ...details, editor: viewEditor(details.editor.original) } } : {}),
     });
-    if (discardDialog.pendingSelect !== null || discardDialog.pendingDeselect) void get().select(discardDialog.pendingSelect);
+    if (discardDialog.pendingNamespace !== null) void get().selectNamespace(discardDialog.pendingNamespace);
+    else if (discardDialog.pendingSelect !== null || discardDialog.pendingDeselect) void get().select(discardDialog.pendingSelect);
   },
 
   cancelDiscard: () => set({ discardDialog: initialState().discardDialog }),
@@ -564,10 +586,9 @@ export const useAppStore = create<AppState>()((set, get) => ({
     }
     set({ createDialog: initialState().createDialog });
     get().toast({ kind: "info", message: `Created ${describeNode(nodeId)}` });
-    // The object reaches the graph through the watch; until then get_object may not know it —
-    // `applyDelta` fetches the details once the node arrives.
-    const error = await loadDetails(nodeId);
-    if (error && error.kind !== "notFound") get().toast(error);
+    // `select` asks first when another object's edits are dirty, and tolerates the new object not
+    // having reached the graph through the watch yet.
+    await get().select(nodeId);
   },
 
   closeCreate: () => set({ createDialog: initialState().createDialog }),
@@ -584,6 +605,8 @@ export const useAppStore = create<AppState>()((set, get) => ({
     const count = get().nodes.get(nodeId)?.group?.count ?? 0;
     try {
       await commands.deleteObject(nodeId);
+      // Its editor has nothing left to save; back to view, and the watch's removal clears the selection.
+      set((s) => (s.details?.nodeId === nodeId ? { details: { ...s.details, editor: viewEditor(s.details.editor.original) } } : {}));
       get().toast({ kind: "info", message: `Deleted ${describeDeleted(nodeId, count)}` });
     } catch (e) {
       get().toast(toAppError(e));

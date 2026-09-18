@@ -608,7 +608,7 @@ describe("editor", () => {
     useAppStore.getState().startEdit();
     useAppStore.getState().setBuffer(EDITED_YAML);
     useAppStore.getState().cancelEdit();
-    expect(useAppStore.getState().discardDialog).toEqual({ open: true, pendingSelect: null, pendingDeselect: false });
+    expect(useAppStore.getState().discardDialog).toEqual({ open: true, pendingSelect: null, pendingDeselect: false, pendingNamespace: null });
     expect(editor().mode).toBe("edit");
     useAppStore.getState().cancelDiscard();
     expect(useAppStore.getState().discardDialog.open).toBe(false);
@@ -626,7 +626,7 @@ describe("editor", () => {
     useAppStore.getState().setBuffer(EDITED_YAML);
     await useAppStore.getState().select("Pod/p/b");
     expect(useAppStore.getState().selectedId).toBe("Pod/p/a");
-    expect(useAppStore.getState().discardDialog).toEqual({ open: true, pendingSelect: "Pod/p/b", pendingDeselect: false });
+    expect(useAppStore.getState().discardDialog).toEqual({ open: true, pendingSelect: "Pod/p/b", pendingDeselect: false, pendingNamespace: null });
     expect(invoke).not.toHaveBeenCalledWith("get_object", expect.anything());
     useAppStore.getState().confirmDiscard();
     await vi.waitFor(() => expect(useAppStore.getState().details?.data).not.toBeNull());
@@ -641,7 +641,7 @@ describe("editor", () => {
     useAppStore.getState().setBuffer(EDITED_YAML);
     await useAppStore.getState().select(null);
     expect(useAppStore.getState().selectedId).toBe("Pod/p/a");
-    expect(useAppStore.getState().discardDialog).toEqual({ open: true, pendingSelect: null, pendingDeselect: true });
+    expect(useAppStore.getState().discardDialog).toEqual({ open: true, pendingSelect: null, pendingDeselect: true, pendingNamespace: null });
     useAppStore.getState().confirmDiscard();
     await vi.waitFor(() => expect(useAppStore.getState().selectedId).toBeNull());
     expect(useAppStore.getState().details).toBeNull();
@@ -696,6 +696,157 @@ describe("editor", () => {
     await useAppStore.getState().refreshTable("Pod");
     expect(useAppStore.getState().selectedId).toBe("Pod/p/a");
     expect(editor().error?.kind).toBe("notFound");
+  });
+
+  it("setBuffer in view mode is a no-op", async () => {
+    await selectPod();
+    useAppStore.getState().setBuffer(EDITED_YAML);
+    expect(editor()).toEqual(viewEditor(POD_YAML));
+  });
+
+  it("applyEdit while saving is a no-op", async () => {
+    await selectPod();
+    useAppStore.getState().startEdit();
+    useAppStore.getState().setBuffer(EDITED_YAML);
+    let resolve!: (v: unknown) => void;
+    vi.mocked(invoke).mockImplementationOnce(() => new Promise((r) => { resolve = r; }));
+    const first = useAppStore.getState().applyEdit();
+    await useAppStore.getState().applyEdit(true);
+    expect(invoke).toHaveBeenCalledTimes(1);
+    resolve({ yaml: EDITED_YAML, summary: [], related: [] });
+    await first;
+    expect(editor().mode).toBe("view");
+  });
+
+  it("backToEdit and cancelEdit are no-ops while a save is in flight", async () => {
+    await selectPod();
+    useAppStore.getState().startEdit();
+    useAppStore.getState().setBuffer(EDITED_YAML);
+    useAppStore.getState().reviewEdit();
+    let resolve!: (v: unknown) => void;
+    vi.mocked(invoke).mockImplementationOnce(() => new Promise((r) => { resolve = r; }));
+    const apply = useAppStore.getState().applyEdit();
+    useAppStore.getState().backToEdit();
+    expect(editor().mode).toBe("review");
+    useAppStore.getState().cancelEdit();
+    expect(editor().mode).toBe("review");
+    expect(useAppStore.getState().discardDialog.open).toBe(false);
+    resolve({ yaml: EDITED_YAML, summary: [], related: [] });
+    await apply;
+    expect(editor().mode).toBe("view");
+  });
+
+  it("stale failure of applyEdit after the selection moved is dropped", async () => {
+    await selectPod();
+    useAppStore.getState().startEdit();
+    useAppStore.getState().setBuffer(EDITED_YAML);
+    let reject!: (e: unknown) => void;
+    vi.mocked(invoke).mockImplementationOnce(() => new Promise((_, r) => { reject = r; }));
+    const apply = useAppStore.getState().applyEdit();
+    // Moving on while the write is in flight asks; confirming ends the session.
+    await useAppStore.getState().select("Pod/p/b");
+    useAppStore.getState().confirmDiscard();
+    await vi.waitFor(() => expect(useAppStore.getState().details?.data).not.toBeNull());
+    expect(useAppStore.getState().selectedId).toBe("Pod/p/b");
+    reject({ kind: "conflict", message: "the object has been modified" });
+    await apply;
+    expect(useAppStore.getState().details?.nodeId).toBe("Pod/p/b");
+    expect(editor()).toEqual(viewEditor(POD_YAML));
+  });
+
+  it("failed apply after the editor was discarded does not reopen it", async () => {
+    await selectPod();
+    useAppStore.getState().startEdit();
+    useAppStore.getState().setBuffer(EDITED_YAML);
+    let reject!: (e: unknown) => void;
+    vi.mocked(invoke).mockImplementationOnce(() => new Promise((_, r) => { reject = r; }));
+    const apply = useAppStore.getState().applyEdit();
+    // Deleting the object while its write is in flight closes the editor (see the delete suite).
+    useAppStore.getState().requestDelete("Pod/p/a");
+    await useAppStore.getState().confirmDelete();
+    expect(editor()).toEqual(viewEditor(POD_YAML));
+    reject({ kind: "notFound", message: "pods \"a\" not found" });
+    await apply;
+    expect(useAppStore.getState().details?.nodeId).toBe("Pod/p/a");
+    expect(editor()).toEqual(viewEditor(POD_YAML));
+  });
+
+  it("successful apply after a new edit session on the same node does not clobber it", async () => {
+    await selectPod();
+    useAppStore.getState().startEdit();
+    useAppStore.getState().setBuffer(EDITED_YAML);
+    let resolve!: (v: unknown) => void;
+    vi.mocked(invoke).mockImplementationOnce(() => new Promise((r) => { resolve = r; }));
+    const apply = useAppStore.getState().applyEdit();
+    // Away (discarding the session) and back while the write is in flight, then a fresh edit.
+    await useAppStore.getState().select("Pod/p/b");
+    useAppStore.getState().confirmDiscard();
+    await vi.waitFor(() => expect(useAppStore.getState().details).toMatchObject({ nodeId: "Pod/p/b", loading: false }));
+    await useAppStore.getState().select("Pod/p/a");
+    useAppStore.getState().startEdit();
+    useAppStore.getState().setBuffer("kind: Pod\nz: 1\n");
+    resolve({ yaml: EDITED_YAML, summary: [], related: [] });
+    await apply;
+    expect(editor()).toMatchObject({ mode: "edit", buffer: "kind: Pod\nz: 1\n", original: POD_YAML, saving: false });
+    expect(useAppStore.getState().details?.data?.yaml).toBe(POD_YAML);
+  });
+
+  it("reload resolving after cancel is dropped", async () => {
+    await selectPod();
+    useAppStore.getState().startEdit();
+    let resolve!: (v: unknown) => void;
+    vi.mocked(invoke).mockImplementationOnce(() => new Promise((r) => { resolve = r; }));
+    const reload = useAppStore.getState().reloadEdit();
+    useAppStore.getState().cancelEdit(); // clean buffer: straight back to view
+    expect(editor().mode).toBe("view");
+    resolve({ yaml: "kind: Pod\nfresh: 1\n", summary: [], related: [] });
+    await reload;
+    expect(editor()).toEqual(viewEditor(POD_YAML));
+    expect(useAppStore.getState().details?.data?.yaml).toBe(POD_YAML);
+  });
+
+  it("selectNamespace while dirty asks first; cancelDiscard keeps everything, confirmDiscard switches", async () => {
+    await selectPod();
+    useAppStore.getState().startEdit();
+    useAppStore.getState().setBuffer(EDITED_YAML);
+    await useAppStore.getState().selectNamespace("q");
+    expect(useAppStore.getState().discardDialog).toEqual({ open: true, pendingSelect: null, pendingDeselect: false, pendingNamespace: "q" });
+    expect(useAppStore.getState().connection.namespace).toBe("p");
+    expect(useAppStore.getState().nodes.size).toBe(2);
+    expect(invoke).not.toHaveBeenCalledWith("select_namespace", expect.anything());
+    useAppStore.getState().cancelDiscard();
+    expect(useAppStore.getState().discardDialog.open).toBe(false);
+    expect(editor()).toMatchObject({ mode: "edit", buffer: EDITED_YAML });
+    expect(useAppStore.getState().connection.namespace).toBe("p");
+    await useAppStore.getState().selectNamespace("q");
+    useAppStore.getState().confirmDiscard();
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith("select_namespace", { namespace: "q", expandedGroups: [] }));
+    const s = useAppStore.getState();
+    expect(s.connection.namespace).toBe("q");
+    expect(s.details).toBeNull();
+    expect(s.discardDialog.open).toBe(false);
+  });
+
+  it("disconnectedState toasts the edits it discards", async () => {
+    await selectPod();
+    useAppStore.getState().startEdit();
+    useAppStore.getState().setBuffer(EDITED_YAML);
+    const d = disconnectedState(useAppStore.getState());
+    expect(d.details).toBeNull();
+    expect(d.toasts).toHaveLength(1);
+    expect(d.toasts[0]).toMatchObject({ kind: "info", message: "Unsaved edits to Pod a were discarded" });
+    useAppStore.getState().setBuffer(POD_YAML); // clean again: nothing to report
+    expect(disconnectedState(useAppStore.getState()).toasts).toHaveLength(0);
+  });
+
+  it("connect toasts the edits it discards", async () => {
+    await selectPod();
+    useAppStore.getState().startEdit();
+    useAppStore.getState().setBuffer(EDITED_YAML);
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => (cmd === "connect" ? { context: "prod", serverVersion: "v1.33.0", namespaces: [] } : null));
+    await useAppStore.getState().connect("prod");
+    expect(useAppStore.getState().details).toBeNull();
+    expect(useAppStore.getState().toasts.at(-1)).toMatchObject({ kind: "info", message: "Unsaved edits to Pod a were discarded" });
   });
 });
 
@@ -771,6 +922,33 @@ describe("create dialog", () => {
     await vi.waitFor(() => expect(useAppStore.getState().details?.data?.yaml).toBe("kind: ConfigMap\n"));
   });
 
+  it("submitCreate while another object is dirty asks before switching", async () => {
+    await selectPod();
+    useAppStore.getState().startEdit();
+    useAppStore.getState().setBuffer(EDITED_YAML);
+    useAppStore.getState().openCreate("ConfigMap");
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      if (cmd === "create_object") return "ConfigMap/p/my-configmap";
+      if (cmd === "get_object") throw { kind: "notFound", message: "ConfigMap/p/my-configmap not found" };
+      return null;
+    });
+    await useAppStore.getState().submitCreate();
+    const s = useAppStore.getState();
+    expect(s.createDialog.open).toBe(false);
+    expect(s.toasts.map((t) => t.message)).toEqual(["Created ConfigMap my-configmap"]);
+    expect(s.selectedId).toBe("Pod/p/a");
+    expect(editor()).toMatchObject({ mode: "edit", buffer: EDITED_YAML });
+    expect(s.discardDialog).toEqual({ open: true, pendingSelect: "ConfigMap/p/my-configmap", pendingDeselect: false, pendingNamespace: null });
+    expect(invoke).not.toHaveBeenCalledWith("get_object", expect.anything());
+    useAppStore.getState().confirmDiscard();
+    await vi.waitFor(() => expect(useAppStore.getState().details).toMatchObject({ nodeId: "ConfigMap/p/my-configmap", data: null, loading: false }));
+    // The object has not reached the graph yet: get_object's notFound is expected, not toasted.
+    expect(useAppStore.getState().toasts.map((t) => t.kind)).toEqual(["info"]);
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => (cmd === "get_object" ? { yaml: "kind: ConfigMap\n", summary: [], related: [] } : null));
+    useAppStore.getState().applyDelta({ addedNodes: [node("ConfigMap/p/my-configmap", { kind: "ConfigMap" })], updatedNodes: [], removedNodes: [], addedEdges: [], removedEdges: [] });
+    await vi.waitFor(() => expect(useAppStore.getState().details?.data?.yaml).toBe("kind: ConfigMap\n"));
+  });
+
   it("submitCreate shows a server error in the dialog and keeps it open", async () => {
     withNamespace();
     useAppStore.getState().openCreate("ConfigMap");
@@ -822,6 +1000,23 @@ describe("delete dialog", () => {
     await useAppStore.getState().confirmDelete();
     expect(useAppStore.getState().deleteDialog.open).toBe(false);
     expect(useAppStore.getState().toasts.at(-1)).toMatchObject({ kind: "forbidden", message: "pods is forbidden" });
+  });
+
+  it("confirmDelete of the object under an open editor closes the editor; a failed delete leaves it alone", async () => {
+    await selectPod();
+    useAppStore.getState().startEdit();
+    useAppStore.getState().setBuffer(EDITED_YAML);
+    useAppStore.getState().requestDelete("Pod/p/a");
+    vi.mocked(invoke).mockRejectedValueOnce({ kind: "forbidden", message: "pods is forbidden" });
+    await useAppStore.getState().confirmDelete();
+    expect(editor()).toMatchObject({ mode: "edit", buffer: EDITED_YAML });
+    useAppStore.getState().requestDelete("Pod/p/a");
+    await useAppStore.getState().confirmDelete();
+    expect(editor()).toEqual(viewEditor(POD_YAML));
+    expect(useAppStore.getState().selectedId).toBe("Pod/p/a");
+    // In view mode the watch's removal clears the selection as usual.
+    useAppStore.getState().applyDelta({ addedNodes: [], updatedNodes: [], removedNodes: ["Pod/p/a"], addedEdges: [], removedEdges: [] });
+    expect(useAppStore.getState().selectedId).toBeNull();
   });
 
   it("confirmDelete with nothing requested is a no-op", async () => {

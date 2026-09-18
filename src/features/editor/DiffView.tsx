@@ -1,4 +1,5 @@
 import { diffLines } from "diff";
+import { useMemo } from "react";
 
 type Mark = "add" | "del" | "same";
 
@@ -14,11 +15,14 @@ function lines(value: string): string[] {
 
 /** A unified line diff of `original` → `next`, headed by the number of changed lines. */
 export function DiffView({ original, next }: { original: string; next: string }) {
-  const rows: { mark: Mark; text: string }[] = [];
-  for (const part of diffLines(original, next)) {
-    const mark: Mark = part.added ? "add" : part.removed ? "del" : "same";
-    for (const text of lines(part.value)) rows.push({ mark, text });
-  }
+  const rows = useMemo(() => {
+    const out: { mark: Mark; text: string }[] = [];
+    for (const part of diffLines(original, next)) {
+      const mark: Mark = part.added ? "add" : part.removed ? "del" : "same";
+      for (const text of lines(part.value)) out.push({ mark, text });
+    }
+    return out;
+  }, [original, next]);
   const changed = rows.filter((r) => r.mark !== "same").length;
   return (
     <div className="flex h-full min-h-0 flex-col">
