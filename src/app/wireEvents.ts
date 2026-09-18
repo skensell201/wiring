@@ -5,9 +5,13 @@ import { disconnectedState, useAppStore } from "./store";
 import { cancelTableRefresh, scheduleTableRefresh } from "./tableRefresh";
 
 /** Whether a delta changes rows that a `kind` table would show. `PodGroup` nodes collapse pods,
- *  so any PodGroup touched by the delta also counts as touching `Pod`. */
+ *  so any PodGroup touched by the delta also counts as touching `Pod`. Single ReplicaSets are
+ *  hidden behind their Deployment, so their changes surface as Deployment/Pod deltas. */
 export function deltaTouches(delta: GraphDelta, kind: Kind): boolean {
-  const matchesKind = (k: string) => k === kind || (kind === "Pod" && k === "PodGroup");
+  const matchesKind = (k: string) =>
+    k === kind ||
+    (kind === "Pod" && k === "PodGroup") ||
+    (kind === "ReplicaSet" && (k === "Deployment" || k === "Pod" || k === "PodGroup"));
   if (delta.addedNodes.some((n) => matchesKind(n.kind)) || delta.updatedNodes.some((n) => matchesKind(n.kind))) return true;
   return delta.removedNodes.some((id) => matchesKind(id.split("/", 1)[0]));
 }

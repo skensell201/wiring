@@ -86,6 +86,16 @@ describe("wireEvents", () => {
   });
 });
 
+describe("deltaTouches for hidden ReplicaSets", () => {
+  it("treats Deployment and Pod changes as touching the ReplicaSet table", () => {
+    const dep = { id: "Deployment/p/web", kind: "Deployment" as const, namespace: "p", name: "web", status: "ok" as const, badges: [], group: null };
+    const d = { addedNodes: [], updatedNodes: [dep], removedNodes: [], addedEdges: [], removedEdges: [] };
+    expect(deltaTouches(d, "ReplicaSet")).toBe(true);
+    expect(deltaTouches({ ...d, updatedNodes: [], removedNodes: ["Pod/p/web-1"] }, "ReplicaSet")).toBe(true);
+    expect(deltaTouches(d, "Service")).toBe(false);
+  });
+});
+
 describe("deltaTouches", () => {
   it("matches added, updated and removed nodes of the given kind", () => {
     expect(deltaTouches(emptyDelta, "Pod")).toBe(false);
