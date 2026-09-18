@@ -25,7 +25,7 @@ function CanvasInner() {
     useShallow((s) => ({
       nodes: s.nodes, edges: s.edges, graphReady: s.graphReady, hiddenKinds: s.hiddenKinds, deniedKinds: s.deniedKinds,
       search: s.search, hoveredId: s.hoveredId, selectedId: s.selectedId, expandedGroups: s.expandedGroups,
-      namespace: s.connection.namespace, context: s.connection.context,
+      namespace: s.connection.namespace, context: s.connection.context, focusRequest: s.focusRequest,
       select: s.select, setHovered: s.setHovered, toggleGroup: s.toggleGroup, toggleKind: s.toggleKind,
     })),
   );
@@ -43,6 +43,19 @@ function CanvasInner() {
     const timeout = setTimeout(() => fitView({ padding: 0.2, maxZoom: 1 }), 50);
     return () => clearTimeout(timeout);
   }, [s.graphReady, s.namespace, fitView]);
+
+  // "Show in graph": centre on the requested node every time the request is bumped. Coming from a
+  // table the canvas has just mounted, so the node may be unmeasured and the whole-graph fit above
+  // is still pending — repeat the focus once that has settled.
+  const focusSeq = s.focusRequest?.seq;
+  const focusNodeId = s.focusRequest?.nodeId;
+  useEffect(() => {
+    if (focusSeq === undefined || !focusNodeId) return;
+    const focus = () => void fitView({ nodes: [{ id: focusNodeId }], duration: 300, maxZoom: 1.2, padding: 0.5 });
+    focus();
+    const timeout = setTimeout(focus, 80);
+    return () => clearTimeout(timeout);
+  }, [focusSeq, focusNodeId, fitView]);
 
   const onNodeClick = useCallback<NodeMouseHandler<ResourceFlowNode>>((_, node) => void s.select(node.id), [s.select]);
   const onNodeDoubleClick = useCallback<NodeMouseHandler<ResourceFlowNode>>((_, node) => {

@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { applySnapshot, initialState, useAppStore } from "../../app/store";
 import { Canvas } from "./Canvas";
@@ -27,6 +27,16 @@ describe("Canvas", () => {
     });
     render(<Canvas />);
     expect(screen.getByText(/namespace is empty/i)).toBeInTheDocument();
+  });
+
+  it("centres on a focus request without throwing", () => {
+    const base = applySnapshot(initialState(), { nodes: [{ id: "Pod/p/web-1", kind: "Pod", namespace: "p", name: "web-1", status: "ok", badges: ["Running"], group: null }], edges: [] });
+    useAppStore.setState({ ...base, connection: { ...initialState().connection, context: "prod", state: "connected", namespace: "p" } });
+    const { rerender } = render(<Canvas />);
+    act(() => useAppStore.setState({ selectedId: "Pod/p/web-1", focusRequest: { nodeId: "Pod/p/web-1", seq: 1 } }));
+    rerender(<Canvas />);
+    act(() => useAppStore.setState({ focusRequest: { nodeId: "Pod/p/web-1", seq: 2 } }));
+    expect(screen.getByText("web-1")).toBeInTheDocument();
   });
 
   it("renders nodes from the store", () => {

@@ -236,6 +236,16 @@ describe("views", () => {
     expect(useAppStore.getState().view).toEqual({ name: "graph" });
   });
 
+  it("remembers the last table kind so the Table switch can reopen it from Overview", async () => {
+    useAppStore.setState({ connection: { ...initialState().connection, context: "prod", namespace: "payments" } });
+    vi.mocked(invoke).mockImplementation(async (cmd: string, args?: any) =>
+      cmd === "list_rows" ? { kind: args.kind, columns: [], rows: [] } : null);
+    expect(useAppStore.getState().lastTableKind).toBeNull();
+    await useAppStore.getState().showTable("Service");
+    useAppStore.getState().showGraph();
+    expect(useAppStore.getState().lastTableKind).toBe("Service");
+  });
+
   it("refreshTable keeps the table when the fetch fails and toasts", async () => {
     const existing = { kind: "Pod" as const, columns: [], rows: [] };
     useAppStore.setState({ tables: new Map([["Pod", existing]]) });

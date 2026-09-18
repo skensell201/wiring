@@ -47,6 +47,8 @@ export interface AppState extends GraphState {
   toasts: Toast[];
   pickerOpen: boolean;
   view: View;
+  /** The kind of the most recent table view, so the Graph|Table switch can reopen it from Overview. */
+  lastTableKind: Kind | null;
   sidebarCollapsed: boolean;
   tables: Map<Kind, Table>;
   focusRequest: FocusRequest | null;
@@ -98,6 +100,7 @@ export function initialState(): Omit<AppState, keyof Actions> {
     toasts: [],
     pickerOpen: false,
     view: { name: "graph" },
+    lastTableKind: null,
     sidebarCollapsed: false,
     tables: new Map(),
     focusRequest: null,
@@ -307,7 +310,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
   showGraph: () => set({ view: { name: "graph" } }),
 
   showTable: async (kind) => {
-    set({ view: { name: "table", kind } });
+    set({ view: { name: "table", kind }, lastTableKind: kind });
     await get().refreshTable(kind);
   },
 
