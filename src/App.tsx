@@ -6,6 +6,7 @@ import { wireEvents } from "./app/wireEvents";
 import { ContextPicker } from "./features/cluster/ContextPicker";
 import { Header } from "./features/cluster/Header";
 import { DetailsPanel } from "./features/details/DetailsPanel";
+import { CreateDialog } from "./features/editor/CreateDialog";
 import { Canvas } from "./features/graph/Canvas";
 import { ViewHeader } from "./features/graph/ViewHeader";
 import { Navigator } from "./features/navigator/Navigator";
@@ -40,6 +41,7 @@ export function App() {
         <ErrorBoundary name="details panel"><DetailsPanel /></ErrorBoundary>
       </div>
       <ContextPicker />
+      <CreateDialog />
       <Toasts />
     </div>
   );

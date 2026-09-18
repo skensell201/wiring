@@ -127,6 +127,25 @@ describe("Header", () => {
     expect(useAppStore.getState().pickerOpen).toBe(false);
   });
 
+  it("+ Create opens the create dialog, and is disabled until a namespace is selected", () => {
+    const openCreate = vi.fn();
+    useAppStore.setState({ connection: { ...initialState().connection, context: "prod", namespace: null }, openCreate });
+    const { unmount } = render(<Header />);
+    expect(screen.getByRole("button", { name: /create/i })).toBeDisabled();
+    unmount();
+
+    useAppStore.setState({ connection: { ...initialState().connection, context: "prod", namespace: "shop" }, openCreate });
+    render(<Header />);
+    fireEvent.click(screen.getByRole("button", { name: /create/i }));
+    expect(openCreate).toHaveBeenCalled();
+  });
+
+  it("has no Create button before a cluster is connected", () => {
+    useAppStore.setState({ connection: initialState().connection });
+    render(<Header />);
+    expect(screen.queryByRole("button", { name: /create/i })).not.toBeInTheDocument();
+  });
+
   it("search box updates the store", () => {
     useAppStore.setState({ connection: { ...initialState().connection, context: "prod" } });
     render(<Header />);

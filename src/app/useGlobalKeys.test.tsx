@@ -80,30 +80,35 @@ describe("editing keys", () => {
     expect(select).not.toHaveBeenCalled();
   });
 
-  it("Escape closes dialogs first: discard, then delete, then create, then the editor", () => {
+  it("Escape closes an open dialog (which owns the key) and leaves the editor under it alone", () => {
+    // Only one dialog is ever open at a time; each sits on top of an editing session.
     const cancelDiscard = vi.fn();
     const cancelDelete = vi.fn();
     const closeCreate = vi.fn();
     const cancelEdit = vi.fn();
-    useAppStore.setState({
-      ...connected(), ...editing("edit"), cancelDiscard, cancelDelete, closeCreate, cancelEdit,
-      discardDialog: { open: true, pendingSelect: null, pendingDeselect: false },
-      deleteDialog: { open: true, nodeId: "Pod/p/a" },
-      createDialog: { ...initialState().createDialog, open: true },
-    });
-    render(<App />);
+    const { discardDialog, deleteDialog, createDialog } = initialState();
+    const base = { ...connected(), ...editing("edit"), cancelDiscard, cancelDelete, closeCreate, cancelEdit, discardDialog, deleteDialog, createDialog };
+    useAppStore.setState({ ...base, discardDialog: { open: true, pendingSelect: null, pendingDeselect: false } });
+    const { unmount } = render(<App />);
     fireEvent.keyDown(window, { key: "Escape" });
     expect(cancelDiscard).toHaveBeenCalledTimes(1);
-    expect(cancelDelete).not.toHaveBeenCalled();
-    useAppStore.setState({ discardDialog: initialState().discardDialog });
+    unmount();
+
+    useAppStore.setState({ ...base, deleteDialog: { open: true, nodeId: "Pod/p/a" } });
+    const second = render(<App />);
     fireEvent.keyDown(window, { key: "Escape" });
     expect(cancelDelete).toHaveBeenCalledTimes(1);
-    expect(closeCreate).not.toHaveBeenCalled();
-    useAppStore.setState({ deleteDialog: initialState().deleteDialog });
+    second.unmount();
+
+    useAppStore.setState({ ...base, createDialog: { ...createDialog, open: true } });
+    const third = render(<App />);
     fireEvent.keyDown(window, { key: "Escape" });
     expect(closeCreate).toHaveBeenCalledTimes(1);
     expect(cancelEdit).not.toHaveBeenCalled();
-    useAppStore.setState({ createDialog: initialState().createDialog });
+    third.unmount();
+
+    useAppStore.setState(base);
+    render(<App />);
     fireEvent.keyDown(window, { key: "Escape" });
     expect(cancelEdit).toHaveBeenCalledTimes(1);
   });

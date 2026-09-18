@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { applySnapshot, initialState, useAppStore, viewEditor } from "../../app/store";
 import { DetailsPanel } from "./DetailsPanel";
@@ -66,5 +66,57 @@ describe("DetailsPanel", () => {
     useAppStore.setState({ selectedId: null, details: null });
     render(<DetailsPanel />);
     expect(screen.getByText(/select a node/i)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Delete" })).not.toBeInTheDocument();
+  });
+});
+
+describe("DetailsPanel delete", () => {
+  it("the trash button asks before deleting a Pod; confirming deletes", () => {
+    const confirmDelete = vi.fn(async () => {});
+    useAppStore.setState({ confirmDelete });
+    render(<DetailsPanel />);
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+    const dialog = screen.getByRole("alertdialog", { name: "Delete Pod web-1?" });
+    expect(dialog).toHaveTextContent("This cannot be undone.");
+    expect(useAppStore.getState().deleteDialog).toEqual({ open: true, nodeId: "Pod/p/web-1" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
+    expect(confirmDelete).toHaveBeenCalled();
+  });
+
+  it("Cancel closes the dialog without deleting", () => {
+    const confirmDelete = vi.fn(async () => {});
+    useAppStore.setState({ confirmDelete });
+    render(<DetailsPanel />);
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+    expect(useAppStore.getState().deleteDialog.open).toBe(false);
+    expect(confirmDelete).not.toHaveBeenCalled();
+  });
+
+  it("words a PodGroup as its member count and says the controller recreates them", () => {
+    const group = { id: "PodGroup/p/Deployment/web", kind: "PodGroup" as const, namespace: "p", name: "web", status: "ok" as const, badges: [], group: { count: 7, ok: 7, warn: 0, err: 0 } };
+    useAppStore.setState((s) => ({
+      nodes: new Map([...s.nodes, [group.id, group]]), selectedId: group.id,
+      details: { nodeId: group.id, data: { yaml: "", summary: [], related: [] }, events: [], loading: false, editor: viewEditor() },
+    }));
+    render(<DetailsPanel />);
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+    const dialog = screen.getByRole("alertdialog", { name: "Delete 7 pods of Deployment web?" });
+    expect(dialog).toHaveTextContent(/controller will recreate them/i);
+  });
+});
+
+describe("DetailsPanel discard", () => {
+  it("asks to discard dirty edits; Discard confirms, Cancel keeps them", () => {
+    const confirmDiscard = vi.fn(), cancelDiscard = vi.fn();
+    useAppStore.setState({ confirmDiscard, cancelDiscard, discardDialog: { open: true, pendingSelect: "Service/p/web", pendingDeselect: false } });
+    render(<DetailsPanel />);
+    const dialog = screen.getByRole("alertdialog", { name: "Discard your edits?" });
+    expect(dialog).toHaveTextContent(/web-1/);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Discard" }));
+    expect(confirmDiscard).toHaveBeenCalled();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    expect(cancelDiscard).toHaveBeenCalled();
   });
 });
