@@ -43,15 +43,15 @@ Nodes, Namespaces and Events as standalone views; Helm; CRDs; editing; column cu
 | Storage | PersistentVolumeClaims, PersistentVolumes |
 | Access Control | ServiceAccounts |
 
-Each kind row shows a count and a dot with the worst status among its objects (`err` > `warn` > `ok`), both derived from the graph nodes already in the store (PodGroup counts as its member count; individual pods when expanded). Kinds in `deniedKinds` are struck through with the "No access (RBAC)" title. Sections are collapsible (state in memory only). The active row (Overview or a kind) is highlighted.
+Each kind row shows a count and a dot with the worst status among its objects (`err` > `warn` > `ok`), both derived from the graph nodes already in the store (PodGroup counts as its member count; individual pods when expanded). Because the counts come from graph nodes, objects the graph does not carry are not counted — in particular the single ReplicaSets the backend hides behind their Deployment. Kinds in `deniedKinds` are struck through with the "No access (RBAC)" title. Sections are collapsible (state in memory only). The active row (Overview or a kind) is highlighted.
 
 ## 5. Table view
 
-- Opened by clicking a kind in the Navigator; the view header shows `Section / Kind · count` and a `Graph | Table` segmented control. `Graph` returns to Overview; the kind stays highlighted in the Navigator until Overview is clicked.
+- Opened by clicking a kind in the Navigator; the view header shows `Section / Kind · count` and a `Graph | Table` segmented control. `Graph` returns to Overview; Overview is highlighted while the graph is shown, and the `Table` segment reopens the last kind.
 - Columns are `kubectl get`-like and defined in the backend (§7). Cells may carry a status colour (ok/warn/err). Rows are sorted by name by default; clicking a header sorts by that column (text, numeric-aware), a second click reverses.
 - The header search box filters rows by substring across all cells (case-insensitive) — the same `search` state that dims graph nodes.
-- Row click → `select(nodeId)` (details panel + events watcher). Selected row highlighted with the ember accent. Double-click or the row's "Show in graph" action → switches to Overview, selects the node and centres the canvas on it.
-- Live: the table refreshes when a `graph_snapshot` arrives or a `graph_delta` touches the table's kind (debounced 300 ms). Sorting and selection survive refreshes.
+- Row click → `select(nodeId)` (details panel + events watcher). Selected row highlighted with the ember accent. Double-click or Enter → switches to Overview, selects the node and centres the canvas on it.
+- Live: the table refreshes when a `graph_snapshot` arrives or a `graph_delta` touches the table's kind (debounced 300 ms). Sorting and selection survive refreshes. Objects that are not graph nodes (pods inside a collapsed group, hidden ReplicaSets) refresh only on snapshots — no delta mentions them.
 - Empty state: "No <kind> in <namespace>". Denied kind: "No access to <kind> (RBAC)".
 
 ## 6. State (frontend)

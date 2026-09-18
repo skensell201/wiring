@@ -69,7 +69,14 @@ Argument names are camelCase on the JS side; Tauri maps them to the Rust snake_c
 
 ## Settings file
 
-The backend stores `extraKubeconfigs: string[]` in `settings.json` (tauri-plugin-store). The frontend may use the same file for the last context/namespace; do not overwrite that key.
+The backend stores `extraKubeconfigs: string[]` in `settings.json` (tauri-plugin-store). The frontend uses the same file for its own keys; neither side overwrites the other's:
+
+| Key | Type | Written by | Meaning |
+|---|---|---|---|
+| `extraKubeconfigs` | `string[]` | backend | Kubeconfig files added via "Add kubeconfig…" |
+| `lastContext` | `string` | frontend | Context to reconnect on startup |
+| `lastNamespace` | `Record<string, string>` | frontend | Last selected namespace, keyed by context name |
+| `sidebarCollapsed` | `boolean` | frontend | Whether the Navigator is collapsed to its icon rail |
 
 ## Security notes
 
