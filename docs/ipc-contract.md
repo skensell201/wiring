@@ -9,7 +9,7 @@ The JSON fixtures in `src/shared/ipc/fixtures/` are the authoritative payload sh
 | `Kind` | `Deployment`, `StatefulSet`, `DaemonSet`, `ReplicaSet`, `Job`, `CronJob`, `Pod`, `Service`, `Ingress`, `ConfigMap`, `Secret`, `PersistentVolumeClaim`, `PersistentVolume`, `ServiceAccount`, `HorizontalPodAutoscaler`, `PodGroup` |
 | `Status` | `ok`, `warn`, `err`, `unknown` |
 | `Relation` | `owns`, `selects`, `routes`, `mounts`, `envFrom`, `claims`, `binds`, `usesSA`, `scales` |
-| `ErrorKind` | `auth`, `network`, `forbidden`, `notFound`, `internal` |
+| `ErrorKind` | `auth`, `network`, `forbidden`, `notFound`, `conflict`, `invalid`, `internal` — `conflict` is HTTP 409 (stale `resourceVersion` on a write); `invalid` is HTTP 400/422 (the message is the server's, listing the bad fields) |
 | `ConnectionState` | `connected`, `degraded`, `disconnected` |
 
 ## Commands (`invoke`)

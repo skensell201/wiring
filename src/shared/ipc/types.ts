@@ -15,7 +15,7 @@ export type Status = (typeof STATUSES)[number];
 export const RELATIONS = ["owns", "selects", "routes", "mounts", "envFrom", "claims", "binds", "usesSA", "scales"] as const;
 export type Relation = (typeof RELATIONS)[number];
 
-export const ERROR_KINDS = ["auth", "network", "forbidden", "notFound", "internal"] as const;
+export const ERROR_KINDS = ["auth", "network", "forbidden", "notFound", "conflict", "invalid", "internal"] as const;
 export type ErrorKind = (typeof ERROR_KINDS)[number];
 
 export const CONNECTION_STATES = ["connected", "degraded", "disconnected"] as const;
