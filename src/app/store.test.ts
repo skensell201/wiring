@@ -807,6 +807,8 @@ describe("editor", () => {
 
   it("selectNamespace while dirty asks first; cancelDiscard keeps everything, confirmDiscard switches", async () => {
     await selectPod();
+    const { settings } = await import("../shared/settings");
+    vi.mocked(settings.setLastNamespace).mockClear();
     useAppStore.getState().startEdit();
     useAppStore.getState().setBuffer(EDITED_YAML);
     await useAppStore.getState().selectNamespace("q");
@@ -814,6 +816,8 @@ describe("editor", () => {
     expect(useAppStore.getState().connection.namespace).toBe("p");
     expect(useAppStore.getState().nodes.size).toBe(2);
     expect(invoke).not.toHaveBeenCalledWith("select_namespace", expect.anything());
+    // A switch the user may still cancel must not become the remembered namespace.
+    expect(settings.setLastNamespace).not.toHaveBeenCalled();
     useAppStore.getState().cancelDiscard();
     expect(useAppStore.getState().discardDialog.open).toBe(false);
     expect(editor()).toMatchObject({ mode: "edit", buffer: EDITED_YAML });
@@ -825,6 +829,7 @@ describe("editor", () => {
     expect(s.connection.namespace).toBe("q");
     expect(s.details).toBeNull();
     expect(s.discardDialog.open).toBe(false);
+    expect(settings.setLastNamespace).toHaveBeenCalledWith("prod", "q");
   });
 
   it("disconnectedState toasts the edits it discards", async () => {

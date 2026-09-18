@@ -1,7 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { initialState, useAppStore } from "../../app/store";
-import { settings } from "../../shared/settings";
 import { ContextPicker } from "./ContextPicker";
 import { Header } from "./Header";
 import { NamespacePicker } from "./NamespacePicker";
@@ -72,18 +71,16 @@ describe("ContextPicker", () => {
     render(<ContextPicker />);
     fireEvent.click(screen.getByRole("button", { name: /prod/ }));
     await waitFor(() => expect(selectNamespace).toHaveBeenCalledWith("shop"));
-    expect(settings.setLastNamespace).toHaveBeenCalledWith("prod", "shop");
   });
 });
 
 describe("NamespacePicker", () => {
-  it("lists namespaces, selects one and remembers it for the context", () => {
+  it("lists namespaces and selects one", () => {
     const selectNamespace = vi.fn(async () => {});
     useAppStore.setState({ connection: { ...initialState().connection, context: "prod", namespaces: ["default", "payments"] }, selectNamespace });
     render(<NamespacePicker />);
     fireEvent.change(screen.getByLabelText("Namespace"), { target: { value: "payments" } });
     expect(selectNamespace).toHaveBeenCalledWith("payments");
-    expect(settings.setLastNamespace).toHaveBeenCalledWith("prod", "payments");
   });
 
   it("falls back to a text input when the namespace list is empty", () => {

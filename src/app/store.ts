@@ -357,7 +357,10 @@ export const useAppStore = create<AppState>()((set, get) => ({
       return;
     }
     cancelTableRefresh();
-    const expanded = [...get().expandedGroups];
+    const { expandedGroups, connection } = get();
+    const expanded = [...expandedGroups];
+    // Remembered only once the switch is really happening (not while the discard dialog is up).
+    if (connection.context) void settings.setLastNamespace(connection.context, namespace);
     set((s) => ({
       nodes: new Map(), edges: new Map(), graphReady: false, selectedId: null, details: null, hoveredId: null,
       deniedKinds: new Set(), tables: new Map(), focusRequest: null, connection: { ...s.connection, namespace },
