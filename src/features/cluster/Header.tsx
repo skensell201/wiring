@@ -2,15 +2,17 @@ import { Search } from "lucide-react";
 import { useEffect, useRef } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { useAppStore } from "../../app/store";
+import { isMac } from "../../shared/platform";
 import { Button } from "../../shared/ui/Button";
 import { Dot } from "../../shared/ui/Dot";
 import { NamespacePicker } from "./NamespacePicker";
 
-const isMac = typeof navigator !== "undefined" && /Mac/.test(navigator.platform ?? "");
-
 export function Header() {
-  const { connection, search, setSearch, reconnect, setPickerOpen } = useAppStore(
-    useShallow((s) => ({ connection: s.connection, search: s.search, setSearch: s.setSearch, reconnect: s.reconnect, setPickerOpen: s.setPickerOpen })),
+  const { connection, search, hasContexts, sidebarCollapsed, setSearch, reconnect, setPickerOpen, toggleSidebar } = useAppStore(
+    useShallow((s) => ({
+      connection: s.connection, search: s.search, hasContexts: s.contexts.length > 0, sidebarCollapsed: s.sidebarCollapsed,
+      setSearch: s.setSearch, reconnect: s.reconnect, setPickerOpen: s.setPickerOpen, toggleSidebar: s.toggleSidebar,
+    })),
   );
   const searchRef = useRef<HTMLInputElement>(null);
 
@@ -25,10 +27,16 @@ export function Header() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
+  // The Navigator normally hosts the macOS traffic lights; its 48 px rail is too narrow for them.
+  const inset = isMac && sidebarCollapsed ? "pl-8" : "";
+  // Cluster switching lives in the Navigator; the picker stays for the empty state.
+  const onContextClick = () => (hasContexts ? void toggleSidebar() : setPickerOpen(true));
+
   return (
-    <header className={`drag-region flex h-12 shrink-0 items-center gap-3 border-b border-border bg-void px-3 ${isMac ? "pl-20" : ""}`}>
+    <header className={`drag-region flex h-12 shrink-0 items-center gap-3 border-b border-border bg-void px-3 ${inset}`}>
       <span className="text-sm font-semibold tracking-wide text-text-hi">Wiring</span>
-      <button type="button" className="no-drag rounded-lg border border-border bg-surface px-2.5 py-1 text-sm text-text-hi hover:bg-muted" onClick={() => setPickerOpen(true)}>
+      <button type="button" className="no-drag rounded-lg border border-border bg-surface px-2.5 py-1 text-sm text-text-hi hover:bg-muted" onClick={onContextClick}
+        title={hasContexts ? "Toggle navigator" : "Choose a cluster"}>
         ⎈ <span>{connection.context ?? "choose cluster"}</span>{connection.serverVersion ? <span className="ml-2 text-xs text-text-muted">{connection.serverVersion}</span> : null}
       </button>
       {connection.context && <NamespacePicker />}

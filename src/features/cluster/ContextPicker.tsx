@@ -1,17 +1,15 @@
-import { open } from "@tauri-apps/plugin-dialog";
 import { useEffect } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { useAppStore } from "../../app/store";
-import { settings } from "../../shared/settings";
 import { Button } from "../../shared/ui/Button";
+import { connectContext } from "./connectContext";
+import { useAddKubeconfig } from "./useAddKubeconfig";
 
 export function ContextPicker() {
-  const { contexts, pickerOpen, connect, selectNamespace, addKubeconfig, setPickerOpen, busy, current } = useAppStore(
-    useShallow((s) => ({
-      contexts: s.contexts, pickerOpen: s.pickerOpen, connect: s.connect, selectNamespace: s.selectNamespace,
-      addKubeconfig: s.addKubeconfig, setPickerOpen: s.setPickerOpen, busy: s.connection.busy, current: s.connection.context,
-    })),
+  const { contexts, pickerOpen, setPickerOpen, busy, current } = useAppStore(
+    useShallow((s) => ({ contexts: s.contexts, pickerOpen: s.pickerOpen, setPickerOpen: s.setPickerOpen, busy: s.connection.busy, current: s.connection.context })),
   );
+  const add = useAddKubeconfig();
   // Escape dismisses the picker, but only when there is a connection to fall back to.
   useEffect(() => {
     if (!pickerOpen || !current) return;
@@ -26,21 +24,7 @@ export function ContextPicker() {
   if (!pickerOpen) return null;
 
   const pick = async (name: string) => {
-    const ctx = contexts.find((c) => c.name === name);
-    if (await connect(name)) {
-      await settings.set("lastContext", name);
-      const namespaces = useAppStore.getState().connection.namespaces;
-      const ns = ctx?.namespace ?? (namespaces.length === 1 ? namespaces[0] : null);
-      if (ns) {
-        await selectNamespace(ns);
-        await settings.setLastNamespace(name, ns);
-      }
-      setPickerOpen(false);
-    }
-  };
-  const add = async () => {
-    const path = await open({ multiple: false, directory: false, title: "Add kubeconfig file" });
-    if (typeof path === "string") await addKubeconfig(path);
+    if (await connectContext(name)) setPickerOpen(false);
   };
 
   return (

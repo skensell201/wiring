@@ -6,6 +6,7 @@ import { ContextPicker } from "./features/cluster/ContextPicker";
 import { Header } from "./features/cluster/Header";
 import { DetailsPanel } from "./features/details/DetailsPanel";
 import { Canvas } from "./features/graph/Canvas";
+import { Navigator } from "./features/navigator/Navigator";
 import { ErrorBoundary } from "./shared/ui/ErrorBoundary";
 import { Toasts } from "./shared/ui/Toasts";
 
@@ -24,12 +25,15 @@ export function App() {
   }, []);
 
   return (
-    <div className="relative flex h-full flex-col">
-      <Header />
-      <main className="min-h-0 flex-1">
-        <ErrorBoundary name="graph view"><Canvas /></ErrorBoundary>
-      </main>
-      <ErrorBoundary name="details panel"><DetailsPanel /></ErrorBoundary>
+    <div className="relative flex h-full">
+      <ErrorBoundary name="navigator"><Navigator /></ErrorBoundary>
+      <div className="flex min-w-0 flex-1 flex-col">
+        <Header />
+        <main className="min-h-0 flex-1">
+          <ErrorBoundary name="graph view"><Canvas /></ErrorBoundary>
+        </main>
+        <ErrorBoundary name="details panel"><DetailsPanel /></ErrorBoundary>
+      </div>
       <ContextPicker />
       <Toasts />
     </div>

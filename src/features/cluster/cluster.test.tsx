@@ -98,6 +98,25 @@ describe("Header", () => {
     expect(reconnect).toHaveBeenCalled();
   });
 
+  it("the context button toggles the navigator when contexts exist, and opens the picker otherwise", () => {
+    const toggleSidebar = vi.fn(async () => {});
+    useAppStore.setState({ contexts: [], connection: { ...initialState().connection }, toggleSidebar });
+    const { unmount } = render(<Header />);
+    fireEvent.click(screen.getByRole("button", { name: /choose cluster/i }));
+    expect(useAppStore.getState().pickerOpen).toBe(true);
+    expect(toggleSidebar).not.toHaveBeenCalled();
+    unmount();
+
+    useAppStore.setState({
+      contexts: [{ name: "prod", cluster: "c", user: "u", namespace: null, sourceFile: "/k" }],
+      connection: { ...initialState().connection, context: "prod", state: "connected" }, pickerOpen: false, toggleSidebar,
+    });
+    render(<Header />);
+    fireEvent.click(screen.getByRole("button", { name: /prod/ }));
+    expect(toggleSidebar).toHaveBeenCalled();
+    expect(useAppStore.getState().pickerOpen).toBe(false);
+  });
+
   it("search box updates the store", () => {
     useAppStore.setState({ connection: { ...initialState().connection, context: "prod" } });
     render(<Header />);
