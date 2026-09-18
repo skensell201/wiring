@@ -40,3 +40,81 @@ describe("global keys", () => {
     expect(document.activeElement).toBe(screen.getByPlaceholderText(/search/i));
   });
 });
+
+describe("editing keys", () => {
+  const connected = () => ({ connection: { ...initialState().connection, context: "prod", state: "connected" as const } });
+  const editing = (mode: "view" | "edit" | "review") => ({
+    selectedId: "Pod/p/a",
+    details: { nodeId: "Pod/p/a", data: { yaml: "kind: Pod\n", summary: [], related: [] }, events: [], loading: false, editor: { mode, buffer: "kind: Pod\nx: 1\n", original: "kind: Pod\n", error: null, saving: false } },
+  });
+
+  it("Cmd/Ctrl+S reviews the edit in edit mode and is otherwise left to the browser", () => {
+    const reviewEdit = vi.fn();
+    useAppStore.setState({ ...connected(), ...editing("edit"), reviewEdit });
+    render(<App />);
+    const ev = new KeyboardEvent("keydown", { key: "s", metaKey: true, ctrlKey: true, cancelable: true, bubbles: true });
+    window.dispatchEvent(ev);
+    expect(reviewEdit).toHaveBeenCalledTimes(1);
+    expect(ev.defaultPrevented).toBe(true);
+
+    useAppStore.setState(editing("view"));
+    const plain = new KeyboardEvent("keydown", { key: "s", metaKey: true, ctrlKey: true, cancelable: true, bubbles: true });
+    window.dispatchEvent(plain);
+    expect(reviewEdit).toHaveBeenCalledTimes(1);
+    expect(plain.defaultPrevented).toBe(false);
+  });
+
+  it("Escape in review goes back to edit; in edit it cancels; the selection is untouched", () => {
+    const backToEdit = vi.fn();
+    const cancelEdit = vi.fn();
+    const select = vi.fn(async () => {});
+    useAppStore.setState({ ...connected(), ...editing("review"), backToEdit, cancelEdit, select });
+    render(<App />);
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(backToEdit).toHaveBeenCalledTimes(1);
+    expect(cancelEdit).not.toHaveBeenCalled();
+    useAppStore.setState(editing("edit"));
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(cancelEdit).toHaveBeenCalledTimes(1);
+    expect(backToEdit).toHaveBeenCalledTimes(1);
+    expect(select).not.toHaveBeenCalled();
+  });
+
+  it("Escape closes dialogs first: discard, then delete, then create, then the editor", () => {
+    const cancelDiscard = vi.fn();
+    const cancelDelete = vi.fn();
+    const closeCreate = vi.fn();
+    const cancelEdit = vi.fn();
+    useAppStore.setState({
+      ...connected(), ...editing("edit"), cancelDiscard, cancelDelete, closeCreate, cancelEdit,
+      discardDialog: { open: true, pendingSelect: null, pendingDeselect: false },
+      deleteDialog: { open: true, nodeId: "Pod/p/a" },
+      createDialog: { ...initialState().createDialog, open: true },
+    });
+    render(<App />);
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(cancelDiscard).toHaveBeenCalledTimes(1);
+    expect(cancelDelete).not.toHaveBeenCalled();
+    useAppStore.setState({ discardDialog: initialState().discardDialog });
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(cancelDelete).toHaveBeenCalledTimes(1);
+    expect(closeCreate).not.toHaveBeenCalled();
+    useAppStore.setState({ deleteDialog: initialState().deleteDialog });
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(closeCreate).toHaveBeenCalledTimes(1);
+    expect(cancelEdit).not.toHaveBeenCalled();
+    useAppStore.setState({ createDialog: initialState().createDialog });
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(cancelEdit).toHaveBeenCalledTimes(1);
+  });
+
+  it("Escape marked handled by a widget is ignored", () => {
+    const cancelEdit = vi.fn();
+    useAppStore.setState({ ...connected(), ...editing("edit"), cancelEdit });
+    render(<App />);
+    const ev = new KeyboardEvent("keydown", { key: "Escape", cancelable: true, bubbles: true });
+    ev.preventDefault();
+    window.dispatchEvent(ev);
+    expect(cancelEdit).not.toHaveBeenCalled();
+  });
+});

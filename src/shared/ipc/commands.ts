@@ -21,4 +21,7 @@ export const commands = {
   watchEvents: (nodeId: NodeId | null) => call<null>("watch_events", { nodeId }),
   deniedKinds: () => call<Kind[]>("denied_kinds"),
   listRows: (kind: Kind) => call<Table>("list_rows", { kind }),
+  updateObject: (nodeId: NodeId, yaml: string, force: boolean) => call<ObjectDetails>("update_object", { nodeId, yaml, force }),
+  createObject: (namespace: string, yaml: string) => call<NodeId>("create_object", { namespace, yaml }),
+  deleteObject: (nodeId: NodeId) => call<null>("delete_object", { nodeId }),
 };

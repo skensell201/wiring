@@ -1,6 +1,6 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { applySnapshot, initialState, useAppStore } from "../../app/store";
+import { applySnapshot, initialState, useAppStore, viewEditor } from "../../app/store";
 import { DetailsPanel } from "./DetailsPanel";
 
 vi.mock("../../shared/ipc/tauri", () => ({ invoke: vi.fn(async () => null), listen: vi.fn(async () => () => {}) }));
@@ -14,7 +14,7 @@ beforeEach(() => {
       ...applySnapshot(initialState(), { nodes: [node, { ...node, id: "Service/p/web", kind: "Service", name: "web" }], edges: [] }),
       selectedId: "Pod/p/web-1",
       details: {
-        nodeId: "Pod/p/web-1", loading: false,
+        nodeId: "Pod/p/web-1", loading: false, editor: viewEditor("kind: Pod\nmetadata:\n  name: web-1\n"),
         data: { yaml: "kind: Pod\nmetadata:\n  name: web-1\n", summary: [["Phase", "Running"], ["Node", "worker-3"]], related: ["Service/p/web"] },
         events: [{ name: "e1", type: "Warning", reason: "BackOff", message: "restarting", count: 3, firstTimestamp: null, lastTimestamp: "2026-09-17T10:00:00Z" }],
       },
@@ -49,14 +49,14 @@ describe("DetailsPanel", () => {
 
   it("names a selected object that is not a graph node from its id", () => {
     // Rows of pods collapsed into a PodGroup are selectable from the table but never in `nodes`.
-    useAppStore.setState({ selectedId: "Pod/p/web-9", details: { nodeId: "Pod/p/web-9", data: null, events: [], loading: true } });
+    useAppStore.setState({ selectedId: "Pod/p/web-9", details: { nodeId: "Pod/p/web-9", data: null, events: [], loading: true, editor: viewEditor() } });
     render(<DetailsPanel />);
     expect(screen.getByText("web-9")).toBeInTheDocument();
     expect(screen.getByText("Pod · p")).toBeInTheDocument();
   });
 
   it("names a cluster-scoped object that is not a graph node without a namespace", () => {
-    useAppStore.setState({ selectedId: "PersistentVolume/pv-1", details: { nodeId: "PersistentVolume/pv-1", data: null, events: [], loading: true } });
+    useAppStore.setState({ selectedId: "PersistentVolume/pv-1", details: { nodeId: "PersistentVolume/pv-1", data: null, events: [], loading: true, editor: viewEditor() } });
     render(<DetailsPanel />);
     expect(screen.getByText("pv-1")).toBeInTheDocument();
     expect(screen.getByText("PersistentVolume")).toBeInTheDocument();
