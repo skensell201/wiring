@@ -11,9 +11,19 @@ vi.mock("../shared/ipc/tauri", () => ({
   }),
   listen: vi.fn(async () => () => {}),
 }));
+vi.mock("../shared/settings", () => ({
+  settings: {
+    get: vi.fn(async () => null),
+    set: vi.fn(async () => {}),
+    getLastNamespace: vi.fn(async () => null),
+    setLastNamespace: vi.fn(async () => {}),
+    getSidebarCollapsed: vi.fn(async () => false),
+    setSidebarCollapsed: vi.fn(async () => {}),
+  },
+}));
 
 import { invoke } from "../shared/ipc/tauri";
-import { applyDelta, applySnapshot, disconnectedState, initialState, useAppStore, type AppState } from "./store";
+import { applyDelta, applySnapshot, disconnectedState, initialState, kindStats, useAppStore, type AppState } from "./store";
 
 const node = (id: string, over: Partial<GraphNode> = {}): GraphNode => ({
   id, kind: "Pod", namespace: "p", name: id.split("/").pop()!, status: "ok", badges: ["Running"], group: null, ...over,
@@ -209,5 +219,92 @@ describe("actions", () => {
     expect(useAppStore.getState().hiddenKinds.has("Secret")).toBe(false);
     useAppStore.getState().setSearch("web");
     expect(useAppStore.getState().search).toBe("web");
+  });
+});
+
+describe("views", () => {
+  it("starts on the graph and switches to a table, fetching rows", async () => {
+    vi.mocked(invoke).mockImplementation(async (cmd: string, args?: any) =>
+      cmd === "list_rows" ? { kind: args.kind, columns: [{ key: "name", label: "Name", numeric: false }], rows: [] } : null);
+    expect(useAppStore.getState().view).toEqual({ name: "graph" });
+    await useAppStore.getState().showTable("Pod");
+    expect(useAppStore.getState().view).toEqual({ name: "table", kind: "Pod" });
+    expect(invoke).toHaveBeenCalledWith("list_rows", { kind: "Pod" });
+    expect(useAppStore.getState().tables.get("Pod")?.columns[0].key).toBe("name");
+    useAppStore.getState().showGraph();
+    expect(useAppStore.getState().view).toEqual({ name: "graph" });
+  });
+
+  it("refreshTable keeps the table when the fetch fails and toasts", async () => {
+    vi.mocked(invoke).mockRejectedValueOnce({ kind: "internal", message: "nope" });
+    await useAppStore.getState().refreshTable("Pod");
+    expect(useAppStore.getState().tables.has("Pod")).toBe(false);
+    expect(useAppStore.getState().toasts.at(-1)?.message).toBe("nope");
+  });
+
+  it("focusInGraph switches to the graph, selects the node and bumps the focus request", async () => {
+    useAppStore.setState(applySnapshot(initialState(), { nodes: [node("Pod/p/a")], edges: [] }));
+    vi.mocked(invoke).mockImplementation(async (cmd: string, args?: any) =>
+      cmd === "list_rows" ? { kind: args.kind, columns: [{ key: "name", label: "Name", numeric: false }], rows: [] } : null);
+    await useAppStore.getState().showTable("Pod");
+    await useAppStore.getState().focusInGraph("Pod/p/a");
+    const s = useAppStore.getState();
+    expect(s.view).toEqual({ name: "graph" });
+    expect(s.selectedId).toBe("Pod/p/a");
+    expect(s.focusRequest).toEqual({ nodeId: "Pod/p/a", seq: 1 });
+    await s.focusInGraph("Pod/p/a");
+    expect(useAppStore.getState().focusRequest?.seq).toBe(2);
+  });
+
+  it("toggleSidebar flips and persists", async () => {
+    const { settings } = await import("../shared/settings");
+    expect(useAppStore.getState().sidebarCollapsed).toBe(false);
+    await useAppStore.getState().toggleSidebar();
+    expect(useAppStore.getState().sidebarCollapsed).toBe(true);
+    expect(settings.setSidebarCollapsed).toHaveBeenCalledWith(true);
+    await useAppStore.getState().toggleSidebar();
+    expect(useAppStore.getState().sidebarCollapsed).toBe(false);
+    expect(settings.setSidebarCollapsed).toHaveBeenCalledWith(false);
+  });
+
+  it("selectNamespace clears tables but keeps the view kind", async () => {
+    // list_rows never resolves within this test: selectNamespace fires the refetch without
+    // waiting on it, so the assertions below see the state right after the clear.
+    vi.mocked(invoke).mockImplementation(
+      (cmd: string) => (cmd === "list_rows" ? new Promise(() => {}) : Promise.resolve(null)),
+    );
+    useAppStore.setState({
+      tables: new Map([["Pod", { kind: "Pod", columns: [], rows: [] }]]),
+      view: { name: "table", kind: "Pod" },
+      connection: { ...initialState().connection, context: "prod" },
+    });
+    await useAppStore.getState().selectNamespace("payments");
+    expect(useAppStore.getState().tables.size).toBe(0);
+    expect(useAppStore.getState().view).toEqual({ name: "table", kind: "Pod" });
+  });
+
+  it("disconnect clears tables and returns the view to the graph", async () => {
+    useAppStore.setState({
+      tables: new Map([["Pod", { kind: "Pod", columns: [], rows: [] }]]),
+      view: { name: "table", kind: "Pod" },
+      connection: { ...initialState().connection, context: "prod" },
+    });
+    await useAppStore.getState().disconnect();
+    expect(useAppStore.getState().tables.size).toBe(0);
+    expect(useAppStore.getState().view).toEqual({ name: "graph" });
+  });
+});
+
+describe("kindStats", () => {
+  it("counts nodes per kind with the worst status; PodGroup counts as pods", () => {
+    const s = applySnapshot(initialState(), { nodes: [
+      node("Pod/p/a"), node("Pod/p/b", { status: "err" }),
+      node("PodGroup/p/Deployment/w", { kind: "PodGroup", status: "warn", group: { count: 7, ok: 6, warn: 1, err: 0 } }),
+      node("Service/p/s", { kind: "Service" }),
+    ], edges: [] });
+    const stats = kindStats(s.nodes);
+    expect(stats.get("Pod")).toEqual({ count: 9, worst: "err" });
+    expect(stats.get("Service")).toEqual({ count: 1, worst: "ok" });
+    expect(stats.has("PodGroup")).toBe(false);
   });
 });

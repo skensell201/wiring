@@ -33,4 +33,11 @@ describe("settings", () => {
     await settings.set("lastContext", "prod");
     expect(await settings.get<string>("lastContext")).toBe("prod");
   });
+
+  it("defaults sidebarCollapsed to false and remembers it once set", async () => {
+    expect(await settings.getSidebarCollapsed()).toBe(false);
+    await settings.setSidebarCollapsed(true);
+    expect(await settings.getSidebarCollapsed()).toBe(true);
+    expect(mem.get("sidebarCollapsed")).toBe(true);
+  });
 });

@@ -57,6 +57,11 @@ export interface K8sEvent {
 export interface ObjectEvents { nodeId: NodeId; events: K8sEvent[] }
 export interface AppError { kind: ErrorKind; message: string }
 
+export interface TableColumn { key: string; label: string; numeric: boolean }
+export interface TableCell { text: string; status: Status | null }
+export interface TableRow { nodeId: NodeId; status: Status; cells: TableCell[] }
+export interface Table { kind: Kind; columns: TableColumn[]; rows: TableRow[] }
+
 // ---- guards ---------------------------------------------------------------
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null;
@@ -95,6 +100,20 @@ export function isK8sEvent(v: unknown): v is K8sEvent {
 }
 export function isObjectEvents(v: unknown): v is ObjectEvents {
   return isObj(v) && isStr(v.nodeId) && arrayOf(v.events, isK8sEvent);
+}
+export function isTableColumn(v: unknown): v is TableColumn {
+  return isObj(v) && isStr(v.key) && isStr(v.label) && typeof v.numeric === "boolean";
+}
+export function isTableCell(v: unknown): v is TableCell {
+  return isObj(v) && isStr(v.text) && (v.status === null || oneOf(STATUSES, v.status));
+}
+function isTableRowWithColumns(columns: number) {
+  return (v: unknown): v is TableRow =>
+    isObj(v) && isStr(v.nodeId) && oneOf(STATUSES, v.status) && arrayOf(v.cells, isTableCell) && v.cells.length === columns;
+}
+export function isTable(v: unknown): v is Table {
+  return isObj(v) && oneOf(KINDS, v.kind) && arrayOf(v.columns, isTableColumn)
+    && arrayOf(v.rows, isTableRowWithColumns(v.columns.length));
 }
 export function isConnectionState(v: unknown): v is ConnectionState { return oneOf(CONNECTION_STATES, v); }
 export function isAppError(v: unknown): v is AppError { return isObj(v) && oneOf(ERROR_KINDS, v.kind) && isStr(v.message); }

@@ -4,6 +4,7 @@ import { useAppStore } from "./store";
 /** Boot: load contexts, reconnect the remembered context/namespace or open the picker. */
 export async function startup(): Promise<void> {
   const s = useAppStore.getState;
+  useAppStore.setState({ sidebarCollapsed: await settings.getSidebarCollapsed() });
   await s().loadContexts();
   const last = await settings.get<string>("lastContext");
   const ctx = last ? s().contexts.find((c) => c.name === last) : undefined;

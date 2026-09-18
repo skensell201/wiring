@@ -9,9 +9,12 @@ vi.mock("../shared/ipc/events", () => ({
 }));
 vi.mock("../shared/ipc/tauri", () => ({ invoke: vi.fn(async () => null), listen: vi.fn(async () => () => {}) }));
 
-import { wireEvents } from "./wireEvents";
+import type { GraphDelta } from "../shared/ipc/types";
+import { deltaTouches, wireEvents } from "./wireEvents";
 
 const node = { id: "Pod/p/a", kind: "Pod" as const, namespace: "p", name: "a", status: "ok" as const, badges: [], group: null };
+const podGroupNode = { ...node, id: "PodGroup/p/Deployment/w", kind: "PodGroup" as const };
+const emptyDelta: GraphDelta = { addedNodes: [], updatedNodes: [], removedNodes: [], addedEdges: [], removedEdges: [] };
 
 beforeEach(() => { useAppStore.setState(initialState()); hoisted.handlers = null; });
 
@@ -80,5 +83,80 @@ describe("wireEvents", () => {
     hoisted.handlers!.connection_error({ kind: "forbidden", message: "Secret: forbidden" });
     await new Promise((r) => setTimeout(r, 0));
     expect(useAppStore.getState().deniedKinds.has("Secret")).toBe(true);
+  });
+});
+
+describe("deltaTouches", () => {
+  it("matches added, updated and removed nodes of the given kind", () => {
+    expect(deltaTouches(emptyDelta, "Pod")).toBe(false);
+    expect(deltaTouches({ ...emptyDelta, addedNodes: [node] }, "Pod")).toBe(true);
+    expect(deltaTouches({ ...emptyDelta, updatedNodes: [node] }, "Pod")).toBe(true);
+    expect(deltaTouches({ ...emptyDelta, removedNodes: ["Pod/p/a"] }, "Pod")).toBe(true);
+    expect(deltaTouches({ ...emptyDelta, addedNodes: [{ ...node, id: "Service/p/s", kind: "Service" }] }, "Pod")).toBe(false);
+  });
+
+  it("a touched PodGroup also counts as touching the Pod table, but no other kind", () => {
+    expect(deltaTouches({ ...emptyDelta, addedNodes: [podGroupNode] }, "Pod")).toBe(true);
+    expect(deltaTouches({ ...emptyDelta, updatedNodes: [podGroupNode] }, "Pod")).toBe(true);
+    expect(deltaTouches({ ...emptyDelta, removedNodes: ["PodGroup/p/Deployment/w"] }, "Pod")).toBe(true);
+    expect(deltaTouches({ ...emptyDelta, addedNodes: [podGroupNode] }, "Service")).toBe(false);
+  });
+});
+
+describe("table refresh", () => {
+  it("refreshes the open table on graph_snapshot", async () => {
+    const { invoke } = await import("../shared/ipc/tauri");
+    vi.mocked(invoke).mockImplementation(async (cmd: string, args?: any) =>
+      (cmd === "list_rows" ? { kind: args.kind, columns: [], rows: [] } : null));
+    await wireEvents();
+    useAppStore.setState({ view: { name: "table", kind: "Pod" } });
+    hoisted.handlers!.graph_snapshot({ nodes: [node], edges: [] });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(invoke).toHaveBeenCalledWith("list_rows", { kind: "Pod" });
+  });
+
+  it("does not refresh a table while the graph view is active", async () => {
+    const { invoke } = await import("../shared/ipc/tauri");
+    await wireEvents();
+    useAppStore.setState({ view: { name: "graph" } });
+    hoisted.handlers!.graph_snapshot({ nodes: [node], edges: [] });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(invoke).not.toHaveBeenCalledWith("list_rows", expect.anything());
+  });
+
+  it("debounces graph_delta refreshes touching the open table's kind, trailing 300ms", async () => {
+    vi.useFakeTimers();
+    try {
+      const { invoke } = await import("../shared/ipc/tauri");
+      vi.mocked(invoke).mockImplementation(async (cmd: string, args?: any) =>
+        (cmd === "list_rows" ? { kind: args.kind, columns: [], rows: [] } : null));
+      await wireEvents();
+      useAppStore.setState({ view: { name: "table", kind: "Pod" } });
+
+      hoisted.handlers!.graph_delta({ ...emptyDelta, addedNodes: [node] });
+      await vi.advanceTimersByTimeAsync(200);
+      hoisted.handlers!.graph_delta({ ...emptyDelta, addedNodes: [{ ...node, id: "Pod/p/b" }] });
+      expect(invoke).not.toHaveBeenCalledWith("list_rows", expect.anything());
+
+      await vi.advanceTimersByTimeAsync(300);
+      expect(invoke).toHaveBeenCalledWith("list_rows", { kind: "Pod" });
+      expect(vi.mocked(invoke).mock.calls.filter(([cmd]) => cmd === "list_rows")).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("ignores a delta that does not touch the open table's kind", async () => {
+    vi.useFakeTimers();
+    try {
+      const { invoke } = await import("../shared/ipc/tauri");
+      await wireEvents();
+      useAppStore.setState({ view: { name: "table", kind: "Pod" } });
+      hoisted.handlers!.graph_delta({ ...emptyDelta, addedNodes: [{ ...node, id: "Service/p/s", kind: "Service" }] });
+      await vi.advanceTimersByTimeAsync(300);
+      expect(invoke).not.toHaveBeenCalledWith("list_rows", expect.anything());
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

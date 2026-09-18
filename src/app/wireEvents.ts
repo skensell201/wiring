@@ -1,13 +1,41 @@
 import { commands } from "../shared/ipc/commands";
 import { listenAll } from "../shared/ipc/events";
+import type { GraphDelta, Kind } from "../shared/ipc/types";
 import { disconnectedState, useAppStore } from "./store";
+
+const TABLE_REFRESH_DEBOUNCE_MS = 300;
+let tableRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+
+function scheduleTableRefresh(kind: Kind) {
+  if (tableRefreshTimer !== null) clearTimeout(tableRefreshTimer);
+  tableRefreshTimer = setTimeout(() => {
+    tableRefreshTimer = null;
+    void useAppStore.getState().refreshTable(kind);
+  }, TABLE_REFRESH_DEBOUNCE_MS);
+}
+
+/** Whether a delta changes rows that a `kind` table would show. `PodGroup` nodes collapse pods,
+ *  so any PodGroup touched by the delta also counts as touching `Pod`. */
+export function deltaTouches(delta: GraphDelta, kind: Kind): boolean {
+  const matchesKind = (k: string) => k === kind || (kind === "Pod" && k === "PodGroup");
+  if (delta.addedNodes.some((n) => matchesKind(n.kind)) || delta.updatedNodes.some((n) => matchesKind(n.kind))) return true;
+  return delta.removedNodes.some((id) => matchesKind(id.split("/", 1)[0]));
+}
 
 /** Subscribe backend events to the store. Returns an unsubscribe function. */
 export function wireEvents(): Promise<() => void> {
   const s = () => useAppStore.getState();
   return listenAll({
-    graph_snapshot: (g) => s().applySnapshot(g),
-    graph_delta: (d) => s().applyDelta(d),
+    graph_snapshot: (g) => {
+      s().applySnapshot(g);
+      const view = s().view;
+      if (view.name === "table") void s().refreshTable(view.kind);
+    },
+    graph_delta: (d) => {
+      s().applyDelta(d);
+      const view = s().view;
+      if (view.name === "table" && deltaTouches(d, view.kind)) scheduleTableRefresh(view.kind);
+    },
     object_events: ({ nodeId, events }) => s().setObjectEvents(nodeId, events),
     connection_state: (state) => {
       s().setConnectionState(state);

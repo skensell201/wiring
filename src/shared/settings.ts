@@ -35,4 +35,18 @@ export const settings = {
   async setLastNamespace(context: string, namespace: string): Promise<void> {
     await settings.set("lastNamespace", { ...(await readNamespaces()), [context]: namespace });
   },
+  async getSidebarCollapsed(): Promise<boolean> {
+    try {
+      return (await (await open()).get<boolean>("sidebarCollapsed")) ?? false;
+    } catch {
+      return false;
+    }
+  },
+  async setSidebarCollapsed(value: boolean): Promise<void> {
+    try {
+      await (await open()).set("sidebarCollapsed", value);
+    } catch {
+      /* settings are a convenience; never block the UI */
+    }
+  },
 };

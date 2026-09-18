@@ -1,5 +1,5 @@
 import { invoke } from "./tauri";
-import type { ConnectInfo, ContextInfo, Kind, NodeId, ObjectDetails } from "./types";
+import type { ConnectInfo, ContextInfo, Kind, NodeId, ObjectDetails, Table } from "./types";
 import { toAppError } from "./types";
 
 async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
@@ -20,4 +20,5 @@ export const commands = {
   getObject: (nodeId: NodeId) => call<ObjectDetails>("get_object", { nodeId }),
   watchEvents: (nodeId: NodeId | null) => call<null>("watch_events", { nodeId }),
   deniedKinds: () => call<Kind[]>("denied_kinds"),
+  listRows: (kind: Kind) => call<Table>("list_rows", { kind }),
 };

@@ -7,9 +7,10 @@ import graph from "./fixtures/graph.json";
 import graphDelta from "./fixtures/graph_delta.json";
 import objectDetails from "./fixtures/object_details.json";
 import objectEvents from "./fixtures/object_events.json";
+import table from "./fixtures/table.json";
 import {
   CONNECTION_STATES, ERROR_KINDS, KINDS, RELATIONS, STATUSES,
-  isAppError, isConnectInfo, isConnectionState, isContextInfo, isGraph, isGraphDelta, isObjectDetails, isObjectEvents,
+  isAppError, isConnectInfo, isConnectionState, isContextInfo, isGraph, isGraphDelta, isObjectDetails, isObjectEvents, isTable,
 } from "./types";
 
 // The JSON files are the contract shared with the Rust side (guarded there by
@@ -23,6 +24,7 @@ describe("IPC fixtures match the TypeScript types", () => {
   it("object_events", () => expect(isObjectEvents(objectEvents)).toBe(true));
   it("connection_state", () => expect(isConnectionState(connectionState)).toBe(true));
   it("app_error", () => expect(isAppError(appError)).toBe(true));
+  it("table", () => expect(isTable(table)).toBe(true));
 
   it("enum lists match docs/ipc-contract.md", () => {
     expect(KINDS).toHaveLength(16);
@@ -36,5 +38,10 @@ describe("IPC fixtures match the TypeScript types", () => {
   it("rejects a node with an unknown status", () => {
     const bad = { ...graph, nodes: [{ ...graph.nodes[0], status: "green" }] };
     expect(isGraph(bad)).toBe(false);
+  });
+
+  it("rejects a table row whose cell count does not match the columns", () => {
+    const bad = { ...table, rows: [{ ...table.rows[0], cells: table.rows[0].cells.slice(0, 1) }] };
+    expect(isTable(bad)).toBe(false);
   });
 });
