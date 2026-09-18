@@ -10,6 +10,7 @@ use tauri_plugin_store::StoreExt;
 use tokio::sync::Mutex;
 
 use crate::error::{AppError, AppResult, ErrorKind};
+use crate::graph::rows::Table;
 use crate::kubeconfig::{self, ContextInfo};
 use crate::session::emitter::{Emitter, OutEvent};
 use crate::session::{ConnectInfo, ObjectDetails, Session};
@@ -142,6 +143,13 @@ pub async fn denied_kinds(state: State<'_, AppState>) -> AppResult<Vec<Kind>> {
     Ok(session.denied_kinds())
 }
 
+#[tauri::command]
+pub async fn list_rows(state: State<'_, AppState>, kind: Kind) -> AppResult<Table> {
+    let mut guard = state.session.lock().await;
+    let session = session_mut(&mut guard)?;
+    Ok(session.list_rows(kind))
+}
+
 pub fn register(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wry> {
     builder.manage(AppState::default()).invoke_handler(tauri::generate_handler![
         list_contexts,
@@ -153,5 +161,6 @@ pub fn register(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wr
         get_object,
         watch_events,
         denied_kinds,
+        list_rows,
     ])
 }

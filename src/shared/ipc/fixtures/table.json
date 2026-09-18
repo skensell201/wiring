@@ -1,0 +1,19 @@
+{
+  "kind": "Pod",
+  "columns": [
+    { "key": "name", "label": "Name", "numeric": false },
+    { "key": "status", "label": "Status", "numeric": false },
+    { "key": "restarts", "label": "Restarts", "numeric": true }
+  ],
+  "rows": [
+    {
+      "nodeId": "Pod/payments/web-1",
+      "status": "err",
+      "cells": [
+        { "text": "web-1", "status": null },
+        { "text": "CrashLoopBackOff", "status": "err" },
+        { "text": "14", "status": null }
+      ]
+    }
+  ]
+}

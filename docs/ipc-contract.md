@@ -27,6 +27,7 @@ Argument names are camelCase on the JS side; Tauri maps them to the Rust snake_c
 | `get_object` | `{ nodeId }` | `ObjectDetails` (`summary` is an ordered `[string, string][]`) |
 | `watch_events` | `{ nodeId: string \| null }` | `null` — `null` stops the current watcher |
 | `denied_kinds` | — | `Kind[]` — kinds the session could not watch (RBAC 403 / API group missing) |
+| `list_rows` | `{ kind }` | `Table` — kubectl-like columns/rows for `kind`, computed from the cached store |
 
 `ConnectInfo.namespaces` may be **empty** when the user cannot list namespaces (namespace-scoped RBAC); offer a free-text namespace input in that case. If the kubeconfig context has a default namespace it is included.
 
@@ -51,6 +52,16 @@ Argument names are camelCase on the JS side; Tauri maps them to the Rust snake_c
 - Namespaced: `Kind/<namespace>/<name>`; cluster-scoped: `PersistentVolume//<name>`.
 - Collapsed pods: `PodGroup/<namespace>/<OwnerKind>/<ownerName>`. The owner is the *visible* owner — a Deployment whose single ReplicaSet is hidden yields `PodGroup/ns/Deployment/web`. During a rollout two ReplicaSets are visible, so the groups are `PodGroup/ns/ReplicaSet/<rs>` and the id changes back when the old ReplicaSet drains; expanded-group state does not survive that.
 - `get_object` on a PodGroup returns `yaml: ""` and a summary of member counts; `watch_events` on a PodGroup is a no-op.
+
+## Table
+
+`list_rows({ kind })` returns `Table { kind, columns: TableColumn[], rows: TableRow[] }`:
+
+- `TableColumn { key, label, numeric }` — one entry per kubectl-like column for that kind (see `graph::rows::columns`); `name` is always first.
+- `TableRow { nodeId, status, cells: TableCell[] }` — `cells` align 1:1 with `columns`; rows are sorted by name.
+- `TableCell { text, status: Status | null }` — `status` colours the cell (e.g. the Pod `status` cell, or a workload's `ready` cell) and is `null` for plain cells.
+- `PodGroup` is not a table kind (`columns` is empty, `rows` is always empty) — `list_rows({ kind: "Pod" })` always lists individual pods; collapsing pods into groups is a graph-only concern.
+- Requesting a kind the session could not watch (see `denied_kinds`) returns an empty table, not an error — the frontend shows the RBAC empty state itself.
 
 ## Timestamps
 

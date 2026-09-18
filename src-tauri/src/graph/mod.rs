@@ -4,6 +4,7 @@ pub mod build;
 pub mod diff;
 pub mod model;
 pub mod relations;
+pub mod rows;
 pub mod status;
 
 pub use build::{build, BuildOptions};

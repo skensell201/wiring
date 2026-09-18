@@ -145,3 +145,47 @@ fn connection_state_and_error() {
     assert_matches("connection_state", &ConnectionState::Degraded);
     assert_matches("app_error", &AppError::new(ErrorKind::Forbidden, "secrets is forbidden"));
 }
+
+#[test]
+fn table() {
+    use wiring_lib::graph::rows::{Table, TableCell, TableColumn, TableRow};
+    let t = Table {
+        kind: Kind::Pod,
+        columns: vec![
+            TableColumn {
+                key: "name".into(),
+                label: "Name".into(),
+                numeric: false,
+            },
+            TableColumn {
+                key: "status".into(),
+                label: "Status".into(),
+                numeric: false,
+            },
+            TableColumn {
+                key: "restarts".into(),
+                label: "Restarts".into(),
+                numeric: true,
+            },
+        ],
+        rows: vec![TableRow {
+            node_id: "Pod/payments/web-1".into(),
+            status: Status::Err,
+            cells: vec![
+                TableCell {
+                    text: "web-1".into(),
+                    status: None,
+                },
+                TableCell {
+                    text: "CrashLoopBackOff".into(),
+                    status: Some(Status::Err),
+                },
+                TableCell {
+                    text: "14".into(),
+                    status: None,
+                },
+            ],
+        }],
+    };
+    assert_matches("table", &t);
+}

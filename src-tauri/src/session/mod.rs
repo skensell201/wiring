@@ -20,6 +20,7 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use crate::error::{AppError, AppResult, ErrorKind};
+use crate::graph::rows::Table;
 use crate::graph::{status::summary, Graph, NodeId};
 use crate::store::{Kind, Store};
 use emitter::{ClosableEmitter, Emitter, K8sEvent, ObjectEvents, OutEvent};
@@ -207,6 +208,11 @@ impl Session {
         let graph = self.shared.graph().clone();
         let store = self.shared.store();
         object_details(&store, &graph, node_id)
+    }
+
+    pub fn list_rows(&self, kind: Kind) -> Table {
+        let store = self.shared.store();
+        crate::graph::rows::table(&store, kind, k8s_openapi::jiff::Timestamp::now())
     }
 
     /// Watch core/v1 Events for one object (or stop when `None`).
