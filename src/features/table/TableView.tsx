@@ -1,5 +1,5 @@
 import { ArrowDown, ArrowUp } from "lucide-react";
-import { useMemo, useState, type KeyboardEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { useAppStore } from "../../app/store";
 import type { Kind, Status, TableColumn, TableRow } from "../../shared/ipc/types";
@@ -28,6 +28,16 @@ export function TableView() {
   }
   const rows = useMemo(() => (table ? sortRows(filterRows(table.rows, search), table.columns, sort) : []), [table, search, sort]);
 
+  // A row picked with the arrow keys may sit outside the scrolled area; bring it into view once it
+  // renders as selected. A click already happened on a visible row, so it does not scroll.
+  const grid = useRef<HTMLTableElement>(null);
+  const scrollToSelected = useRef(false);
+  useEffect(() => {
+    if (!scrollToSelected.current) return;
+    scrollToSelected.current = false;
+    grid.current?.querySelector<HTMLElement>('tbody tr[aria-selected="true"]')?.scrollIntoView({ block: "nearest" });
+  }, [selectedId]);
+
   if (!kind) return null;
   const plural = KIND_PLURAL[kind];
   let message: string | null = null;
@@ -46,13 +56,17 @@ export function TableView() {
     e.preventDefault();
     const idx = rows.findIndex((r) => r.nodeId === selectedId);
     const next = idx < 0 ? (e.key === "ArrowDown" ? 0 : rows.length - 1) : Math.min(rows.length - 1, Math.max(0, idx + (e.key === "ArrowDown" ? 1 : -1)));
-    if (rows[next] && rows[next].nodeId !== selectedId) void select(rows[next].nodeId);
+    if (rows[next] && rows[next].nodeId !== selectedId) {
+      scrollToSelected.current = true;
+      void select(rows[next].nodeId);
+    }
   };
 
   return (
     <div className="h-full w-full overflow-auto bg-void">
       {table && graphReady && !denied && (
-        <table role="table" tabIndex={0} onKeyDown={onKeyDown} aria-label={plural} className="w-full border-collapse text-[13px] outline-none">
+        <table ref={grid} role="grid" tabIndex={0} onKeyDown={onKeyDown} aria-label={plural}
+          className="w-full border-collapse text-[13px] outline-none focus-visible:ring-1 focus-visible:ring-inset ring-current-b">
           <thead className="sticky top-0 z-10 bg-panel">
             <tr>
               {table.columns.map((c) => <HeaderCell key={c.key} column={c} sort={sort} onClick={() => setSort(nextSort(sort, c.key))} />)}

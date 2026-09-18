@@ -275,6 +275,13 @@ describe("views", () => {
     expect(useAppStore.getState().view).toEqual({ name: "graph" });
   });
 
+  it("showTable opens a denied kind without asking the backend for rows", async () => {
+    useAppStore.setState({ connection: { ...initialState().connection, context: "prod", namespace: "payments" }, deniedKinds: new Set(["Secret"]) });
+    await useAppStore.getState().showTable("Secret");
+    expect(useAppStore.getState().view).toEqual({ name: "table", kind: "Secret" });
+    expect(invoke).not.toHaveBeenCalledWith("list_rows", expect.anything());
+  });
+
   it("remembers the last table kind so the Table switch can reopen it from Overview", async () => {
     useAppStore.setState({ connection: { ...initialState().connection, context: "prod", namespace: "payments" } });
     vi.mocked(invoke).mockImplementation(async (cmd: string, args?: any) =>
@@ -356,6 +363,18 @@ describe("views", () => {
     expect(useAppStore.getState().focusRequest?.seq).toBe(2);
   });
 
+  it("focusInGraph un-hides the node's kind before focusing", async () => {
+    useAppStore.setState({
+      ...applySnapshot(initialState(), { nodes: [node("Secret/p/db", { kind: "Secret" })], edges: [] }),
+      hiddenKinds: new Set(["Secret", "ConfigMap"]), view: { name: "table", kind: "Secret" },
+    });
+    await useAppStore.getState().focusInGraph("Secret/p/db");
+    const s = useAppStore.getState();
+    expect([...s.hiddenKinds]).toEqual(["ConfigMap"]);
+    expect(s.view).toEqual({ name: "graph" });
+    expect(s.focusRequest?.nodeId).toBe("Secret/p/db");
+  });
+
   it("focusInGraph toasts and stays put when the node is not in the graph", async () => {
     useAppStore.setState({ view: { name: "table", kind: "Pod" }, selectedId: null, focusRequest: null });
     await useAppStore.getState().focusInGraph("Pod/p/missing");
@@ -363,7 +382,7 @@ describe("views", () => {
     expect(s.view).toEqual({ name: "table", kind: "Pod" });
     expect(s.selectedId).toBeNull();
     expect(s.focusRequest).toBeNull();
-    expect(s.toasts.at(-1)).toMatchObject({ kind: "info", message: "missing is not shown in the graph (filtered or collapsed)" });
+    expect(s.toasts.at(-1)).toMatchObject({ kind: "info", message: "missing is not on the graph (hidden or collapsed into a group)" });
   });
 
   it("toggleSidebar flips and persists", async () => {

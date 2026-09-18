@@ -53,6 +53,22 @@ describe("sortRows", () => {
     expect(names(sortRows(tied, columns, { key: "ready", dir: "desc" }))).toEqual(["a", "m", "z"]);
   });
 
+  it("keeps blank and non-numeric cells last in both directions", () => {
+    const mixed = [row("none", "<none>", "1h"), row("b", "2/3", ""), row("blank", "", "2h"), row("a", "3/3", "5m")];
+    expect(names(sortRows(mixed, columns, { key: "ready", dir: "asc" }))).toEqual(["b", "a", "blank", "none"]);
+    expect(names(sortRows(mixed, columns, { key: "ready", dir: "desc" }))).toEqual(["a", "b", "blank", "none"]);
+    expect(names(sortRows(mixed, columns, { key: "age", dir: "asc" }))).toEqual(["a", "none", "blank", "b"]);
+    expect(names(sortRows(mixed, columns, { key: "age", dir: "desc" }))).toEqual(["blank", "none", "a", "b"]);
+  });
+
+  it("keeps blank text cells last in both directions", () => {
+    const text: TableColumn[] = [{ key: "name", label: "Name", numeric: false }, { key: "node", label: "Node", numeric: false }];
+    const rows = [row("x", "", ""), row("y", "worker-2", ""), row("z", "worker-1", "")];
+    const nodeCell = (r: TableRow) => ({ ...r, cells: [r.cells[0], r.cells[1]] });
+    expect(names(sortRows(rows.map(nodeCell), text, { key: "node", dir: "asc" }))).toEqual(["z", "y", "x"]);
+    expect(names(sortRows(rows.map(nodeCell), text, { key: "node", dir: "desc" }))).toEqual(["y", "z", "x"]);
+  });
+
   it("ignores an unknown sort key", () => {
     expect(names(sortRows(rows, columns, { key: "nope", dir: "desc" }))).toEqual(["a", "b", "c"]);
   });

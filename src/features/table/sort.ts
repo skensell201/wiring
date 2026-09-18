@@ -30,7 +30,14 @@ export function compareCells(a: string, b: string, numeric: boolean): number {
   return a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" });
 }
 
-/** A new array sorted by `sort` (name order when `sort` is null); rows that compare equal keep name order. */
+/** Whether a cell has nothing to sort by: blank, or without a leading number in a numeric column. */
+function isEmptyFor(text: string, numeric: boolean): boolean {
+  return numeric ? leadingNumber(text) === null : text.trim() === "";
+}
+
+/** A new array sorted by `sort` (name order when `sort` is null); rows that compare equal keep name
+ *  order. Cells with nothing to sort by (blank, or non-numeric in a numeric column) stay at the
+ *  bottom whichever way the column is sorted — flipping the direction should not surface them. */
 export function sortRows(rows: TableRow[], columns: TableColumn[], sort: SortState): TableRow[] {
   const nameIdx = Math.max(0, columns.findIndex((c) => c.key === "name"));
   const byName = (x: TableRow, y: TableRow) => compareCells(x.cells[nameIdx]?.text ?? "", y.cells[nameIdx]?.text ?? "", false);
@@ -39,7 +46,11 @@ export function sortRows(rows: TableRow[], columns: TableColumn[], sort: SortSta
   const numeric = columns[idx].numeric;
   const sign = sort.dir === "asc" ? 1 : -1;
   return [...rows].sort((x, y) => {
-    const c = compareCells(x.cells[idx]?.text ?? "", y.cells[idx]?.text ?? "", numeric);
+    const tx = x.cells[idx]?.text ?? "", ty = y.cells[idx]?.text ?? "";
+    const ex = isEmptyFor(tx, numeric), ey = isEmptyFor(ty, numeric);
+    if (ex !== ey) return ex ? 1 : -1;
+    if (ex) return byName(x, y); // nothing to order the empties by, so their own order never flips
+    const c = compareCells(tx, ty, numeric);
     return c !== 0 ? c * sign : byName(x, y);
   });
 }

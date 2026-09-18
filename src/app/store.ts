@@ -319,6 +319,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
 
   showTable: async (kind) => {
     set({ view: { name: "table", kind }, lastTableKind: kind });
+    if (get().deniedKinds.has(kind)) return; // the table shows its RBAC state; the fetch would only fail
     await get().refreshTable(kind);
   },
 
@@ -344,11 +345,13 @@ export const useAppStore = create<AppState>()((set, get) => ({
   },
 
   focusInGraph: async (id) => {
-    if (!get().nodes.has(id)) {
+    const target = get().nodes.get(id);
+    if (!target) {
       const name = id.split("/").pop() ?? id;
-      get().toast({ kind: "info", message: `${name} is not shown in the graph (filtered or collapsed)` });
+      get().toast({ kind: "info", message: `${name} is not on the graph (hidden or collapsed into a group)` });
       return;
     }
+    if (get().hiddenKinds.has(target.kind)) get().toggleKind(target.kind); // a hidden node cannot be centred on
     // The request is in place before the canvas mounts, so its whole-graph fit yields to the focus.
     set((s) => ({ view: { name: "graph" }, focusRequest: { nodeId: id, seq: (s.focusRequest?.seq ?? 0) + 1 } }));
     await get().select(id);

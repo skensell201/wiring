@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { initialState, useAppStore } from "../../app/store";
 import type { Table } from "../../shared/ipc/types";
@@ -82,7 +82,7 @@ describe("TableView", () => {
     const focusInGraph = vi.fn(async () => {});
     useAppStore.setState({ select, focusInGraph, selectedId: "Pod/payments/db" });
     render(<TableView />);
-    const table = screen.getByRole("table");
+    const table = screen.getByRole("grid");
     fireEvent.keyDown(table, { key: "ArrowDown" });
     expect(select).toHaveBeenLastCalledWith("Pod/payments/web-1");
     fireEvent.keyDown(table, { key: "ArrowUp" });
@@ -95,8 +95,29 @@ describe("TableView", () => {
     const select = vi.fn(async () => {});
     useAppStore.setState({ select, selectedId: null });
     render(<TableView />);
-    fireEvent.keyDown(screen.getByRole("table"), { key: "ArrowDown" });
+    fireEvent.keyDown(screen.getByRole("grid"), { key: "ArrowDown" });
     expect(select).toHaveBeenCalledWith("Pod/payments/api");
+  });
+
+  it("is a focusable grid with a visible focus ring", () => {
+    render(<TableView />);
+    const grid = screen.getByRole("grid", { name: "Pods" });
+    expect(grid).toHaveAttribute("tabindex", "0");
+    expect(grid.className).toMatch(/focus-visible:ring-1/);
+  });
+
+  it("scrolls a row selected with the keyboard into view, but not one selected by click", async () => {
+    const scrollIntoView = vi.fn();
+    Element.prototype.scrollIntoView = scrollIntoView;
+    const select = vi.fn(async (id: string | null) => { useAppStore.setState({ selectedId: id }); });
+    useAppStore.setState({ select, selectedId: "Pod/payments/api" });
+    render(<TableView />);
+    fireEvent.click(bodyRows()[1]);
+    await waitFor(() => expect(bodyRows()[1]).toHaveAttribute("aria-selected", "true"));
+    expect(scrollIntoView).not.toHaveBeenCalled();
+    fireEvent.keyDown(screen.getByRole("grid"), { key: "ArrowDown" });
+    await waitFor(() => expect(scrollIntoView).toHaveBeenCalledWith({ block: "nearest" }));
+    expect(scrollIntoView.mock.instances[0]).toBe(bodyRows()[2]);
   });
 
   it("shows the empty state for a kind with no rows", () => {
