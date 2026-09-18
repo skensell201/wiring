@@ -70,3 +70,11 @@ Pure, unit-tested pieces: `manifest::parse(yaml) -> Manifest { kind, name, names
 | Diff | `diff` `diffLines`, unified view | Side-by-side; no diff |
 | Create scope | Single object, watched kinds only | Multi-document manifests |
 | Delete on PodGroup | Delete all member pods | Disabled for groups |
+
+## 9. Deviations recorded during implementation
+
+- **403 while saving** shows the server message as a banner in the tab *in addition to* the forbidden toast, so the reason stays visible after the toast fades.
+- **Create defaults** to the kind of the table currently open (Deployment from the graph), since creating from a kind's table usually means "one more of these".
+- **PodGroup delete toast** names the count: "Deleted 7 pods of Deployment workers"; the group node keeps its id (it is keyed by the visible owner), so the selection survives the recreation.
+- **Overwrite** replaces the whole object from the editor, so fields changed on the server meanwhile (e.g. an annotation added by `kubectl`) are dropped — that is what the banner warns about; *Reload* is the merge-by-hand path.
+- The **Save without `metadata.resourceVersion`** case is rejected as `invalid` by the backend rather than sent as an unconditional overwrite.

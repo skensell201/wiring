@@ -711,6 +711,13 @@ describe("create dialog", () => {
     expect(d.buffer).toContain("namespace: shop");
   });
 
+  it("openCreate defaults to the kind of the open table", () => {
+    withNamespace();
+    useAppStore.setState({ view: { name: "table", kind: "ConfigMap" } });
+    useAppStore.getState().openCreate();
+    expect(useAppStore.getState().createDialog).toMatchObject({ kind: "ConfigMap", buffer: template("ConfigMap", "shop") });
+  });
+
   it("openCreate takes a kind", () => {
     withNamespace();
     useAppStore.getState().openCreate("ConfigMap");
@@ -794,11 +801,19 @@ describe("delete dialog", () => {
   });
 
   it("confirmDelete calls delete_object, closes and toasts", async () => {
+    useAppStore.getState().requestDelete("Pod/p/a");
+    await useAppStore.getState().confirmDelete();
+    expect(invoke).toHaveBeenCalledWith("delete_object", { nodeId: "Pod/p/a" });
+    expect(useAppStore.getState().deleteDialog.open).toBe(false);
+    expect(useAppStore.getState().toasts.at(-1)).toMatchObject({ kind: "info", message: "Deleted Pod a" });
+  });
+
+  it("confirmDelete on a PodGroup toasts the number of pods deleted", async () => {
+    const group = node("PodGroup/p/Deployment/web", { kind: "PodGroup", group: { count: 7, ok: 7, warn: 0, err: 0 } });
+    useAppStore.setState({ nodes: new Map([[group.id, group]]) });
     useAppStore.getState().requestDelete("PodGroup/p/Deployment/web");
     await useAppStore.getState().confirmDelete();
-    expect(invoke).toHaveBeenCalledWith("delete_object", { nodeId: "PodGroup/p/Deployment/web" });
-    expect(useAppStore.getState().deleteDialog.open).toBe(false);
-    expect(useAppStore.getState().toasts.at(-1)).toMatchObject({ kind: "info", message: "Deleted Pods web" });
+    expect(useAppStore.getState().toasts.at(-1)).toMatchObject({ kind: "info", message: "Deleted 7 pods of Deployment web" });
   });
 
   it("confirmDelete failure is toasted with the error kind", async () => {

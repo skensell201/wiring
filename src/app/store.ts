@@ -47,6 +47,13 @@ function describeNode(id: NodeId): string {
   return `${KIND_META[kind]?.label ?? kind} ${parts[parts.length - 1]}`;
 }
 
+/** What a delete toast names: "Pod web-1", or "7 pods of Deployment web" for a group. */
+function describeDeleted(id: NodeId, groupCount: number): string {
+  const parts = id.split("/");
+  if (parts[0] !== "PodGroup") return describeNode(id);
+  return `${groupCount} ${groupCount === 1 ? "pod" : "pods"} of ${parts[2]} ${parts[3]}`;
+}
+
 /** The centre pane: the graph, or a per-kind table. */
 export type View = { name: "graph" } | { name: "table"; kind: Kind };
 
@@ -526,8 +533,13 @@ export const useAppStore = create<AppState>()((set, get) => ({
 
   // ---- create ---------------------------------------------------------------
 
-  openCreate: (kind = "Deployment") =>
-    set((s) => ({ createDialog: { open: true, kind, buffer: template(kind, s.connection.namespace), error: null, submitting: false } })),
+  openCreate: (requested) =>
+    set((s) => {
+      // Creating from a kind's table most likely means "one more of these".
+      const tableKind = s.view.name === "table" && s.view.kind !== "PodGroup" ? s.view.kind : null;
+      const kind = requested ?? tableKind ?? "Deployment";
+      return { createDialog: { open: true, kind, buffer: template(kind, s.connection.namespace), error: null, submitting: false } };
+    }),
 
   setCreateKind: (kind) =>
     set((s) => {
@@ -568,9 +580,11 @@ export const useAppStore = create<AppState>()((set, get) => ({
     const { nodeId } = get().deleteDialog;
     set({ deleteDialog: initialState().deleteDialog });
     if (nodeId === null) return;
+    // Read the member count before the watch stream shrinks or removes the group.
+    const count = get().nodes.get(nodeId)?.group?.count ?? 0;
     try {
       await commands.deleteObject(nodeId);
-      get().toast({ kind: "info", message: `Deleted ${describeNode(nodeId)}` });
+      get().toast({ kind: "info", message: `Deleted ${describeDeleted(nodeId, count)}` });
     } catch (e) {
       get().toast(toAppError(e));
     }
