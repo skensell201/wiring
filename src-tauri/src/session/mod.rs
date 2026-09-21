@@ -266,19 +266,26 @@ impl Session {
     /// Start streaming logs for `req` into `sink`; returns the session id for `stop_logs`.
     pub fn start_logs(&mut self, req: LogRequest, sink: Arc<dyn LogSink>) -> AppResult<u32> {
         let id = self.next_log_id;
-        self.next_log_id += 1;
+        self.next_log_id = self.next_log_id.wrapping_add(1);
         let session = spawn_log_session(id, self.client.clone(), self.shared.clone(), req, sink)?;
         self.logs.insert(id, session);
         Ok(id)
     }
 
+    /// Stop a log session: nothing reaches its channel once this returns. Unknown ids are a
+    /// no-op.
     pub fn stop_logs(&mut self, id: u32) {
-        self.logs.remove(&id); // drop aborts the streams; unknown ids are a no-op
+        if let Some(session) = self.logs.remove(&id) {
+            session.close(); // then drop aborts the streams
+        }
     }
 
     fn stop_watchers(&mut self) {
-        // Log sessions subscribe to this namespace's `Shared`; end them before the store
-        // they read from goes away (namespace switch, disconnect, drop).
+        // A namespace switch, disconnect or drop must end every log stream of the session;
+        // close each sink first so no batch slips out before the aborts land.
+        for session in self.logs.values() {
+            session.close();
+        }
         self.logs.clear();
         // Close before aborting: an abort only lands at the task's next `.await`, and a
         // reducer mid-rebuild would otherwise still emit one snapshot of the old namespace.

@@ -37,6 +37,7 @@ pub fn targets(store: &Store, node_id: &str, container: Option<&str>) -> AppResu
         let Object::Pod(p) = pod else { continue };
         let Some(spec) = p.spec.as_ref() else { continue };
         let namespace = pod.namespace().unwrap_or_default().to_string();
+        let uid = pod.uid().unwrap_or_default().to_string();
         let init = spec.init_containers.iter().flatten().map(|c| (c.name.clone(), true));
         let main = spec.containers.iter().map(|c| (c.name.clone(), false));
         for (c, is_init) in init.chain(main) {
@@ -46,6 +47,7 @@ pub fn targets(store: &Store, node_id: &str, container: Option<&str>) -> AppResu
             out.push(LogTarget {
                 namespace: namespace.clone(),
                 pod: pod.name().to_string(),
+                uid: uid.clone(),
                 container: c,
                 init: is_init,
             });
@@ -73,6 +75,17 @@ mod tests {
         let t = targets(&store, "Pod/n/p", None).unwrap();
         assert_eq!(names(&t), ["p/setup (init)", "p/app", "p/sidecar"]);
         assert_eq!(t[0].namespace, "n");
+    }
+
+    #[test]
+    fn targets_carry_the_pod_uid_so_a_recreated_pod_is_a_new_target() {
+        let store = Store::from_yaml_docs(
+            "apiVersion: v1\nkind: Pod\nmetadata: { name: p, namespace: n, uid: pod-uid-1 }\nspec:\n  containers: [ { name: app, image: app } ]\n---\n\
+             apiVersion: v1\nkind: Pod\nmetadata: { name: q, namespace: n }\nspec:\n  containers: [ { name: app, image: app } ]\n",
+        )
+        .unwrap();
+        assert_eq!(targets(&store, "Pod/n/p", None).unwrap()[0].uid, "pod-uid-1");
+        assert_eq!(targets(&store, "Pod/n/q", None).unwrap()[0].uid, "", "missing uid is empty");
     }
 
     #[test]

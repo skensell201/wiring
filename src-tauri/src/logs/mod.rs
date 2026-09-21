@@ -4,6 +4,9 @@ pub mod pump;
 pub mod session;
 pub mod targets;
 
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
 
 /// Lines fetched per container when a stream starts.
@@ -16,6 +19,10 @@ pub const MAX_STREAMS: usize = 64;
 pub struct LogTarget {
     pub namespace: String,
     pub pod: String,
+    /// `metadata.uid` (empty when missing). Part of the identity so a pod recreated under the
+    /// same name (StatefulSet, DaemonSet) is a new target: its old stream stops, a new one
+    /// starts.
+    pub uid: String,
     pub container: String,
     pub init: bool,
 }
@@ -73,8 +80,59 @@ impl LogSink for tauri::ipc::Channel<LogMessage> {
     }
 }
 
+/// A sink that can be shut synchronously. `stop_logs` only aborts the stream tasks, and an
+/// abort lands at a task's next `.await`, so a pump mid-flush could still push one batch
+/// after the command returned; closing first keeps the contract "nothing after `stop_logs`"
+/// (mirrors `session::emitter::ClosableEmitter`).
+pub struct ClosableSink {
+    inner: Arc<dyn LogSink>,
+    closed: AtomicBool,
+}
+
+impl ClosableSink {
+    pub fn new(inner: Arc<dyn LogSink>) -> Self {
+        Self {
+            inner,
+            closed: AtomicBool::new(false),
+        }
+    }
+
+    /// Drop every message sent from now on.
+    pub fn close(&self) {
+        self.closed.store(true, Ordering::SeqCst);
+    }
+}
+
+impl LogSink for ClosableSink {
+    fn send(&self, msg: LogMessage) {
+        if !self.closed.load(Ordering::SeqCst) {
+            self.inner.send(msg);
+        }
+    }
+}
+
 impl LogSink for tokio::sync::mpsc::UnboundedSender<LogMessage> {
     fn send(&self, msg: LogMessage) {
         let _ = tokio::sync::mpsc::UnboundedSender::send(self, msg);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn closable_sink_delivers_nothing_after_close() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let sink = ClosableSink::new(Arc::new(tx));
+        let msg = LogMessage::Truncated {
+            session_id: 1,
+            limit: MAX_STREAMS,
+        };
+        sink.send(msg.clone());
+        assert_eq!(rx.try_recv().unwrap(), msg);
+        sink.close();
+        sink.send(msg);
+        assert!(rx.try_recv().is_err(), "messages after close must be dropped");
     }
 }

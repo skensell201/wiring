@@ -7,7 +7,7 @@ use std::sync::Arc;
 use k8s_openapi::api::core::v1::Pod;
 use kube::api::{Api, LogParams};
 use kube::Client;
-use tokio::sync::broadcast::error::RecvError;
+use tokio::sync::broadcast::{self, error::RecvError};
 use tokio_util::compat::FuturesAsyncReadCompatExt;
 
 use crate::error::{AppError, AppResult};
@@ -16,7 +16,7 @@ use crate::session::watch::AbortOnDrop;
 
 use super::pump::{pump, PumpConfig};
 use super::targets::targets;
-use super::{LogMessage, LogSink, LogTarget, MAX_STREAMS, TAIL_LINES};
+use super::{ClosableSink, LogMessage, LogSink, LogTarget, MAX_STREAMS, TAIL_LINES};
 
 #[derive(Debug, Clone)]
 pub struct LogRequest {
@@ -26,9 +26,17 @@ pub struct LogRequest {
     pub timestamps: bool,
 }
 
-/// Dropping it aborts every stream.
+/// Dropping it aborts every stream; `close()` first so nothing reaches the sink afterwards.
 pub struct LogSession {
+    sink: Arc<ClosableSink>,
     _task: AbortOnDrop,
+}
+
+impl LogSession {
+    /// Stop delivering messages now, ahead of the (asynchronous) task abort on drop.
+    pub fn close(&self) {
+        self.sink.close();
+    }
 }
 
 /// Streams to start and to stop so that `running` becomes the first `MAX_STREAMS` of `wanted`
@@ -44,13 +52,28 @@ pub fn diff_targets(running: &HashSet<LogTarget>, wanted: &[LogTarget]) -> (Vec<
 /// Resolve the request once (so an invalid or unknown node fails the command) and spawn the
 /// supervising task that owns the streams.
 pub fn spawn_log_session(id: u32, client: Client, shared: Shared, req: LogRequest, sink: Arc<dyn LogSink>) -> AppResult<LogSession> {
+    // Subscribe before reading the store: a pod change landing between the read and a later
+    // subscribe would be lost, while one landing between subscribe and read just costs one
+    // redundant re-derive.
+    let pods = shared.subscribe_pods();
     let initial = targets(&shared.store(), &req.node_id, req.container.as_deref())?;
-    let task = tokio::spawn(run(id, client, shared, req, initial, sink));
-    Ok(LogSession { _task: AbortOnDrop(task) })
+    let sink = Arc::new(ClosableSink::new(sink));
+    let task = tokio::spawn(run(id, client, shared, pods, req, initial, sink.clone()));
+    Ok(LogSession {
+        sink,
+        _task: AbortOnDrop(task),
+    })
 }
 
-async fn run(id: u32, client: Client, shared: Shared, req: LogRequest, initial: Vec<LogTarget>, sink: Arc<dyn LogSink>) {
-    let mut pods = shared.subscribe_pods();
+async fn run(
+    id: u32,
+    client: Client,
+    shared: Shared,
+    mut pods: broadcast::Receiver<()>,
+    req: LogRequest,
+    initial: Vec<LogTarget>,
+    sink: Arc<ClosableSink>,
+) {
     let mut streams: HashMap<LogTarget, AbortOnDrop> = HashMap::new();
     let mut truncated_reported = false;
     let mut wanted = initial;
@@ -61,14 +84,8 @@ async fn run(id: u32, client: Client, shared: Shared, req: LogRequest, initial: 
             streams.remove(&t); // AbortOnDrop
         }
         for t in start {
-            let handle = tokio::spawn(stream_one(
-                id,
-                client.clone(),
-                t.clone(),
-                req.previous,
-                req.timestamps,
-                sink.clone(),
-            ));
+            let sink: Arc<dyn LogSink> = sink.clone();
+            let handle = tokio::spawn(stream_one(id, client.clone(), t.clone(), req.previous, req.timestamps, sink));
             streams.insert(t, AbortOnDrop(handle));
         }
         if truncated && !truncated_reported {
@@ -87,6 +104,8 @@ async fn run(id: u32, client: Client, shared: Shared, req: LogRequest, initial: 
             Ok(()) | Err(RecvError::Lagged(_)) => {}
             Err(RecvError::Closed) => return,
         }
+        // Coalesce a burst of ticks into one re-derive.
+        while pods.try_recv().is_ok() {}
         wanted = match targets(&shared.store(), &req.node_id, req.container.as_deref()) {
             Ok(t) => t,
             // The Pod itself is gone: its stream ends by itself; keep whatever is running.
@@ -131,9 +150,24 @@ mod tests {
         LogTarget {
             namespace: "n".into(),
             pod: pod.into(),
+            uid: format!("uid-{pod}"),
             container: "c".into(),
             init: false,
         }
+    }
+
+    #[test]
+    fn diff_treats_a_pod_recreated_under_the_same_name_as_a_new_target() {
+        // StatefulSet/DaemonSet pods keep their name across recreation; only the uid changes.
+        let running: HashSet<LogTarget> = [t("a")].into_iter().collect();
+        let recreated = LogTarget {
+            uid: "uid-a-2".into(),
+            ..t("a")
+        };
+        let (start, stop, truncated) = diff_targets(&running, std::slice::from_ref(&recreated));
+        assert_eq!(start, vec![recreated]);
+        assert_eq!(stop, vec![t("a")]);
+        assert!(!truncated);
     }
 
     #[test]
