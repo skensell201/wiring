@@ -78,6 +78,8 @@ export interface GraphState {
   graphReady: boolean;
   selectedId: NodeId | null;
   details: Details | null;
+  /** The details panel fills the window (the centre pane hidden); reset whenever the selection clears. */
+  detailsMaximized: boolean;
 }
 
 export interface AppState extends GraphState {
@@ -101,8 +103,6 @@ export interface AppState extends GraphState {
   discardDialog: DiscardDialog;
   /** The Logs tab's session metadata; the lines themselves live in `logBuffer`. */
   logs: LogsState;
-  /** The details panel fills the window (the centre pane hidden); reset on deselect. */
-  detailsMaximized: boolean;
 
   // graph events
   applySnapshot: (g: Graph) => void;
@@ -167,6 +167,10 @@ export interface AppState extends GraphState {
 }
 
 let toastSeq = 0;
+/** Log session generations. Module-level and monotonic: a `startLogs` still awaiting IPC across a
+ *  session reset (the slice rebuilt, backend ids restarting at 1) must never share a generation
+ *  with the next session, and a stop must orphan the channel it leaves behind. */
+let logsGen = 0;
 
 export function initialState(): Omit<AppState, keyof Actions> {
   return {
@@ -283,7 +287,7 @@ function dropSelection<S extends GraphState>(s: S, dropped: boolean): S {
     const error: AppError = { kind: "notFound", message: "This object was deleted on the server." };
     return { ...s, details: { ...s.details, editor: { ...s.details.editor, error } } };
   }
-  return { ...s, selectedId: null, details: null };
+  return { ...s, selectedId: null, details: null, detailsMaximized: false };
 }
 
 // ---- store ----------------------------------------------------------------
@@ -644,7 +648,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
     const prev = get().logs;
     if (prev.sessionId !== null) commands.stopLogs(prev.sessionId).catch(() => {});
     logBuffer.clear();
-    const gen = prev.gen + 1;
+    const gen = ++logsGen;
     // Keep the options (container/previous/timestamps) when restarting on the same node.
     const same = prev.nodeId === nodeId;
     set({
@@ -665,14 +669,17 @@ export const useAppStore = create<AppState>()((set, get) => ({
       if (get().logs.gen === gen) set((s) => ({ logs: { ...s.logs, sessionId } }));
       else commands.stopLogs(sessionId).catch(() => {}); // superseded while starting: nobody holds this id
     } catch (e) {
-      if (get().logs.gen === gen) set((s) => ({ logs: { ...initialLogs(), gen: s.logs.gen } }));
+      if (get().logs.gen !== gen) return; // superseded meanwhile: its failure is nobody's news
+      set({ logs: { ...initialLogs(), gen } });
       get().toast(toAppError(e));
     }
   },
 
   stopLogs: async () => {
-    const { sessionId, gen } = get().logs;
-    set({ logs: { ...initialLogs(), gen } });
+    const { sessionId } = get().logs;
+    // A fresh generation orphans the stopped channel: batches the webview already queued from it
+    // must not land in an idle slice.
+    set({ logs: { ...initialLogs(), gen: ++logsGen } });
     logBuffer.clear();
     if (sessionId !== null) await commands.stopLogs(sessionId).catch(() => {});
   },

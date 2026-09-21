@@ -2,14 +2,21 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import graphFixture from "../shared/ipc/fixtures/graph.json";
 import type { Graph, GraphDelta, GraphNode, Kind } from "../shared/ipc/types";
 
-vi.mock("../shared/ipc/tauri", () => ({
-  invoke: vi.fn(async (cmd: string) => {
-    if (cmd === "get_object") return { yaml: "kind: Pod\n", summary: [["Name", "web-1"]], related: [] };
+const { baseInvoke, POD_YAML } = vi.hoisted(() => {
+  const POD_YAML = "kind: Pod\n";
+  /** The default backend answers: the mock factory starts with them and `selectPod` reinstalls them. */
+  const baseInvoke = async (cmd: string): Promise<unknown> => {
+    if (cmd === "get_object") return { yaml: POD_YAML, summary: [["Name", "web-1"]], related: [] };
     if (cmd === "denied_kinds") return ["Secret"];
     if (cmd === "connect") return { context: "prod", serverVersion: "v1.33.0", namespaces: ["default", "payments"] };
     if (cmd === "start_logs") return 42;
     return null;
-  }),
+  };
+  return { baseInvoke, POD_YAML };
+});
+
+vi.mock("../shared/ipc/tauri", () => ({
+  invoke: vi.fn(baseInvoke),
   listen: vi.fn(async () => () => {}),
   Channel: class { onmessage: (m: unknown) => void = () => {}; },
 }));
@@ -37,6 +44,7 @@ const node = (id: string, over: Partial<GraphNode> = {}): GraphNode => ({
 beforeEach(() => {
   useAppStore.setState(initialState());
   vi.mocked(invoke).mockClear();
+  logBuffer.clear();
 });
 
 describe("graph reducers", () => {
@@ -443,16 +451,11 @@ describe("kindStats", () => {
 
 // ---- editing ----------------------------------------------------------------
 
-const POD_YAML = "kind: Pod\n";
 const EDITED_YAML = "kind: Pod\nmetadata:\n  labels:\n    x: y\n";
 
 async function selectPod(): Promise<void> {
   // Earlier suites install their own `invoke` implementations; mockClear keeps them.
-  vi.mocked(invoke).mockImplementation(async (cmd: string) => {
-    if (cmd === "get_object") return { yaml: POD_YAML, summary: [], related: [] };
-    if (cmd === "start_logs") return 42;
-    return null;
-  });
+  vi.mocked(invoke).mockImplementation(baseInvoke);
   useAppStore.setState({
     ...applySnapshot(initialState(), { nodes: [node("Pod/p/a"), node("Pod/p/b")], edges: [] }),
     connection: { ...initialState().connection, context: "prod", namespace: "p" },
@@ -1048,8 +1051,6 @@ function lastLogChannel(): { onmessage: (m: unknown) => void } {
 }
 
 describe("logs", () => {
-  beforeEach(() => logBuffer.clear());
-
   it("startLogs opens a session with the current options and routes lines to the buffer", async () => {
     await selectPod();
     await useAppStore.getState().startLogs("Pod/p/a");
@@ -1069,6 +1070,52 @@ describe("logs", () => {
     expect(invoke).toHaveBeenCalledWith("stop_logs", { sessionId: 42 });
     expect(useAppStore.getState().logs.status).toBe("idle");
     expect(logBuffer.lines()).toEqual([]);
+  });
+
+  it("messages still queued from a stopped session are ignored", async () => {
+    await selectPod();
+    await useAppStore.getState().startLogs("Pod/p/a");
+    const old = lastLogChannel();
+    await useAppStore.getState().stopLogs();
+    // Batches the webview had already queued from the stopped channel arrive after the stop.
+    old.onmessage({ type: "started", sessionId: 42, pod: "a", container: "c" });
+    old.onmessage({ type: "lines", sessionId: 42, lines: [{ pod: "a", container: "c", text: "late" }] });
+    expect(useAppStore.getState().logs.status).toBe("idle");
+    expect(logBuffer.lines()).toEqual([]);
+  });
+
+  it("a superseded start that resolves late stops its session and keeps the newer id", async () => {
+    await selectPod();
+    let resolveA: (id: number) => void = () => {};
+    vi.mocked(invoke).mockImplementation(async (cmd: string, args?: unknown) => {
+      if (cmd !== "start_logs") return baseInvoke(cmd);
+      return (args as { nodeId: string }).nodeId === "Pod/p/a" ? new Promise<number>((r) => { resolveA = r; }) : 43;
+    });
+    const a = useAppStore.getState().startLogs("Pod/p/a");
+    // A reconnect meanwhile: the slice is rebuilt and the backend's session ids restart, so the
+    // generation must not restart with them.
+    useAppStore.setState(disconnectedState(useAppStore.getState()));
+    await useAppStore.getState().startLogs("Pod/p/b");
+    expect(useAppStore.getState().logs).toMatchObject({ sessionId: 43, nodeId: "Pod/p/b" });
+    resolveA(42);
+    await a;
+    expect(invoke).toHaveBeenCalledWith("stop_logs", { sessionId: 42 });
+    expect(useAppStore.getState().logs).toMatchObject({ sessionId: 43, nodeId: "Pod/p/b" });
+  });
+
+  it("a superseded start that fails late is not toasted", async () => {
+    await selectPod();
+    let rejectA: (e: unknown) => void = () => {};
+    vi.mocked(invoke).mockImplementation(async (cmd: string, args?: unknown) => {
+      if (cmd !== "start_logs") return baseInvoke(cmd);
+      return (args as { nodeId: string }).nodeId === "Pod/p/a" ? new Promise<number>((_, rej) => { rejectA = rej; }) : 43;
+    });
+    const a = useAppStore.getState().startLogs("Pod/p/a");
+    await useAppStore.getState().startLogs("Pod/p/b");
+    rejectA({ kind: "internal", message: "gone" });
+    await a;
+    expect(useAppStore.getState().toasts).toEqual([]);
+    expect(useAppStore.getState().logs).toMatchObject({ sessionId: 43, nodeId: "Pod/p/b", status: "starting" });
   });
 
   it("messages from a superseded session are ignored", async () => {
@@ -1125,5 +1172,13 @@ describe("logs", () => {
     useAppStore.getState().toggleDetailsMaximized();
     await useAppStore.getState().selectNamespace("q");
     expect(useAppStore.getState().detailsMaximized).toBe(false);
+  });
+
+  it("the selected object deleted on the server restores the maximised panel", () => {
+    let s = applySnapshot(initialState(), { nodes: [node("Pod/p/a")], edges: [] });
+    s = { ...s, selectedId: "Pod/p/a", details: { nodeId: "Pod/p/a", data: null, events: [], loading: false, editor: viewEditor() }, detailsMaximized: true };
+    s = applyDelta(s, { addedNodes: [], updatedNodes: [], removedNodes: ["Pod/p/a"], addedEdges: [], removedEdges: [] });
+    expect(s.selectedId).toBeNull();
+    expect(s.detailsMaximized).toBe(false);
   });
 });
