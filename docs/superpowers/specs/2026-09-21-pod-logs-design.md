@@ -15,7 +15,7 @@ Level/regex filters, `since` windows, a separate logs window, node or control-pl
 ## 3. User flows
 
 - Select a Pod, Deployment, StatefulSet, DaemonSet, Job, CronJob or PodGroup → the **Logs** tab appears next to Overview · YAML · Events. Opening it starts streaming: the last 500 lines per container, then follow. Switching object or tab, changing namespace or disconnecting stops the stream and clears the buffer.
-- Toolbar: **Container** (All / each container; init containers marked `init`), **Previous** (last terminated run, no follow), **Timestamps**, **Wrap** toggles; search box with `n / N` match counter, ↑ ↓ / Enter to step through matches, matches highlighted; **Clear**; **Download** (save dialog → `.log`); status on the right: `● streaming · 3 pods`, `ended`, `truncated to 64 streams`.
+- Toolbar: **Container** (All / each container; init containers marked `init`), **Previous** (last terminated run, no follow), **Timestamps**, **Wrap** toggles; search box with `n / N` match counter, ↑ ↓ / Enter to step through matches, matches highlighted; **Clear**; **Download** (save dialog → `.log`); status on the right: `● streaming · 3 streams`, `ended`, `truncated to 64 streams`.
 - Output: monospace, virtualised, one line per log line. With more than one stream each line is prefixed `[pod/container]` in a colour hashed from the pod name; timestamps in muted grey; ANSI SGR colours rendered with the theme palette. Auto-scroll sticks to the bottom; scrolling up unsticks; a **↓ Follow** button re-sticks.
 - Stream problems (container waiting to start, 403, ended) are lines inside the output — `api-8555cf87cc-f65gv/api — container "api" is waiting to start: ImagePullBackOff` — never toasts.
 - Workloads: pods that appear while streaming (rollout, PodGroup recreation) are added; deleted pods end their streams. At most 64 concurrent streams; beyond that the status says `truncated`.
@@ -81,3 +81,8 @@ For workload targets the session subscribes to the reducer's `StoreEvent`s: a po
 | Follow | on by default, tail 500 | snapshot + refresh |
 | Space | resizable + maximise details panel | separate window (later) |
 | Buffer | 10 000 lines outside zustand | store-held array |
+
+## 8. Deviations
+
+- **Container picker parses indentless YAML.** The object YAML comes from `serde_yaml_ng::to_string`, which emits sequences at the parent key's indent (`containers:\n- name: web`), not the indented form the plan assumed. `containersFromYaml` walks lines instead of a regex: an item may sit at the key's own indent, the block ends at a shallower line or a sibling key, and only the items' direct keys are read, so `env: - name:`, block scalars and `status.containerStatuses` are ignored.
+- **PodGroup containers come from the streams.** A PodGroup has no YAML (the backend returns an empty string), so when the YAML yields no containers the picker lists the container names reported by the running streams (`pod/container` keys, deduplicated and sorted, no init mark). A selected container the YAML no longer lists stays in the picker as a disabled `(missing)` option so the UI and the backend filter agree.

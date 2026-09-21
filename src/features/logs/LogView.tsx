@@ -36,6 +36,10 @@ export function LogView({ query, current, wrap, showPrefix, problems, onMatches 
     return out;
   }, [lines, q]);
   useEffect(() => onMatches(matches.length), [matches.length, onMatches]);
+  // Read by the scroll-to-match effect, which must fire on user actions only: `matches` is a new
+  // array per frame while streaming and would re-pin the view on every batch.
+  const matchesRef = useRef(matches);
+  matchesRef.current = matches;
 
   const total = problems.length + lines.length;
   const virtualizer = useVirtualizer({
@@ -46,9 +50,11 @@ export function LogView({ query, current, wrap, showPrefix, problems, onMatches 
     if (stuck && total > 0) virtualizer.scrollToIndex(total - 1, { align: "end" });
   }, [total, stuck, virtualizer]);
   useEffect(() => {
-    const idx = matches[current];
+    const idx = matchesRef.current[current];
     if (idx !== undefined) { setStuck(false); virtualizer.scrollToIndex(problems.length + idx, { align: "center" }); }
-  }, [current, matches, problems.length, virtualizer]);
+  }, [current, q, problems.length, virtualizer]);
+  // Rows are measured (wrapping changes their height); a wrap toggle invalidates every measurement.
+  useEffect(() => { virtualizer.measure(); }, [wrap, virtualizer]);
 
   const onScroll = () => {
     const el = parentRef.current;
@@ -65,13 +71,13 @@ export function LogView({ query, current, wrap, showPrefix, problems, onMatches 
             const style = { position: "absolute" as const, top: 0, left: 0, width: "100%", transform: `translateY(${item.start}px)` };
             if (item.index < problems.length) {
               const p = problems[item.index];
-              return <div key={`p:${p.key}`} style={style} className="text-status-warn">{p.key} — {p.message}</div>;
+              return <div key={`p:${p.key}`} ref={virtualizer.measureElement} data-index={item.index} style={style} className="text-status-warn">{p.key} — {p.message}</div>;
             }
             const line = lines[item.index - problems.length];
             const isMatch = q !== "" && line.text.toLowerCase().includes(q);
             const isCurrent = matches[current] === item.index - problems.length;
             return (
-              <div key={line.seq} style={style} data-testid={isMatch ? "match" : undefined} className={isCurrent ? "bg-current-b/30" : isMatch ? "bg-current-b/10" : ""}>
+              <div key={line.seq} ref={virtualizer.measureElement} data-index={item.index} style={style} data-testid={isMatch ? "match" : undefined} className={isCurrent ? "bg-current-b/30" : isMatch ? "bg-current-b/10" : ""}>
                 {showPrefix && <span style={{ color: prefixColor(line.pod) }}>[{line.pod}/{line.container}]</span>}{showPrefix && " "}
                 <Line text={line.text} />
               </div>
