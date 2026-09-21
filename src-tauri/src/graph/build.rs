@@ -69,7 +69,7 @@ pub fn build(store: &Store, opts: &BuildOptions) -> Graph {
 }
 
 /// Longest owner chain a pod can have to a watched controller (Pod -> ReplicaSet -> Deployment).
-const OWNER_CHAIN_DEPTH: usize = 3;
+pub(crate) const OWNER_CHAIN_DEPTH: usize = 3;
 
 /// The pods a `PodGroup/<ns>/<OwnerKind>/<owner>` node stands for: every pod in `<ns>` whose
 /// `ownerReferences` chain reaches `<owner>` — directly (ReplicaSet, StatefulSet, DaemonSet,
@@ -105,7 +105,7 @@ fn parse_group_id(group_id: &str) -> Option<(&str, Kind, &str)> {
 
 /// Walk `obj`'s ownerReferences (only watched kinds) up to `depth` levels looking for
 /// `<kind>/<name>` in the same namespace.
-fn is_owned_by(store: &Store, obj: &Object, kind: Kind, name: &str, depth: usize) -> bool {
+pub(crate) fn is_owned_by(store: &Store, obj: &Object, kind: Kind, name: &str, depth: usize) -> bool {
     if depth == 0 {
         return false;
     }
