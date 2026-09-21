@@ -13,7 +13,9 @@ use tokio::time::{timeout_at, Instant};
 
 use super::{LogLine, LogMessage, LogSink};
 
-/// Longest line the pump emits (1 MiB); longer output is split into consecutive lines.
+/// Longest line the pump emits (1 MiB); longer output is split into consecutive lines. A
+/// split may land inside a multi-byte sequence (U+FFFD at the edges) or between `\r` and
+/// `\n`; at this granularity that is cosmetic and accepted.
 pub const MAX_LINE_BYTES: usize = 1 << 20;
 
 /// When a pending batch is flushed to the sink.
@@ -105,6 +107,17 @@ pub async fn pump<R: AsyncBufRead + Unpin>(
         }
         *deadline = None;
     };
+    // The stream stops (EOF or error) while `buf` holds an unterminated line: deliver it.
+    let push_partial = |buf: &mut Vec<u8>, batch: &mut Vec<LogLine>| {
+        if !buf.is_empty() {
+            let text = take_text(buf);
+            batch.push(LogLine {
+                pod: pod.to_string(),
+                container: container.to_string(),
+                text,
+            });
+        }
+    };
     loop {
         // `read_line` is cancellation safe, so racing it against the flush deadline cannot
         // lose a partial line.
@@ -138,18 +151,12 @@ pub async fn pump<R: AsyncBufRead + Unpin>(
                 }
             }
             Ok(LineEnd::Eof) => {
-                if !buf.is_empty() {
-                    let text = take_text(&mut buf);
-                    batch.push(LogLine {
-                        pod: pod.to_string(),
-                        container: container.to_string(),
-                        text,
-                    });
-                }
+                push_partial(&mut buf, &mut batch);
                 flush(&mut batch, &mut deadline);
                 break;
             }
             Err(e) => {
+                push_partial(&mut buf, &mut batch);
                 flush(&mut batch, &mut deadline);
                 sink.send(LogMessage::Error {
                     session_id,
@@ -267,41 +274,51 @@ mod tests {
         assert!(rx.recv().await.is_none());
     }
 
-    #[tokio::test(start_paused = true)]
-    async fn an_oversized_line_is_split_at_the_cap() {
+    /// Pump one line of `len` x's plus `after`, and return the byte length of every emitted line.
+    async fn split_lengths(len: usize) -> Vec<usize> {
         let (mut w, r) = tokio::io::duplex(1 << 16);
         let (tx, mut rx) = mpsc::unbounded_channel();
         let task = tokio::spawn(async move { pump(BufReader::new(r), 5, "p", "c", cfg(), &tx).await });
-        let mut huge = vec![b'x'; 2 * MAX_LINE_BYTES + 3];
+        let mut huge = vec![b'x'; len];
         huge.push(b'\n');
         w.write_all(&huge).await.unwrap();
         w.write_all(b"after\n").await.unwrap();
         drop(w);
         task.await.unwrap();
-        let mut lines = Vec::new();
+        let mut lengths = Vec::new();
         loop {
             match rx.recv().await.unwrap() {
-                LogMessage::Lines { lines: batch, .. } => lines.extend(batch.into_iter().map(|l| l.text)),
-                LogMessage::Ended { .. } => break,
+                LogMessage::Lines { lines, .. } => lengths.extend(lines.iter().map(|l| l.text.len())),
+                LogMessage::Ended { .. } => return lengths,
                 other => panic!("unexpected {other:?}"),
             }
         }
-        assert_eq!(lines.last().map(String::as_str), Some("after"));
-        let pieces = &lines[..lines.len() - 1];
-        assert!(pieces.len() >= 2, "{} pieces", pieces.len());
-        assert!(pieces.iter().all(|l| l.len() <= MAX_LINE_BYTES), "a piece exceeds the cap");
-        assert!(pieces.iter().all(|l| !l.is_empty()), "no empty ghost piece: {pieces:?}");
-        assert_eq!(pieces.iter().map(String::len).sum::<usize>(), 2 * MAX_LINE_BYTES + 3);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_oversized_line_is_split_at_the_cap() {
+        let m = MAX_LINE_BYTES;
+        assert_eq!(split_lengths(2 * m + 3).await, [m, m, 3, "after".len()]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_line_ending_exactly_at_the_cap_leaves_no_empty_piece() {
+        let m = MAX_LINE_BYTES;
+        assert_eq!(split_lengths(2 * m).await, [m, m, "after".len()]);
     }
 
     #[tokio::test(start_paused = true)]
     async fn a_read_error_flushes_then_reports_and_stops_without_ended() {
-        let reader = BufReader::new(std::io::Cursor::new(&b"a\nb\n"[..]).chain(Broken));
+        let reader = BufReader::new(std::io::Cursor::new(&b"a\nb\npart"[..]).chain(Broken));
         let (tx, mut rx) = mpsc::unbounded_channel();
         pump(reader, 2, "p", "c", cfg(), &tx).await;
         // The sender lives on this stack, so drop it: only then can `recv` report the end.
         drop(tx);
-        assert_eq!(texts(&rx.recv().await.unwrap()), ["a", "b"], "pending lines flush before the error");
+        assert_eq!(
+            texts(&rx.recv().await.unwrap()),
+            ["a", "b", "part"],
+            "pending lines and the partial line flush before the error"
+        );
         match rx.recv().await.unwrap() {
             LogMessage::Error {
                 session_id: 2, message, ..
