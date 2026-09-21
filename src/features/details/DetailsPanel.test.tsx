@@ -62,6 +62,30 @@ describe("DetailsPanel", () => {
     expect(screen.getByText("PersistentVolume")).toBeInTheDocument();
   });
 
+  it("offers a Logs tab for pods and workloads only", () => {
+    const logsTab = () => screen.queryByRole("tab", { name: "Logs" });
+    // A Pod that is a graph node (the default fixture).
+    const { unmount } = render(<DetailsPanel />);
+    expect(logsTab()).toBeInTheDocument();
+    unmount();
+    // A ConfigMap: nothing to stream.
+    const cm = { ...node, id: "ConfigMap/p/cfg", kind: "ConfigMap" as const, name: "cfg" };
+    useAppStore.setState((s) => ({ nodes: new Map([...s.nodes, [cm.id, cm]]), selectedId: cm.id, details: { ...s.details!, nodeId: cm.id } }));
+    const r2 = render(<DetailsPanel />);
+    expect(logsTab()).not.toBeInTheDocument();
+    r2.unmount();
+    // A PodGroup: the merged logs of its members.
+    const group = { ...node, id: "PodGroup/p/Deployment/web", kind: "PodGroup" as const, name: "web", group: { count: 2, ok: 2, warn: 0, err: 0 } };
+    useAppStore.setState((s) => ({ nodes: new Map([...s.nodes, [group.id, group]]), selectedId: group.id, details: { ...s.details!, nodeId: group.id } }));
+    const r3 = render(<DetailsPanel />);
+    expect(logsTab()).toBeInTheDocument();
+    r3.unmount();
+    // A pod collapsed into a group is selectable from the table but never in `nodes`: the kind comes from the id.
+    useAppStore.setState((s) => ({ selectedId: "Pod/p/web-9", details: { ...s.details!, nodeId: "Pod/p/web-9" } }));
+    render(<DetailsPanel />);
+    expect(logsTab()).toBeInTheDocument();
+  });
+
   it("shows a hint when nothing is selected", () => {
     useAppStore.setState({ selectedId: null, details: null });
     render(<DetailsPanel />);

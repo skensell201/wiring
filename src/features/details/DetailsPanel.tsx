@@ -5,12 +5,15 @@ import { useAppStore } from "../../app/store";
 import { KINDS, type GraphNode, type Kind, type NodeId } from "../../shared/ipc/types";
 import { ConfirmDialog } from "../../shared/ui/ConfirmDialog";
 import { KIND_META } from "../graph/kindMeta";
+import { LogsTab } from "../logs/LogsTab";
 import { EventsTab } from "./EventsTab";
 import { OverviewTab } from "./OverviewTab";
 import { YamlTab } from "./YamlTab";
 
-type Tab = "overview" | "yaml" | "events";
+type Tab = "overview" | "yaml" | "events" | "logs";
 const MIN = 120, MAX = 600, DEFAULT = 280;
+/** Kinds with container logs to stream: a Pod's own, or the merged logs of a workload's pods. */
+const LOG_KINDS: ReadonlySet<Kind> = new Set<Kind>(["Pod", "Deployment", "StatefulSet", "DaemonSet", "Job", "CronJob", "PodGroup"]);
 
 /** Name, kind and namespace of an object from its id alone, for a selection that is not a graph
  *  node (a pod collapsed into a PodGroup, a hidden single ReplicaSet). Ids are `Kind/ns/name`,
@@ -57,8 +60,9 @@ export function DetailsPanel() {
 
   useEffect(() => { setTab("overview"); }, [details?.nodeId]);
 
-  const tabs: { id: Tab; label: string }[] = [{ id: "overview", label: "Overview" }, { id: "yaml", label: "YAML" }, { id: "events", label: "Events" }];
   const heading = node ? { name: node.name, kind: node.kind, namespace: node.namespace } : selectedId ? headingFromId(selectedId) : null;
+  const tabs: { id: Tab; label: string }[] = [{ id: "overview", label: "Overview" }, { id: "yaml", label: "YAML" }, { id: "events", label: "Events" }];
+  if (heading?.kind && LOG_KINDS.has(heading.kind)) tabs.push({ id: "logs", label: "Logs" });
 
   return (
     <section className="shrink-0 border-t border-border bg-panel" style={{ height: collapsed ? 36 : height }}>
@@ -98,6 +102,8 @@ export function DetailsPanel() {
             <OverviewTab data={details.data} />
           ) : tab === "yaml" ? (
             <YamlTab />
+          ) : tab === "logs" ? (
+            <LogsTab />
           ) : (
             <EventsTab events={details.events} />
           )}
