@@ -21,10 +21,11 @@ export function useGlobalKeys(): void {
       if (e.key !== "Escape") return;
       // An open context picker owns Escape (it closes itself when it can, marking the event handled).
       if (s.pickerOpen) return;
-      // Innermost layer first: dialogs, then the editor, then the selection.
+      // Innermost layer first: dialogs, then a maximised details panel, then the editor, then the selection.
       if (s.discardDialog.open) { s.cancelDiscard(); return; }
       if (s.deleteDialog.open) { s.cancelDelete(); return; }
       if (s.createDialog.open) { s.closeCreate(); return; }
+      if (s.detailsMaximized) { s.toggleDetailsMaximized(); return; }
       const editor = s.details?.editor;
       if (editor?.saving) return; // a write in flight: nothing to leave until it lands
       if (editor?.mode === "review") { s.backToEdit(); return; }

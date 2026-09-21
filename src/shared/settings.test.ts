@@ -40,4 +40,15 @@ describe("settings", () => {
     expect(await settings.getSidebarCollapsed()).toBe(true);
     expect(mem.get("sidebarCollapsed")).toBe(true);
   });
+
+  it("defaults detailsHeight to null, remembers a number and ignores garbage", async () => {
+    expect(await settings.getDetailsHeight()).toBeNull();
+    await settings.setDetailsHeight(400);
+    expect(await settings.getDetailsHeight()).toBe(400);
+    expect(mem.get("detailsHeight")).toBe(400);
+    mem.set("detailsHeight", "tall");
+    expect(await settings.getDetailsHeight()).toBeNull();
+    mem.set("detailsHeight", Number.NaN);
+    expect(await settings.getDetailsHeight()).toBeNull();
+  });
 });

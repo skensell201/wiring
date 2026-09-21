@@ -1,14 +1,20 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { applySnapshot, initialState, useAppStore, viewEditor } from "../../app/store";
+import { settings } from "../../shared/settings";
 import { DetailsPanel } from "./DetailsPanel";
 
 vi.mock("../../shared/ipc/tauri", () => ({ invoke: vi.fn(async () => null), listen: vi.fn(async () => () => {}), Channel: class { onmessage: (m: unknown) => void = () => {}; } }));
+vi.mock("../../shared/settings", () => ({
+  settings: { get: vi.fn(async () => null), set: vi.fn(async () => {}), getLastNamespace: vi.fn(async () => null), setLastNamespace: vi.fn(async () => {}), getSidebarCollapsed: vi.fn(async () => false), setSidebarCollapsed: vi.fn(async () => {}), getDetailsHeight: vi.fn(async () => null), setDetailsHeight: vi.fn(async () => {}) },
+}));
 vi.mock("./yaml", () => ({ highlightYaml: vi.fn(async (src: string) => `<pre class="shiki"><code>${src}</code></pre>`) }));
 
 const node = { id: "Pod/p/web-1", kind: "Pod" as const, namespace: "p", name: "web-1", status: "ok" as const, badges: [], group: null };
 
 beforeEach(() => {
+  vi.mocked(settings.getDetailsHeight).mockReset().mockResolvedValue(null);
+  vi.mocked(settings.setDetailsHeight).mockClear();
   useAppStore.setState(
     {
       ...applySnapshot(initialState(), { nodes: [node, { ...node, id: "Service/p/web", kind: "Service", name: "web" }], edges: [] }),
@@ -142,5 +148,79 @@ describe("DetailsPanel discard", () => {
     expect(confirmDiscard).toHaveBeenCalled();
     fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
     expect(cancelDiscard).toHaveBeenCalled();
+  });
+});
+
+describe("DetailsPanel height", () => {
+  const separator = () => screen.getByRole("separator");
+  const heightOf = (el: HTMLElement) => Number(el.getAttribute("aria-valuenow"));
+
+  it("loads the saved height, steps it with the arrow keys, clamps to the window and saves the result", async () => {
+    vi.mocked(settings.getDetailsHeight).mockResolvedValueOnce(400);
+    render(<DetailsPanel />);
+    await waitFor(() => expect(separator()).toHaveAttribute("aria-valuenow", "400"));
+    const sep = separator();
+    expect(sep).toHaveAttribute("aria-orientation", "horizontal");
+    expect(sep).toHaveAttribute("aria-valuemin", "200");
+    expect(sep).toHaveAttribute("aria-valuemax", String(window.innerHeight - 200));
+    expect(sep).toHaveAttribute("tabindex", "0");
+    fireEvent.keyDown(sep, { key: "ArrowUp" }); // +16
+    expect(sep).toHaveAttribute("aria-valuenow", "416");
+    expect(settings.setDetailsHeight).toHaveBeenLastCalledWith(416);
+    fireEvent.keyDown(sep, { key: "ArrowDown", shiftKey: true }); // -64
+    expect(sep).toHaveAttribute("aria-valuenow", "352");
+    expect(settings.setDetailsHeight).toHaveBeenLastCalledWith(352);
+    // Never taller than the window minus 200 ...
+    for (let i = 0; i < 100; i++) fireEvent.keyDown(sep, { key: "ArrowUp", shiftKey: true });
+    expect(heightOf(sep)).toBe(window.innerHeight - 200);
+    // ... and never shorter than 200.
+    for (let i = 0; i < 100; i++) fireEvent.keyDown(sep, { key: "ArrowDown", shiftKey: true });
+    expect(heightOf(sep)).toBe(200);
+    expect(settings.setDetailsHeight).toHaveBeenLastCalledWith(200);
+  });
+
+  it("clamps a saved height that no longer fits the window", async () => {
+    vi.mocked(settings.getDetailsHeight).mockResolvedValueOnce(99_999);
+    render(<DetailsPanel />);
+    await waitFor(() => expect(heightOf(separator())).toBe(window.innerHeight - 200));
+    // Loading never counts as a change worth saving.
+    expect(settings.setDetailsHeight).not.toHaveBeenCalled();
+  });
+
+  it("drags the separator and saves the height on pointer-up", async () => {
+    vi.mocked(settings.getDetailsHeight).mockResolvedValueOnce(300);
+    render(<DetailsPanel />);
+    await waitFor(() => expect(separator()).toHaveAttribute("aria-valuenow", "300"));
+    const sep = separator();
+    sep.setPointerCapture = vi.fn();
+    fireEvent.pointerDown(sep, { clientY: 500, pointerId: 1 });
+    fireEvent.pointerMove(sep, { clientY: 450, pointerId: 1 }); // dragged up 50px: taller
+    expect(sep).toHaveAttribute("aria-valuenow", "350");
+    expect(settings.setDetailsHeight).not.toHaveBeenCalled();
+    fireEvent.pointerUp(sep, { clientY: 450, pointerId: 1 });
+    expect(settings.setDetailsHeight).toHaveBeenCalledTimes(1);
+    expect(settings.setDetailsHeight).toHaveBeenLastCalledWith(350);
+    // After the release the pointer is no longer tracked.
+    fireEvent.pointerMove(sep, { clientY: 100, pointerId: 1 });
+    expect(sep).toHaveAttribute("aria-valuenow", "350");
+  });
+});
+
+describe("DetailsPanel maximise", () => {
+  it("the maximise button toggles detailsMaximized and hides the separator while maximised", () => {
+    render(<DetailsPanel />);
+    fireEvent.click(screen.getByRole("button", { name: "Maximize panel" }));
+    expect(useAppStore.getState().detailsMaximized).toBe(true);
+    expect(screen.queryByRole("separator")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Restore panel" }));
+    expect(useAppStore.getState().detailsMaximized).toBe(false);
+    expect(screen.getByRole("separator")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Maximize panel" })).toBeInTheDocument();
+  });
+
+  it("has no collapse toggle any more", () => {
+    render(<DetailsPanel />);
+    expect(screen.queryByTitle(/collapse panel/i)).not.toBeInTheDocument();
+    expect(screen.queryByText("▾")).not.toBeInTheDocument();
   });
 });

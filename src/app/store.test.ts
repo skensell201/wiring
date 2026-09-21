@@ -28,6 +28,8 @@ vi.mock("../shared/settings", () => ({
     setLastNamespace: vi.fn(async () => {}),
     getSidebarCollapsed: vi.fn(async () => false),
     setSidebarCollapsed: vi.fn(async () => {}),
+    getDetailsHeight: vi.fn(async () => null),
+    setDetailsHeight: vi.fn(async () => {}),
   },
 }));
 

@@ -17,6 +17,7 @@ import { Toasts } from "./shared/ui/Toasts";
 export function App() {
   useGlobalKeys();
   const viewName = useAppStore((s) => s.view.name);
+  const maximized = useAppStore((s) => s.detailsMaximized);
   useEffect(() => {
     let active = true;
     let stop: (() => void) | undefined;
@@ -34,10 +35,16 @@ export function App() {
       <ErrorBoundary name="navigator"><Navigator /></ErrorBoundary>
       <div className="flex min-w-0 flex-1 flex-col">
         <Header />
-        <ViewHeader />
-        <main className="min-h-0 flex-1">
-          <ErrorBoundary name="main view">{viewName === "graph" ? <Canvas /> : <TableView />}</ErrorBoundary>
-        </main>
+        {/* A maximised details panel takes the whole column; the view under it is unmounted, not hidden,
+            so a busy graph stops rendering while logs fill the screen. */}
+        {!maximized && (
+          <>
+            <ViewHeader />
+            <main className="min-h-0 flex-1">
+              <ErrorBoundary name="main view">{viewName === "graph" ? <Canvas /> : <TableView />}</ErrorBoundary>
+            </main>
+          </>
+        )}
         <ErrorBoundary name="details panel"><DetailsPanel /></ErrorBoundary>
       </div>
       <ContextPicker />

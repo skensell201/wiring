@@ -49,4 +49,20 @@ export const settings = {
       /* settings are a convenience; never block the UI */
     }
   },
+  /** The details panel height in px, or null when never resized (or the stored value is not a finite number). */
+  async getDetailsHeight(): Promise<number | null> {
+    try {
+      const v = await (await open()).get<unknown>("detailsHeight");
+      return typeof v === "number" && Number.isFinite(v) ? v : null;
+    } catch {
+      return null;
+    }
+  },
+  async setDetailsHeight(px: number): Promise<void> {
+    try {
+      await (await open()).set("detailsHeight", px);
+    } catch {
+      /* settings are a convenience; never block the UI */
+    }
+  },
 };

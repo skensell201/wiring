@@ -5,7 +5,7 @@ import { initialState, useAppStore } from "./store";
 
 vi.mock("../shared/ipc/tauri", () => ({ invoke: vi.fn(async () => null), listen: vi.fn(async () => () => {}), Channel: class { onmessage: (m: unknown) => void = () => {}; } }));
 vi.mock("../shared/settings", () => ({
-  settings: { get: vi.fn(async () => null), set: vi.fn(async () => {}), getLastNamespace: vi.fn(async () => null), setLastNamespace: vi.fn(async () => {}), getSidebarCollapsed: vi.fn(async () => false), setSidebarCollapsed: vi.fn(async () => {}) },
+  settings: { get: vi.fn(async () => null), set: vi.fn(async () => {}), getLastNamespace: vi.fn(async () => null), setLastNamespace: vi.fn(async () => {}), getSidebarCollapsed: vi.fn(async () => false), setSidebarCollapsed: vi.fn(async () => {}), getDetailsHeight: vi.fn(async () => null), setDetailsHeight: vi.fn(async () => {}) },
 }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn(async () => null) }));
 vi.mock("./startup", () => ({ startup: vi.fn(async () => {}) }));
@@ -31,6 +31,20 @@ describe("global keys", () => {
     render(<App />);
     fireEvent.keyDown(window, { key: "Escape" });
     expect(select).not.toHaveBeenCalled();
+  });
+
+  it("Escape restores a maximised details panel before touching the selection", () => {
+    const select = vi.fn(async () => {});
+    useAppStore.setState({ connection: { ...initialState().connection, context: "prod", state: "connected" }, selectedId: "Pod/p/a", select, detailsMaximized: true });
+    render(<App />);
+    expect(screen.queryByRole("main")).not.toBeInTheDocument();
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(useAppStore.getState().detailsMaximized).toBe(false);
+    expect(useAppStore.getState().selectedId).toBe("Pod/p/a");
+    expect(select).not.toHaveBeenCalled();
+    expect(screen.getByRole("main")).toBeInTheDocument();
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(select).toHaveBeenCalledWith(null);
   });
 
   it("Cmd/Ctrl+K focuses the search box", () => {
@@ -137,6 +151,24 @@ describe("editing keys", () => {
     render(<App />);
     fireEvent.keyDown(window, { key: "Escape" });
     expect(cancelEdit).toHaveBeenCalledTimes(1);
+  });
+
+  it("Escape restores a maximised panel after the dialogs and before the editor", () => {
+    const cancelDiscard = vi.fn();
+    const backToEdit = vi.fn();
+    const { discardDialog } = initialState();
+    useAppStore.setState({ ...connected(), ...editing("review"), cancelDiscard, backToEdit, detailsMaximized: true, discardDialog: { ...discardDialog, open: true } });
+    render(<App />);
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(cancelDiscard).toHaveBeenCalledTimes(1);
+    expect(useAppStore.getState().detailsMaximized).toBe(true);
+    expect(backToEdit).not.toHaveBeenCalled();
+    useAppStore.setState({ discardDialog });
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(useAppStore.getState().detailsMaximized).toBe(false);
+    expect(backToEdit).not.toHaveBeenCalled();
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(backToEdit).toHaveBeenCalledTimes(1);
   });
 
   it("Escape is ignored while saving", () => {
