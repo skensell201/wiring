@@ -10,6 +10,7 @@ vi.mock("../shared/ipc/tauri", () => ({
     return null;
   }),
   listen: vi.fn(async () => () => {}),
+  Channel: class { onmessage: (m: unknown) => void = () => {}; },
 }));
 vi.mock("../shared/settings", () => ({
   settings: {

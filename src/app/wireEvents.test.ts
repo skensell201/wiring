@@ -7,7 +7,7 @@ const hoisted = vi.hoisted(() => ({ handlers: null as EventHandlers | null }));
 vi.mock("../shared/ipc/events", () => ({
   listenAll: vi.fn(async (h: EventHandlers) => { hoisted.handlers = h; return () => { hoisted.handlers = null; }; }),
 }));
-vi.mock("../shared/ipc/tauri", () => ({ invoke: vi.fn(async () => null), listen: vi.fn(async () => () => {}) }));
+vi.mock("../shared/ipc/tauri", () => ({ invoke: vi.fn(async () => null), listen: vi.fn(async () => () => {}), Channel: class { onmessage: (m: unknown) => void = () => {}; } }));
 
 import type { GraphDelta } from "../shared/ipc/types";
 import { deltaTouches, wireEvents } from "./wireEvents";

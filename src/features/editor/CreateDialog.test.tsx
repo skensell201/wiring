@@ -4,7 +4,7 @@ import { initialState, useAppStore } from "../../app/store";
 import { CreateDialog } from "./CreateDialog";
 import { template } from "./templates";
 
-vi.mock("../../shared/ipc/tauri", () => ({ invoke: vi.fn(async () => null), listen: vi.fn(async () => () => {}) }));
+vi.mock("../../shared/ipc/tauri", () => ({ invoke: vi.fn(async () => null), listen: vi.fn(async () => () => {}), Channel: class { onmessage: (m: unknown) => void = () => {}; } }));
 vi.mock("./LazyYamlEditor", () => ({
   LazyYamlEditor: ({ value, onChange, label }: { value: string; onChange: (t: string) => void; label: string }) => (
     <textarea aria-label={label} value={value} onChange={(e) => onChange(e.target.value)} />

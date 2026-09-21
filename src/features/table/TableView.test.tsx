@@ -4,7 +4,7 @@ import { initialState, useAppStore } from "../../app/store";
 import type { Table } from "../../shared/ipc/types";
 import { TableView } from "./TableView";
 
-vi.mock("../../shared/ipc/tauri", () => ({ invoke: vi.fn(async () => null), listen: vi.fn(async () => () => {}) }));
+vi.mock("../../shared/ipc/tauri", () => ({ invoke: vi.fn(async () => null), listen: vi.fn(async () => () => {}), Channel: class { onmessage: (m: unknown) => void = () => {}; } }));
 
 const pods: Table = {
   kind: "Pod",

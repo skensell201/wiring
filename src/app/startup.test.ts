@@ -20,6 +20,7 @@ vi.mock("../shared/ipc/tauri", () => ({
     return null;
   }),
   listen: vi.fn(async () => () => {}),
+  Channel: class { onmessage: (m: unknown) => void = () => {}; },
 }));
 
 import { invoke } from "../shared/ipc/tauri";
