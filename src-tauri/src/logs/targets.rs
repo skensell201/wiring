@@ -92,9 +92,37 @@ mod tests {
         let via_group = targets(&store, "PodGroup/g/Deployment/api", None).unwrap();
         assert_eq!(via_deployment.len(), 7, "{:?}", names(&via_deployment));
         assert_eq!(names(&via_deployment), names(&via_group));
-        let mut sorted = names(&via_deployment);
+        let pods: Vec<&String> = via_deployment.iter().map(|t| &t.pod).collect();
+        let mut sorted = pods.clone();
         sorted.sort();
-        assert_eq!(names(&via_deployment), sorted, "pods are in name order");
+        assert_eq!(pods, sorted, "pods are in name order");
+    }
+
+    #[test]
+    fn a_same_named_deployment_in_another_namespace_does_not_claim_pods() {
+        // Two `web` Deployments; only the pod whose owner chain lives in `a` belongs to `a/web`.
+        let store = Store::from_yaml_docs(
+            "apiVersion: apps/v1\nkind: Deployment\nmetadata: { name: web, namespace: a }\n---\n\
+             apiVersion: apps/v1\nkind: Deployment\nmetadata: { name: web, namespace: b }\n---\n\
+             apiVersion: apps/v1\nkind: ReplicaSet\nmetadata: { name: web-1, namespace: a, ownerReferences: [ { apiVersion: apps/v1, kind: Deployment, name: web, uid: u1 } ] }\n---\n\
+             apiVersion: apps/v1\nkind: ReplicaSet\nmetadata: { name: web-1, namespace: b, ownerReferences: [ { apiVersion: apps/v1, kind: Deployment, name: web, uid: u2 } ] }\n---\n\
+             apiVersion: v1\nkind: Pod\nmetadata: { name: web-1-a, namespace: a, ownerReferences: [ { apiVersion: apps/v1, kind: ReplicaSet, name: web-1, uid: r1 } ] }\nspec: { containers: [ { name: c, image: web } ] }\n---\n\
+             apiVersion: v1\nkind: Pod\nmetadata: { name: web-1-b, namespace: b, ownerReferences: [ { apiVersion: apps/v1, kind: ReplicaSet, name: web-1, uid: r2 } ] }\nspec: { containers: [ { name: c, image: web } ] }\n",
+        )
+        .unwrap();
+        assert_eq!(names(&targets(&store, "Deployment/a/web", None).unwrap()), ["web-1-a/c"]);
+        assert_eq!(names(&targets(&store, "Deployment/b/web", None).unwrap()), ["web-1-b/c"]);
+    }
+
+    #[test]
+    fn container_filter_also_selects_an_init_container_by_name() {
+        let store = Store::from_yaml_docs(
+            "apiVersion: v1\nkind: Pod\nmetadata: { name: p, namespace: n }\nspec:\n  initContainers: [ { name: setup, image: busybox } ]\n  containers: [ { name: app, image: app } ]\n",
+        )
+        .unwrap();
+        let t = targets(&store, "Pod/n/p", Some("setup")).unwrap();
+        assert_eq!(names(&t), ["p/setup (init)"]);
+        assert!(t[0].init);
     }
 
     #[test]

@@ -20,6 +20,7 @@ pub struct LogTarget {
     pub init: bool,
 }
 
+/// One log line tagged with the pod and container it came from (merged workload streams).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LogLine {
