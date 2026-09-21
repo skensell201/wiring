@@ -52,22 +52,32 @@ export function DetailsPanel() {
   })));
   const [tab, setTab] = useState<Tab>("overview");
   const [height, setHeight] = useState(DEFAULT);
-  const heightRef = useRef(height); // the latest height for pointer-up and keys, which must not re-bind on every move
-  useEffect(() => { heightRef.current = height; }, [height]);
+  // The latest height for pointer-up and keys, so the handlers need not re-bind on every move. It is
+  // written synchronously with the state, not from an effect: pointermove renders are continuous-priority
+  // and may not have flushed when a quick release fires pointerup, which would then read the previous
+  // move's value, snap the panel back one delta and persist the wrong height.
+  const heightRef = useRef(height);
+  const applyHeight = useCallback((h: number) => { heightRef.current = h; setHeight(h); }, []);
   const drag = useRef<{ startY: number; startH: number } | null>(null);
 
   // The saved height is applied once, clamped to the current window; loading is not a change to save back.
   useEffect(() => {
     let active = true;
-    void settings.getDetailsHeight().then((h) => { if (active && h !== null) setHeight(clampHeight(h)); });
+    void settings.getDetailsHeight().then((h) => { if (active && h !== null) applyHeight(clampHeight(h)); });
     return () => { active = false; };
-  }, []);
+  }, [applyHeight]);
+  // A shrinking window pulls the panel back into range; the user's chosen height is not overwritten.
+  useEffect(() => {
+    const onResize = () => applyHeight(clampHeight(heightRef.current));
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, [applyHeight]);
   /** Applies a user-chosen height and remembers it. */
   const commit = useCallback((h: number) => {
     const next = clampHeight(h);
-    setHeight(next);
+    applyHeight(next);
     void settings.setDetailsHeight(next);
-  }, []);
+  }, [applyHeight]);
 
   const onPointerDown = useCallback((e: React.PointerEvent) => {
     drag.current = { startY: e.clientY, startH: heightRef.current };
@@ -75,12 +85,13 @@ export function DetailsPanel() {
   }, []);
   const onPointerMove = useCallback((e: React.PointerEvent) => {
     if (!drag.current) return;
-    setHeight(clampHeight(drag.current.startH + (drag.current.startY - e.clientY)));
-  }, []);
+    applyHeight(clampHeight(drag.current.startH + (drag.current.startY - e.clientY)));
+  }, [applyHeight]);
   const onPointerUp = useCallback(() => {
     if (!drag.current) return;
+    const { startH } = drag.current;
     drag.current = null;
-    commit(heightRef.current);
+    if (heightRef.current !== startH) commit(heightRef.current); // a click without a move is not a resize
   }, [commit]);
   const onSeparatorKey = useCallback((e: React.KeyboardEvent) => {
     if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;

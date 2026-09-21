@@ -193,7 +193,12 @@ describe("DetailsPanel height", () => {
     await waitFor(() => expect(separator()).toHaveAttribute("aria-valuenow", "300"));
     const sep = separator();
     sep.setPointerCapture = vi.fn();
+    // A click without movement is not a resize: nothing to save.
     fireEvent.pointerDown(sep, { clientY: 500, pointerId: 1 });
+    fireEvent.pointerUp(sep, { clientY: 500, pointerId: 1 });
+    expect(settings.setDetailsHeight).not.toHaveBeenCalled();
+    fireEvent.pointerDown(sep, { clientY: 500, pointerId: 1 });
+    expect(sep.setPointerCapture).toHaveBeenCalledWith(1);
     fireEvent.pointerMove(sep, { clientY: 450, pointerId: 1 }); // dragged up 50px: taller
     expect(sep).toHaveAttribute("aria-valuenow", "350");
     expect(settings.setDetailsHeight).not.toHaveBeenCalled();
@@ -203,6 +208,22 @@ describe("DetailsPanel height", () => {
     // After the release the pointer is no longer tracked.
     fireEvent.pointerMove(sep, { clientY: 100, pointerId: 1 });
     expect(sep).toHaveAttribute("aria-valuenow", "350");
+  });
+
+  it("re-clamps the height when the window shrinks, without saving", async () => {
+    const original = window.innerHeight;
+    vi.mocked(settings.getDetailsHeight).mockResolvedValueOnce(original - 200);
+    render(<DetailsPanel />);
+    await waitFor(() => expect(heightOf(separator())).toBe(original - 200));
+    try {
+      Object.defineProperty(window, "innerHeight", { value: original - 100, configurable: true, writable: true });
+      fireEvent(window, new Event("resize"));
+      expect(heightOf(separator())).toBe(original - 300);
+      expect(separator()).toHaveAttribute("aria-valuemax", String(original - 300));
+      expect(settings.setDetailsHeight).not.toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(window, "innerHeight", { value: original, configurable: true, writable: true });
+    }
   });
 });
 
