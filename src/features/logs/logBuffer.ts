@@ -14,6 +14,7 @@ export class LogBuffer {
   constructor(private readonly capacity = 10_000) {}
 
   append(lines: LogLine[]): void {
+    if (lines.length === 0) return;
     for (const l of lines) this.buf.push({ ...l, seq: ++this.seq });
     if (this.buf.length > this.capacity) this.buf.splice(0, this.buf.length - this.capacity);
     this.invalidate();
