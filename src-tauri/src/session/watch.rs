@@ -146,7 +146,7 @@ where
 
 /// Aborts the wrapped task when dropped, so cancelling an outer supervising task also
 /// tears down the inner task it spawned.
-struct AbortOnDrop(JoinHandle<()>);
+pub(crate) struct AbortOnDrop(pub(crate) JoinHandle<()>);
 
 impl Drop for AbortOnDrop {
     fn drop(&mut self) {
