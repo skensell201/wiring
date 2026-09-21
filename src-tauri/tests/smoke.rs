@@ -253,7 +253,10 @@ async fn exercise_logs(session: &mut Session, context: &str) {
                 assert!(lines.iter().all(|l| l.text.starts_with("20")), "{lines:?}");
             }
             LogMessage::Error { message, .. } => panic!("stream error: {message}"),
-            _ => {}
+            // A follow stream on a Ready pod must not end on its own; fail fast instead of
+            // waiting out the deadline with a generic timeout message.
+            LogMessage::Ended { pod, .. } => panic!("stream ended early: {pod}"),
+            LogMessage::Truncated { .. } => {}
         }
     }
     session.stop_logs(id);
