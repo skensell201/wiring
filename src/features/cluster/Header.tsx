@@ -1,3 +1,4 @@
+import mark from "../../assets/mark.svg";
 import { Plus, Search } from "lucide-react";
 import { useEffect, useRef } from "react";
 import { useShallow } from "zustand/react/shallow";
@@ -34,7 +35,10 @@ export function Header() {
 
   return (
     <header className={`drag-region flex h-12 shrink-0 items-center gap-3 border-b border-border bg-void px-3 ${inset}`}>
-      <span className="text-sm font-semibold tracking-wide text-text-hi">Wiring</span>
+      <span className="flex items-center gap-1.5 text-sm font-semibold tracking-wide text-text-hi">
+        <img src={mark} alt="" width={20} height={20} className="select-none" draggable={false} />
+        Wiring
+      </span>
       <button type="button" className="no-drag rounded-lg border border-border bg-surface px-2.5 py-1 text-sm text-text-hi hover:bg-muted" onClick={onContextClick}
         title={hasContexts ? "Toggle navigator" : "Choose a cluster"}>
         ⎈ <span>{connection.context ?? "choose cluster"}</span>{connection.serverVersion ? <span className="ml-2 text-xs text-text-muted">{connection.serverVersion}</span> : null}
