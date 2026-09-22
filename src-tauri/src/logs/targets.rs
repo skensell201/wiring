@@ -65,7 +65,11 @@ pub fn targets(store: &Store, node_id: &str, container: Option<&str>) -> AppResu
         }
     }
     if out.is_empty() {
-        return Err(AppError::new(ErrorKind::NotFound, format!("{node_id} has no containers to stream")));
+        let what = match container {
+            Some(c) => format!("{node_id} has no container \"{c}\""),
+            None => format!("{node_id} has no containers to stream"),
+        };
+        return Err(AppError::new(ErrorKind::NotFound, what));
     }
     Ok(out)
 }
@@ -111,7 +115,9 @@ mod tests {
         assert_eq!(names(&targets(&store, "Pod/n/p", Some("sidecar")).unwrap()), ["p/sidecar"]);
         // Nothing to stream is an error, not an empty session: the command must fail so the UI
         // says so instead of waiting for messages that never come.
-        assert_eq!(targets(&store, "Pod/n/p", Some("nope")).unwrap_err().kind, ErrorKind::NotFound);
+        let err = targets(&store, "Pod/n/p", Some("nope")).unwrap_err();
+        assert_eq!(err.kind, ErrorKind::NotFound);
+        assert!(err.message.contains("no container \"nope\""), "{}", err.message);
     }
 
     #[test]
