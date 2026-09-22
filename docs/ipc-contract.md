@@ -105,7 +105,7 @@ Container logs stream through a Tauri `Channel` passed to `start_logs`, not thro
 | `stop_logs` | `{ sessionId }` | `null` |
 | `save_text` | `{ path, text }` | `null` — writes a file chosen with the save dialog |
 
-`nodeId` may be a `Pod`, `Deployment`, `StatefulSet`, `DaemonSet`, `Job`, `CronJob` or `PodGroup`; anything else is `invalid`. Each `(pod, container)` the node stands for is one stream (`tail_lines=500`, `follow` unless `previous`). Pods that appear or disappear while streaming start/stop their streams. At most 64 streams per session.
+`nodeId` may be a `Pod`, `Deployment`, `StatefulSet`, `DaemonSet`, `Job`, `CronJob` or `PodGroup`; anything else is `invalid`. A selection that resolves to no container at all (an unknown `container`, a workload without pods) is `notFound`, so a session always has something to stream. Each `(pod, container)` the node stands for is one stream (`tail_lines=500`, `follow` unless `previous`). Pods that appear or disappear while streaming start/stop their streams, and a container that restarts gets a stream for its new run. At most 64 streams per session.
 
 ### `LogMessage` (tagged by `type`)
 
@@ -117,4 +117,4 @@ Container logs stream through a Tauri `Channel` passed to `start_logs`, not thro
 | `error` | `sessionId`, `pod`, `container`, `message` |
 | `truncated` | `sessionId`, `limit` |
 
-Batches arrive at most every 50 ms or every 256 lines. After `stop_logs` nothing more is sent on that channel. Fixture: `log_message.json`.
+`ended` means the stream is over, whether the server closed it or the session stopped it because its pod (or that run of its container) went away. Batches arrive at most every 50 ms or every 256 lines. After `stop_logs` nothing more is sent on that channel. Fixture: `log_message.json`.
