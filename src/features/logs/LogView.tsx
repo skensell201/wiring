@@ -19,6 +19,14 @@ interface Props {
 
 const ROW = 18;
 
+/** Identity of row `index`: the stream key for a problem row, the line's `seq` for a log row.
+ *  The virtualiser caches a measured height per key, so keying by index would hand a line the
+ *  height of the one it displaced once the ring buffer saturates. */
+export function rowKey(problems: Problem[], lines: BufferedLine[], index: number): string | number {
+  if (index < problems.length) return `p:${problems[index].key}`;
+  return lines[index - problems.length]?.seq ?? index;
+}
+
 const subscribe = (cb: () => void) => logBuffer.subscribe(cb);
 const snapshot = () => logBuffer.lines();
 
@@ -44,11 +52,15 @@ export function LogView({ query, current, wrap, showPrefix, problems, onMatches 
   const total = problems.length + lines.length;
   const virtualizer = useVirtualizer({
     count: total, getScrollElement: () => parentRef.current, estimateSize: () => ROW, overscan: 30, initialRect: { width: 800, height: 400 },
+    getItemKey: (index) => rowKey(problems, lines, index),
   });
 
+  // A saturated buffer drops as many lines as it gains, so `total` stops changing: the last
+  // line's `seq` is what says a batch arrived.
+  const lastSeq = lines.length ? lines[lines.length - 1].seq : 0;
   useEffect(() => {
     if (stuck && total > 0) virtualizer.scrollToIndex(total - 1, { align: "end" });
-  }, [total, stuck, virtualizer]);
+  }, [total, lastSeq, stuck, virtualizer]);
   useEffect(() => {
     const idx = matchesRef.current[current];
     if (idx !== undefined) { setStuck(false); virtualizer.scrollToIndex(problems.length + idx, { align: "center" }); }
@@ -71,13 +83,13 @@ export function LogView({ query, current, wrap, showPrefix, problems, onMatches 
             const style = { position: "absolute" as const, top: 0, left: 0, width: "100%", transform: `translateY(${item.start}px)` };
             if (item.index < problems.length) {
               const p = problems[item.index];
-              return <div key={`p:${p.key}`} ref={virtualizer.measureElement} data-index={item.index} style={style} className="text-status-warn">{p.key} — {p.message}</div>;
+              return <div key={rowKey(problems, lines, item.index)} ref={virtualizer.measureElement} data-index={item.index} style={style} className="text-status-warn">{p.key} — {p.message}</div>;
             }
             const line = lines[item.index - problems.length];
             const isMatch = q !== "" && line.text.toLowerCase().includes(q);
             const isCurrent = matches[current] === item.index - problems.length;
             return (
-              <div key={line.seq} ref={virtualizer.measureElement} data-index={item.index} style={style} data-testid={isMatch ? "match" : undefined} className={isCurrent ? "bg-current-b/30" : isMatch ? "bg-current-b/10" : ""}>
+              <div key={rowKey(problems, lines, item.index)} ref={virtualizer.measureElement} data-index={item.index} style={style} data-testid={isMatch ? "match" : undefined} className={isCurrent ? "bg-current-b/30" : isMatch ? "bg-current-b/10" : ""}>
                 {showPrefix && <span style={{ color: prefixColor(line.pod) }}>[{line.pod}/{line.container}]</span>}{showPrefix && " "}
                 <Line text={line.text} />
               </div>

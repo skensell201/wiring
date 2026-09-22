@@ -222,6 +222,15 @@ describe("LogsTab", () => {
     expect(screen.queryByRole("button", { name: "↓ Follow" })).not.toBeInTheDocument();
   });
 
+  it("keeps following the bottom once the buffer saturates and each batch drops as many lines", async () => {
+    setup();
+    await act(async () => {});
+    push(Array.from({ length: 10_000 }, (_, i) => `line ${i}`));
+    scrollToIndex.mockClear();
+    push(["fresh"]); // the row count no longer changes, but the bottom row is a new line
+    expect(scrollToIndex).toHaveBeenLastCalledWith(9_999, { align: "end" });
+  });
+
   it("shows stream problems as lines and the status on the right", async () => {
     setup();
     await act(async () => {});
