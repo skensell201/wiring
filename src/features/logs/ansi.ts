@@ -16,7 +16,11 @@ export function toSpans(text: string): Span[] {
     .filter((part) => part.content.length > 0)
     .map((part) => {
       const classes: string[] = [];
-      const fg = part.fg?.replace(/^ansi-(bright-)?/, "");
+      // anser implements reverse video by swapping the palette into `fg`/`bg` (and dropping
+      // "reverse" from `decorations`); taking that `fg` would paint highlighted text in the dim
+      // background colour, so drop it. `isInverted` is set by anser but missing from its types.
+      const inverted = (part as { isInverted?: boolean }).isInverted === true;
+      const fg = inverted ? undefined : part.fg?.replace(/^ansi-(bright-)?/, "");
       if (fg && COLORS[fg]) classes.push(COLORS[fg]);
       if (part.decorations.includes("bold")) classes.push("ansi-bold");
       return classes.length ? { text: part.content, className: classes.join(" ") } : { text: part.content };

@@ -22,6 +22,13 @@ describe("toSpans", () => {
     expect(toSpans("\x1b[44mbg\x1b[0m \x1b[4mul\x1b[0m")).toEqual([{ text: "bg" }, { text: " " }, { text: "ul" }]);
   });
 
+  it("renders reverse video as plain text rather than a palette swap", () => {
+    // anser implements ESC[7m by swapping the palette (fg: ansi-black), which would paint
+    // highlighted text in the dim background colour; the spec asks for plain text instead.
+    expect(toSpans("\x1b[7mreversed\x1b[0m")).toEqual([{ text: "reversed" }]);
+    expect(toSpans("\x1b[7;31mreversed red\x1b[0m")).toEqual([{ text: "reversed red" }]);
+  });
+
   it("drops empty spans and escapes nothing (text stays raw)", () => {
     expect(toSpans("\x1b[0m")).toEqual([]);
     expect(toSpans("<b>&")).toEqual([{ text: "<b>&" }]);
