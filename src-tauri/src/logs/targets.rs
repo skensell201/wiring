@@ -10,7 +10,8 @@ use super::LogTarget;
 
 /// Every container of every pod `node_id` stands for, in pod-name order and, within a pod,
 /// init containers first in spec order. `container = Some(name)` keeps only that container.
-/// Kinds that do not run pods are `invalid`; a Pod that is not in the store is `notFound`.
+/// Kinds that do not run pods are `invalid`; a Pod that is not in the store, and a selection
+/// that resolves to no container at all, are `notFound`.
 pub fn targets(store: &Store, node_id: &str, container: Option<&str>) -> AppResult<Vec<LogTarget>> {
     let (kind, ns, name) = parse_node_id(node_id)?;
     let pods: Vec<&Object> = match kind {
@@ -38,6 +39,15 @@ pub fn targets(store: &Store, node_id: &str, container: Option<&str>) -> AppResu
         let Some(spec) = p.spec.as_ref() else { continue };
         let namespace = pod.namespace().unwrap_or_default().to_string();
         let uid = pod.uid().unwrap_or_default().to_string();
+        let status = p.status.as_ref();
+        let restarts = |name: &str| -> i32 {
+            status
+                .into_iter()
+                .flat_map(|s| s.init_container_statuses.iter().chain(s.container_statuses.iter()))
+                .flatten()
+                .find(|cs| cs.name == name)
+                .map_or(0, |cs| cs.restart_count)
+        };
         let init = spec.init_containers.iter().flatten().map(|c| (c.name.clone(), true));
         let main = spec.containers.iter().map(|c| (c.name.clone(), false));
         for (c, is_init) in init.chain(main) {
@@ -48,10 +58,14 @@ pub fn targets(store: &Store, node_id: &str, container: Option<&str>) -> AppResu
                 namespace: namespace.clone(),
                 pod: pod.name().to_string(),
                 uid: uid.clone(),
+                restarts: restarts(&c),
                 container: c,
                 init: is_init,
             });
         }
+    }
+    if out.is_empty() {
+        return Err(AppError::new(ErrorKind::NotFound, format!("{node_id} has no containers to stream")));
     }
     Ok(out)
 }
@@ -95,7 +109,35 @@ mod tests {
         )
         .unwrap();
         assert_eq!(names(&targets(&store, "Pod/n/p", Some("sidecar")).unwrap()), ["p/sidecar"]);
-        assert!(targets(&store, "Pod/n/p", Some("nope")).unwrap().is_empty());
+        // Nothing to stream is an error, not an empty session: the command must fail so the UI
+        // says so instead of waiting for messages that never come.
+        assert_eq!(targets(&store, "Pod/n/p", Some("nope")).unwrap_err().kind, ErrorKind::NotFound);
+    }
+
+    #[test]
+    fn targets_carry_the_container_restart_count_so_a_restarted_container_is_a_new_target() {
+        // A crashing container's follow stream ends with its run; the next run is a new target,
+        // so the session starts a fresh stream for it instead of going quiet.
+        let yaml = |restarts: i32| {
+            format!(
+                "apiVersion: v1\nkind: Pod\nmetadata: {{ name: p, namespace: n }}\nspec:\n  initContainers: [ {{ name: setup, image: busybox }} ]\n  containers: [ {{ name: app, image: app }} ]\n\
+                 status:\n  containerStatuses: [ {{ name: app, image: app, imageID: '', ready: false, restartCount: {restarts} }} ]\n  initContainerStatuses: [ {{ name: setup, image: busybox, imageID: '', ready: true, restartCount: 2 }} ]\n"
+            )
+        };
+        let before = targets(&Store::from_yaml_docs(&yaml(0)).unwrap(), "Pod/n/p", None).unwrap();
+        let after = targets(&Store::from_yaml_docs(&yaml(1)).unwrap(), "Pod/n/p", None).unwrap();
+        assert_eq!(names(&before), ["p/setup (init)", "p/app"]);
+        assert_eq!(before[0].restarts, 2, "init container status is read too");
+        assert_eq!(before[1].restarts, 0);
+        assert_eq!(after[1].restarts, 1);
+        assert_ne!(before[1], after[1], "a new run is a new target");
+        assert_eq!(before[0], after[0], "the untouched init container keeps its identity");
+    }
+
+    #[test]
+    fn a_pod_without_container_statuses_has_no_restarts() {
+        let store = Store::from_yaml_docs("apiVersion: v1\nkind: Pod\nmetadata: { name: p, namespace: n }\nspec:\n  containers: [ { name: app, image: app } ]\n").unwrap();
+        assert_eq!(targets(&store, "Pod/n/p", None).unwrap()[0].restarts, 0);
     }
 
     #[test]

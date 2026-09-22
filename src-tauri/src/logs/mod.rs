@@ -25,6 +25,10 @@ pub struct LogTarget {
     pub uid: String,
     pub container: String,
     pub init: bool,
+    /// `status.containerStatuses[].restartCount` (0 when missing). Also part of the identity: a
+    /// crashing container's follow stream ends with its run, and the next run is a new target,
+    /// so the session reattaches instead of going quiet.
+    pub restarts: i32,
 }
 
 /// One log line tagged with the pod and container it came from (merged workload streams).

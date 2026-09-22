@@ -153,6 +153,7 @@ mod tests {
             uid: format!("uid-{pod}"),
             container: "c".into(),
             init: false,
+            restarts: 0,
         }
     }
 
