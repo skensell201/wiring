@@ -20,7 +20,7 @@
   --color-supernova: #a05fcf; /* focus rings, active states */
   --color-haze: #bf92ec;      /* Nebula Haze: decorative highlights */
   --color-status-ok: #42946e;
-  --color-status-warn: #bf92ec;
+  --color-status-warn: #d9b36c; /* not in the Railway palette: a muted amber, so warnings never read as the lilac accent */
   --color-status-err: #d82c20;
   --color-status-unknown: #868593;
   --color-toast-ok-bg: #15231d;
@@ -54,3 +54,18 @@ body {
 .drag-region { -webkit-app-region: drag; }
 .no-drag { -webkit-app-region: no-drag; }
 .selectable { user-select: text; }
+
+/* React Flow's dark theme paints its own near-black; put the canvas back on Deep Space. */
+.react-flow {
+  --xy-background-color: var(--color-space);
+  --xy-minimap-background-color: var(--color-surface);
+  --xy-controls-button-background-color: var(--color-surface);
+  --xy-controls-button-background-color-hover: var(--color-muted);
+  --xy-controls-button-color: var(--color-text);
+  --xy-controls-button-color-hover: var(--color-text-hi);
+  --xy-controls-button-border-color: var(--color-border);
+  --xy-controls-box-shadow: none;
+  --xy-attribution-background-color: transparent;
+}
+.react-flow__controls { border: 1px solid var(--color-border); border-radius: 8px; overflow: hidden; }
+.react-flow__attribution a { color: var(--color-text-muted); }

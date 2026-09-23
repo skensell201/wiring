@@ -102,12 +102,12 @@ function HeaderCell({ column, sort, onClick }: { column: TableColumn; sort: Sort
 function Row({ row, columns, selected, onClick, onDoubleClick }: { row: TableRow; columns: TableColumn[]; selected: boolean; onClick: () => void; onDoubleClick: () => void }) {
   return (
     <tr aria-selected={selected} onClick={onClick} onDoubleClick={onDoubleClick} title="Double-click to show in graph"
-      className={`group h-12 cursor-default ${selected ? "bg-space shadow-[inset_2px_0_0_var(--color-supernova)]" : "hover:bg-space/60"}`}>
+      className={`group h-12 cursor-default ${selected ? "bg-muted/50" : "hover:bg-muted/25"}`}>
       {row.cells.map((cell, i) => {
         const numeric = columns[i]?.numeric ?? false;
         return (
           <td key={columns[i]?.key ?? i} data-status={cell.status ?? undefined}
-            className={`truncate whitespace-nowrap border-b border-border px-5 group-last:border-b-0 ${numeric ? "text-right tabular-nums" : ""} ${
+            className={`truncate whitespace-nowrap border-b border-border px-5 group-last:border-b-0 ${selected && i === 0 ? "shadow-[inset_2px_0_0_var(--color-supernova)]" : ""} ${numeric ? "text-right tabular-nums" : ""} ${
               cell.status ? STATUS_TEXT[cell.status] : i === 0 ? "text-text-hi" : "text-text"
             }`}>
             {cell.text}

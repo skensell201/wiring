@@ -23,8 +23,8 @@ export function ClustersSection() {
               active ? "inset-hairline bg-surface text-text-hi" : "text-text-dim hover:bg-surface hover:text-text-hi"
             }`}>
             <span className="grid size-2 shrink-0 place-items-center">{active && <Dot status={state} />}</span>
-            <span className="truncate">{c.name}</span>
-            <span className="ml-auto min-w-0 max-w-[45%] truncate text-xs text-text-muted">{c.cluster}</span>
+            <span className="min-w-0 flex-1 truncate">{c.name}</span>
+            {c.cluster !== c.name && <span className="min-w-0 max-w-[40%] shrink-0 truncate text-xs text-text-muted">{c.cluster}</span>}
           </button>
         );
       })}

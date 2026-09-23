@@ -47,8 +47,9 @@ export function App() {
         )}
         <ErrorBoundary name="details panel"><DetailsPanel /></ErrorBoundary>
       </div>
-      <ContextPicker />
-      <CreateDialog />
+      {/* The dialogs sit outside the columns; a failure in one (the lazily loaded editor, say) must not blank the app. */}
+      <ErrorBoundary name="cluster picker"><ContextPicker /></ErrorBoundary>
+      <ErrorBoundary name="create dialog"><CreateDialog /></ErrorBoundary>
       <Toasts />
     </div>
   );

@@ -12,8 +12,6 @@ import {
 import { useCallback, useEffect, useMemo, useRef } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { useAppStore } from "../../app/store";
-import type { Kind } from "../../shared/ipc/types";
-import { KindChips } from "./KindChips";
 import { RelationEdge } from "./RelationEdge";
 import { ResourceNode } from "./ResourceNode";
 import { toFlow, type ResourceFlowNode } from "./toFlow";
@@ -27,16 +25,15 @@ const FOCUS_SETTLE_FALLBACK_MS = 150;
 function CanvasInner() {
   const s = useAppStore(
     useShallow((s) => ({
-      nodes: s.nodes, edges: s.edges, graphReady: s.graphReady, hiddenKinds: s.hiddenKinds, deniedKinds: s.deniedKinds,
+      nodes: s.nodes, edges: s.edges, graphReady: s.graphReady, hiddenKinds: s.hiddenKinds,
       search: s.search, hoveredId: s.hoveredId, selectedId: s.selectedId, expandedGroups: s.expandedGroups,
       namespace: s.connection.namespace, context: s.connection.context, focusRequest: s.focusRequest,
-      select: s.select, setHovered: s.setHovered, toggleGroup: s.toggleGroup, toggleKind: s.toggleKind,
+      select: s.select, setHovered: s.setHovered, toggleGroup: s.toggleGroup,
       clearFocusRequest: s.clearFocusRequest,
     })),
   );
 
   const flow = useMemo(() => toFlow(s), [s.nodes, s.edges, s.hiddenKinds, s.search, s.hoveredId, s.selectedId, s.expandedGroups]);
-  const present = useMemo(() => new Set<Kind>([...s.nodes.values()].map((n) => n.kind)), [s.nodes]);
 
   const { fitView } = useReactFlow();
   const nodesInitialized = useNodesInitialized();
@@ -127,11 +124,6 @@ function CanvasInner() {
           style={{ background: "#1a191f", border: "1px solid #33323e", borderRadius: 12 }}
         />
       </ReactFlow>
-      <div className="pointer-events-none absolute inset-x-8 top-4 flex">
-        <div className="pointer-events-auto">
-          <KindChips hidden={s.hiddenKinds} denied={s.deniedKinds} present={present} onToggle={s.toggleKind} />
-        </div>
-      </div>
       {overlay && (
         <div className="pointer-events-none absolute inset-0 grid place-items-center text-text-muted">{overlay}</div>
       )}

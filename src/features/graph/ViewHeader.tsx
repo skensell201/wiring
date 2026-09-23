@@ -1,17 +1,22 @@
 import { useMemo } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { kindStats, useAppStore } from "../../app/store";
+import type { Kind } from "../../shared/ipc/types";
 import { KIND_PLURAL, sectionOf } from "../navigator/kindTree";
+import { KindChips } from "./KindChips";
 
-/** Title of the centre pane (the category above it for a table) plus the Graph | Table switch. */
+/** Title of the centre pane (the category above it for a table, the kind filter under it for the
+ *  graph) plus the Graph | Table switch. */
 export function ViewHeader() {
-  const { view, nodes, table, namespace, lastTableKind, showGraph, showTable } = useAppStore(
+  const { view, nodes, table, namespace, lastTableKind, hiddenKinds, deniedKinds, showGraph, showTable, toggleKind } = useAppStore(
     useShallow((s) => ({
       view: s.view, nodes: s.nodes, table: s.view.name === "table" ? s.tables.get(s.view.kind) : undefined, namespace: s.connection.namespace,
-      lastTableKind: s.lastTableKind, showGraph: s.showGraph, showTable: s.showTable,
+      lastTableKind: s.lastTableKind, hiddenKinds: s.hiddenKinds, deniedKinds: s.deniedKinds,
+      showGraph: s.showGraph, showTable: s.showTable, toggleKind: s.toggleKind,
     })),
   );
   const stats = useMemo(() => kindStats(nodes), [nodes]);
+  const present = useMemo(() => new Set<Kind>([...nodes.values()].map((n) => n.kind)), [nodes]);
 
   let title: string, eyebrow: string | null = null, count: number;
   if (view.name === "graph") {
@@ -34,6 +39,11 @@ export function ViewHeader() {
           <h1 className="truncate font-serif text-[36px] font-normal leading-[1.2] tracking-[-0.72px] text-text-hi">{title}</h1>
           <span className="shrink-0 text-sm text-text-muted">{caption}</span>
         </div>
+        {view.name === "graph" && (
+          <div className="mt-3 pb-1">
+            <KindChips hidden={hiddenKinds} denied={deniedKinds} present={present} onToggle={toggleKind} />
+          </div>
+        )}
       </div>
       <div role="group" aria-label="View" className="ml-auto flex gap-6">
         <Segment active={view.name === "graph"} onClick={showGraph}>Graph</Segment>
