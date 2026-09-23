@@ -1,52 +1,167 @@
-# Wiring
+<p align="center">
+  <img src="src-tauri/icons/wiring.svg" width="128" height="128" alt="Wiring logo">
+</p>
 
-A desktop Kubernetes IDE whose centerpiece is a live graph of how resources in a namespace are wired together — Ingress → Service → Deployment → Pod, plus ConfigMaps, Secrets, PVCs, ServiceAccounts and HPAs.
+<h1 align="center">Wiring</h1>
 
-Built with Tauri 2, React and Rust (`kube-rs`). macOS and Windows.
+<p align="center">
+  A desktop Kubernetes IDE that shows how the resources in a namespace are wired together.
+</p>
+
+<p align="center">
+  <a href="https://github.com/skensell201/wiring/releases/latest"><img src="https://img.shields.io/github/v/release/skensell201/wiring?label=download" alt="Latest release"></a>
+  <a href="https://github.com/skensell201/wiring/actions/workflows/ci.yml"><img src="https://github.com/skensell201/wiring/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows-lightgrey" alt="macOS | Windows">
+</p>
+
+![The graph of the shop namespace, with the web Deployment selected and its wiring highlighted](docs/images/graph.png)
+
+Wiring's main view is a live graph of a namespace: **Ingress → Service → Deployment → Pod**, plus the ConfigMaps, Secrets, PersistentVolumeClaims, ServiceAccounts and HorizontalPodAutoscalers each workload uses. Select an object to highlight what it is connected to. From the same window you can read and edit its YAML, check its events and stream its logs.
+
+It is built with [Tauri 2](https://tauri.app), React and Rust ([kube-rs](https://kube.rs)), and runs on macOS and Windows.
+
+## Contents
+
+- [Install](#install)
+- [Features](#features)
+- [Try it on a demo cluster](#try-it-on-a-demo-cluster)
+- [Development](#development)
+- [Project layout](#project-layout)
+- [Documentation](#documentation)
+- [Releasing](#releasing)
+
+## Install
+
+Download the latest installer from [**Releases**](https://github.com/skensell201/wiring/releases/latest).
+
+| Platform | File | First launch |
+|---|---|---|
+| macOS (Apple Silicon and Intel) | `Wiring_<version>_universal.dmg` | The build is unsigned. After copying to Applications, run `xattr -d com.apple.quarantine /Applications/Wiring.app`, or right-click the app and choose **Open**. |
+| Windows 10/11 | `Wiring_<version>_x64_en-US.msi` or `Wiring_<version>_x64-setup.exe` | The build is unsigned. When SmartScreen appears, choose **More info → Run anyway**. |
+
+Wiring reads your kubeconfig from `~/.kube/config`, or from `KUBECONFIG` when it is set. You need at least one context. You can also add a kubeconfig file from inside the app with **Add kubeconfig…**.
+
+## Features
+
+**Graph.** The graph updates live from Kubernetes watches:
+- Filter it by kind with the chips under the title, or search it with <kbd>⌘K</kbd> / <kbd>Ctrl+K</kbd>.
+- Pods that belong to the same owner collapse into one group. Double-click a group to expand it.
+- Status dots and badges show what is healthy, degraded or failing.
+
+**Navigator.** The left sidebar lists every kubeconfig context and the resources of the selected namespace by category: Workloads, Config, Network, Storage and Access Control. Each kind shows a live count and the worst status among its objects. Kinds your RBAC role cannot read are struck through instead of failing. The sidebar collapses to an icon rail.
+
+**Tables.** Click a kind to open a `kubectl get`-style table:
+- Sort by any column, and filter with the search box.
+- Move between rows with <kbd>↑</kbd>/<kbd>↓</kbd>.
+- Double-click a row, or press <kbd>Enter</kbd>, to jump to the object in the graph.
+
+![The Deployments table with the web Deployment's YAML open in the details panel](docs/images/table.png)
+
+**Details panel.** The panel shows **Overview**, **YAML** and **Events** tabs for the selected object, plus **Logs** for pods and workloads. Drag its top edge to resize it (or focus the edge and use <kbd>↑</kbd>/<kbd>↓</kbd>). Maximise it with ⤢ and restore it with <kbd>Esc</kbd>.
+
+**Editing:**
+1. **Edit** on the YAML tab opens the object in an editor.
+2. **Save** (<kbd>⌘S</kbd> / <kbd>Ctrl+S</kbd>) shows a line diff of what will be sent.
+3. **Apply** replaces the object on the server with strict field validation, so unknown fields are rejected rather than silently dropped.
+
+If the object changed on the server while you were editing, you can **Reload** (drop your edits) or **Overwrite** (resend on top of the new version). Server validation errors appear inline.
+
+**+ Create** in the header starts from a template for any watched kind. The trash icon in the details panel deletes an object after confirmation. On a pod group it deletes every member pod, and the controller recreates them.
+
+**Logs.** Pods and workloads (Deployment, StatefulSet, DaemonSet, Job, CronJob and pod groups) get a **Logs** tab:
+- It shows the last 500 lines of each container and then follows live output.
+- A workload's pods are merged into one view, each line prefixed with a coloured `[pod/container]` tag.
+- You can pick a container, switch to the previous run of a crashing container, and toggle server timestamps and line wrapping.
+- Search with match stepping, clear the view, or download the log to a file.
+- ANSI colours are rendered.
+
+![Live logs of the web Deployment, merged across its three pods](docs/images/logs.png)
+
+## Try it on a demo cluster
+
+`examples/demo/setup.sh` works against any local cluster (Docker Desktop, kind, minikube). It deploys:
+- two namespaces, `shop` and `blog`, including deliberately broken workloads (an image that cannot be pulled, a container that crashes on start);
+- the `wiring-viewer` and `wiring-auditor` RBAC identities, with matching restricted kubeconfig contexts, so you can see how Wiring handles kinds a role cannot read.
+
+```bash
+examples/demo/setup.sh                 # uses the docker-desktop context
+examples/demo/setup.sh kind-kind       # or name another context
+```
+
+The manifests are in [`examples/demo/`](examples/demo/): [`shop.yaml`](examples/demo/shop.yaml), [`blog.yaml`](examples/demo/blog.yaml) and [`rbac.yaml`](examples/demo/rbac.yaml).
 
 ## Development
 
-Prerequisites: Rust stable, Node 22, pnpm 9, and a kubeconfig with at least one context.
+Prerequisites: Rust stable, Node 22, pnpm 9, and a kubeconfig with at least one context. On Linux, also install the [Tauri system dependencies](https://tauri.app/start/prerequisites/).
 
 ```bash
 pnpm install
-pnpm tauri dev          # app with hot reload
-pnpm test               # frontend unit tests (Vitest)
-pnpm typecheck
-cd src-tauri && cargo test                                   # backend unit + IPC contract tests
-WIRING_SMOKE_CONTEXT=docker-desktop cargo test --test smoke -- --ignored   # needs a live cluster + kubectl
+pnpm tauri dev          # run the app with hot reload
 ```
 
-## Releases
-
-Tagging `v*` builds unsigned installers for macOS (universal `.dmg`) and Windows (`.msi`, `.exe`) via GitHub Actions and attaches them to a draft release. macOS: `xattr -d com.apple.quarantine Wiring.app` after download. Windows: SmartScreen → *More info* → *Run anyway*.
-
-## Navigator and tables
-
-The left Navigator lists your kubeconfig contexts and the resources of the selected namespace by category (Workloads, Config, Network, Storage, Access Control) with live counts and worst-status dots. Clicking a kind opens a `kubectl get`-style table (sortable, filtered by the search box); a row click shows details, a double-click (or Enter) jumps to the object in the graph. Kinds you cannot read are struck through. The sidebar collapses to an icon rail.
-
-## Editing
-
-The YAML tab has an **Edit** button: the object opens in a CodeMirror editor, **Save** (⌘/Ctrl+S) shows a line diff of what will be sent, and **Apply** replaces the object on the server with `fieldValidation=Strict`, so unknown fields are rejected rather than silently dropped. If the object changed meanwhile you get a conflict banner with *Reload* (drop your edits) or *Overwrite* (resend with the current `resourceVersion`); server validation errors appear inline. **+ Create** in the header opens a template for any watched kind in the current namespace (defaulting to the kind of the open table), and the trash icon in the details panel deletes the object after confirmation — for a pod group it deletes every member pod and the controller recreates them.
-
-## Logs
-
-Pods and workloads (Deployment, StatefulSet, DaemonSet, Job, CronJob, pod groups) get a **Logs** tab: the last 500 lines per container, then live follow, merged across a workload's pods with a coloured `[pod/container]` prefix. Pick a container, switch to the previous run of a crashing container, toggle server timestamps and wrapping, search with match stepping, clear, or download to a file. ANSI colours are rendered. Drag the border above the details panel to resize it (or focus it and use ↑/↓, Shift for bigger steps), or maximise it with ⤢ (Esc restores).
-
-## Demo cluster
-
-`examples/demo/setup.sh [context]` (default `docker-desktop`) deploys the `shop` and `blog` namespaces, the `wiring-viewer` / `wiring-auditor` RBAC identities, and adds matching restricted kubeconfig contexts so you can see filters and denied-kind handling against a real cluster. See `examples/demo/*.yaml` for the workload and RBAC definitions.
+Checks (CI runs all of them on every push):
 
 ```bash
-examples/demo/setup.sh kind-kind
+pnpm typecheck
+pnpm test                                    # frontend unit tests (Vitest)
+cd src-tauri
+cargo fmt --check
+cargo clippy --all-targets -- -D warnings
+cargo test                                   # backend unit and IPC contract tests
+
+# Needs a live cluster and kubectl:
+WIRING_SMOKE_CONTEXT=docker-desktop cargo test --test smoke -- --ignored
 ```
 
-## Docs
+## Project layout
 
-- Design spec: `docs/superpowers/specs/2026-09-17-wiring-mvp-design.md`
-- Backend plan: `docs/superpowers/plans/2026-09-17-wiring-backend.md`
-- Frontend plan: `docs/superpowers/plans/2026-09-17-wiring-frontend.md`
-- Navigator/tables: `docs/superpowers/specs/2026-09-18-navigator-tables-design.md`
-- YAML editing: `docs/superpowers/specs/2026-09-18-yaml-editing-design.md`
-- Pod logs: `docs/superpowers/specs/2026-09-21-pod-logs-design.md`
-- IPC contract: `docs/ipc-contract.md`
+```text
+src/                     React frontend
+  app/                   store (zustand), startup, event wiring, global keys
+  features/
+    cluster/             header, context and namespace pickers
+    navigator/           sidebar: clusters and the resource tree
+    graph/               React Flow canvas, nodes, edges, layout, kind chips
+    table/               per-kind tables
+    details/             details panel: Overview, YAML, Events
+    editor/              YAML editor, diff review, Create dialog
+    logs/                Logs tab, virtualised log view, ANSI rendering
+  shared/                IPC types and commands, UI primitives
+  styles/theme.css       design tokens (colours, type, radii)
+src-tauri/               Rust backend
+  src/session/           per-context watches, reducer, writes
+  src/graph/             graph model, relations, status, table rows
+  src/logs/              log sessions, stream targets, pumps
+  src/kubeconfig.rs      context discovery
+  tests/                 IPC contract tests, live smoke test
+examples/demo/           demo namespaces and RBAC for a local cluster
+docs/                    design specs, plans, IPC contract
+```
+
+## Documentation
+
+| Document | What it covers |
+|---|---|
+| [IPC contract](docs/ipc-contract.md) | The backend ↔ frontend commands, events and payload shapes |
+| [MVP design](docs/superpowers/specs/2026-09-17-wiring-mvp-design.md) | Architecture, the graph model, relations and status rules |
+| [Navigator and tables design](docs/superpowers/specs/2026-09-18-navigator-tables-design.md) | The sidebar, per-kind tables and RBAC handling |
+| [YAML editing design](docs/superpowers/specs/2026-09-18-yaml-editing-design.md) | Edit, diff, apply, conflicts, Create and Delete |
+| [Pod logs design](docs/superpowers/specs/2026-09-21-pod-logs-design.md) | Log sessions, merging, previous runs and the log view |
+
+These are the implementation plans behind each feature:
+- [backend](docs/superpowers/plans/2026-09-17-wiring-backend.md)
+- [frontend](docs/superpowers/plans/2026-09-17-wiring-frontend.md)
+- [navigator and tables](docs/superpowers/plans/2026-09-18-navigator-tables.md)
+- [YAML editing](docs/superpowers/plans/2026-09-18-yaml-editing.md)
+- [pod logs](docs/superpowers/plans/2026-09-21-pod-logs.md)
+
+## Releasing
+
+To release, push a tag that starts with `v`:
+
+```bash
+git tag -a v0.2.0 -m "Wiring v0.2.0"
+git push origin v0.2.0
+```
+
+The [release workflow](.github/workflows/release.yml) builds a universal macOS `.dmg` and the Windows `.msi` and `.exe` installers, then attaches them to a **draft** GitHub release. Review the draft and publish it. Bump the version in `package.json`, `src-tauri/tauri.conf.json` and `src-tauri/Cargo.toml` before tagging.
