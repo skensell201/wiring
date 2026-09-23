@@ -5,8 +5,8 @@ export function Chip({ active, className = "", ...rest }: ButtonHTMLAttributes<H
     <button
       type="button"
       aria-pressed={active}
-      className={`no-drag rounded-full border px-2.5 py-0.5 text-xs transition-colors ${
-        active ? "border-current-b bg-muted text-text-hi" : "border-border bg-surface text-text-muted hover:text-text"
+      className={`no-drag rounded-full border border-border px-3 py-1 text-xs font-medium transition-colors ${
+        active ? "bg-surface text-text-hi" : "bg-space text-text-muted hover:text-text"
       } ${className}`}
       {...rest}
     />

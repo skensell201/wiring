@@ -1,45 +1,71 @@
 @import "tailwindcss";
 @import "@fontsource-variable/inter";
+@import "@fontsource/ibm-plex-serif/400.css";
+@import "@fontsource/ibm-plex-serif/500.css";
 
+/* Railway ("Cosmic Midnight Express"): near-black space, lilac accents, depth from surface shifts
+   and 1px borders rather than shadows. */
 @theme {
-  --color-void: #0e0918;
-  --color-surface: #1a1624;
-  --color-panel: #1b1728;
-  --color-muted: #2c2834;
-  --color-border: #3e3a46;
-  --color-text: #d1cece;
-  --color-text-muted: #9d9797;
-  --color-text-hi: #ffffff;
-  --color-ember-a: #fd8925;
-  --color-ember-b: #ff0c00;
-  --color-current-a: #077ac7;
-  --color-current-b: #6b21ef;
-  --color-status-ok: #2ecc71;
-  --color-status-warn: #fd8925;
-  --color-status-err: #ff0c00;
-  --color-status-unknown: #9d9797;
-  --font-sans: "Inter Variable", Inter, system-ui, sans-serif;
-  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --color-void: #0d0c14;      /* Black Hole: navigator, log body */
+  --color-space: #13111c;     /* Deep Space: page, header, canvas */
+  --color-surface: #1a191f;   /* cards, panels, inputs on space */
+  --color-panel: #1a191f;
+  --color-muted: #33323e;     /* Crater: hover fills, count pills */
+  --color-border: #33323e;
+  --color-text: #d0cfd2;      /* Starlight Dim */
+  --color-text-dim: #a1a0ab;  /* Comet */
+  --color-text-muted: #868593;/* Asteroid */
+  --color-text-hi: #f7f7f8;   /* Starlight */
+  --color-lilac: #553f83;     /* Cosmic Lilac: primary CTA only */
+  --color-supernova: #a05fcf; /* focus rings, active states */
+  --color-haze: #bf92ec;      /* Nebula Haze: decorative highlights */
+  --color-status-ok: #42946e;
+  --color-status-warn: #d9b36c; /* not in the Railway palette: a muted amber, so warnings never read as the lilac accent */
+  --color-status-err: #d82c20;
+  --color-status-unknown: #868593;
+  --color-toast-ok-bg: #15231d;
+  --color-toast-ok-border: #26543f;
+  --font-sans: "Inter Variable", Inter, system-ui, -apple-system, sans-serif;
+  --font-serif: "IBM Plex Serif", Georgia, "Times New Roman", serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   --radius-node: 12px;
-  --radius-card: 16px;
+  --radius-card: 12px;
+  --radius-toast: 4px;
 }
 
 :root { color-scheme: dark; }
 html, body, #root { height: 100%; margin: 0; }
 body {
-  background: var(--color-void);
+  background: var(--color-space);
   color: var(--color-text);
   font-family: var(--font-sans);
   font-size: 14px;
+  letter-spacing: -0.14px;
   -webkit-font-smoothing: antialiased;
   overflow: hidden;
   user-select: none;
 }
-.gradient-ember { background-image: linear-gradient(30deg, var(--color-ember-a), var(--color-ember-b)); }
-.gradient-current { background-image: linear-gradient(141deg, var(--color-current-a), var(--color-current-b)); }
-.ansi-black { color: #6b6675 } .ansi-red { color: #ff5c5c } .ansi-green { color: #2ecc71 } .ansi-yellow { color: #fd8925 }
-.ansi-blue { color: #5aa9ff } .ansi-magenta { color: #c084fc } .ansi-cyan { color: #67e8f9 } .ansi-white { color: #ffffff }
+:focus-visible { outline: 2px solid var(--color-supernova); outline-offset: 2px; }
+.gradient-warp { background-image: radial-gradient(73.46% 138.39% at 50.21% 0%, rgb(170, 10, 170) 50%, rgb(109, 29, 189) 75.47%, rgb(56, 29, 189) 100%); }
+.inset-hairline { box-shadow: rgba(255, 255, 255, 0.1) 0px 0px 0px 1px inset; }
+.ansi-black { color: #868593 } .ansi-red { color: #e5584e } .ansi-green { color: #42946e } .ansi-yellow { color: #d9b36c }
+.ansi-blue { color: #8f9bea } .ansi-magenta { color: #bf92ec } .ansi-cyan { color: #7fb8c4 } .ansi-white { color: #f7f7f8 }
 .ansi-bold { font-weight: 600 }
 .drag-region { -webkit-app-region: drag; }
 .no-drag { -webkit-app-region: no-drag; }
 .selectable { user-select: text; }
+
+/* React Flow's dark theme paints its own near-black; put the canvas back on Deep Space. */
+.react-flow {
+  --xy-background-color: var(--color-space);
+  --xy-minimap-background-color: var(--color-surface);
+  --xy-controls-button-background-color: var(--color-surface);
+  --xy-controls-button-background-color-hover: var(--color-muted);
+  --xy-controls-button-color: var(--color-text);
+  --xy-controls-button-color-hover: var(--color-text-hi);
+  --xy-controls-button-border-color: var(--color-border);
+  --xy-controls-box-shadow: none;
+  --xy-attribution-background-color: transparent;
+}
+.react-flow__controls { border: 1px solid var(--color-border); border-radius: 8px; overflow: hidden; }
+.react-flow__attribution a { color: var(--color-text-muted); }

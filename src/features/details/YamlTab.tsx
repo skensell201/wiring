@@ -9,7 +9,7 @@ import { DiffView } from "../editor/DiffView";
 import { LazyYamlEditor } from "../editor/LazyYamlEditor";
 import { highlightYaml } from "./yaml";
 
-const TOOLBAR = "flex shrink-0 items-center gap-2 border-b border-border px-3 py-1.5";
+const TOOLBAR = "flex h-14 shrink-0 items-center gap-2 px-6";
 
 /** The YAML tab: the object's manifest, read-only until **Edit**; then the editor, and **Save**
  *  leads to a diff review before the write. Banners report a failed write inside the tab. */
@@ -34,14 +34,14 @@ function ViewMode({ yaml, editable }: { yaml: string; editable: boolean }) {
       <div className={TOOLBAR}>
         <div className="ml-auto flex items-center gap-2">
           <button type="button" title="Copy YAML" onClick={() => void navigator.clipboard.writeText(yaml)}
-            className="rounded-md border border-border bg-surface p-1.5 text-text-muted hover:text-text-hi">
+            className="grid size-8 place-items-center rounded-lg border border-border text-text-muted hover:bg-space hover:text-text-hi">
             <Copy className="size-4" />
           </button>
           {editable && <Button className="py-1" onClick={startEdit}>Edit</Button>}
         </div>
       </div>
-      <div className="selectable min-h-0 flex-1 overflow-auto">
-        <div className="p-4 font-mono text-xs leading-5 [&_pre]:!bg-transparent" dangerouslySetInnerHTML={{ __html: html }} />
+      <div className="selectable mx-6 mb-6 min-h-0 flex-1 overflow-auto rounded-card border border-border bg-void">
+        <div className="p-5 font-mono text-[13px] leading-5 [&_pre]:!bg-transparent" dangerouslySetInnerHTML={{ __html: html }} />
       </div>
     </div>
   );
@@ -52,7 +52,7 @@ function EditMode({ editor }: { editor: EditorState }) {
   return (
     <div className="flex h-full flex-col">
       <div className={TOOLBAR}>
-        <span className="text-xs text-text-muted">Editing</span>
+        <span className="text-sm text-text-muted">Editing</span>
         <div className="ml-auto flex items-center gap-2">
           <Button className="py-1" disabled={editor.saving} onClick={cancelEdit}>Cancel</Button>
           <Button variant="primary" className="py-1" disabled={editor.saving} onClick={reviewEdit}>
@@ -73,7 +73,7 @@ function ReviewMode({ editor }: { editor: EditorState }) {
   return (
     <div className="flex h-full flex-col">
       <div className={TOOLBAR}>
-        <span className="text-xs text-text-muted">Review changes</span>
+        <span className="text-sm text-text-muted">Review changes</span>
         <div className="ml-auto flex items-center gap-2">
           <Button className="py-1" disabled={editor.saving} onClick={backToEdit}>Back</Button>
           <Button variant="primary" className="py-1" disabled={editor.saving} onClick={() => void applyEdit(false)}>{editor.saving ? "Applying…" : "Apply"}</Button>
@@ -94,7 +94,7 @@ function ErrorBanner({ error, saving }: { error: AppError; saving: boolean }) {
   const warn = error.kind === "conflict";
   const tint = warn ? "border-status-warn/40 bg-status-warn/10" : "border-status-err/40 bg-status-err/10";
   return (
-    <div role="alert" data-kind={error.kind} className={`shrink-0 border-b px-3 py-2 text-xs ${tint}`}>
+    <div role="alert" data-kind={error.kind} className={`mx-6 mb-3 shrink-0 rounded-lg border px-4 py-3 text-sm ${tint}`}>
       {error.kind === "conflict" ? (
         <div className="flex items-center gap-3">
           <span className="text-text-hi">This object changed on the server while you were editing.</span>

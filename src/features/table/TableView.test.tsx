@@ -33,7 +33,7 @@ describe("TableView", () => {
     for (const label of ["Name", "Status", "Restarts"]) expect(screen.getByRole("columnheader", { name: new RegExp(label) })).toBeInTheDocument();
     expect(names()).toEqual(["api", "db", "web-1"]);
     expect(screen.getByText("CrashLoopBackOff")).toHaveAttribute("data-status", "err");
-    expect(screen.getByText("14").className).toMatch(/font-mono/);
+    expect(screen.getByText("14").className).toMatch(/tabular-nums/);
   });
 
   it("sorts by a column on header click, reverses on the second and clears on the third", () => {

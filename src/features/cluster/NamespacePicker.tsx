@@ -11,7 +11,7 @@ export function NamespacePicker() {
     if (!ns) return;
     void selectNamespace(ns); // the store remembers it for the context
   };
-  const cls = "no-drag rounded-lg border border-border bg-surface px-2.5 py-1 text-sm text-text-hi outline-none focus:border-current-b";
+  const cls = "no-drag h-9 rounded-md border border-border bg-transparent px-3 text-sm font-medium text-text-hi outline-none focus:border-supernova";
   if (namespaces.length === 0) {
     return (
       <input aria-label="Namespace" className={cls} placeholder="namespace…" value={draft}

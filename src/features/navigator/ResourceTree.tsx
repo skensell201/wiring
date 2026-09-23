@@ -8,9 +8,9 @@ import { KIND_PLURAL, SECTIONS, type Section } from "./kindTree";
 import { SectionLabel } from "./SectionLabel";
 import { SECTION_ICONS } from "./sectionIcons";
 
-const ROW = "flex w-full items-center gap-2 rounded-md py-1 pr-2 text-left text-[13px]";
-const ACTIVE = "bg-muted text-text-hi shadow-[inset_2px_0_0_var(--color-ember-a)]";
-const IDLE = "text-text hover:bg-muted/50";
+const ROW = "flex h-8 w-full items-center gap-2.5 rounded-lg pr-3 text-left text-sm";
+const ACTIVE = "inset-hairline bg-surface text-text-hi";
+const IDLE = "text-text-dim hover:bg-surface hover:text-text-hi";
 
 /** Overview plus the resource categories, each kind with its live count and worst status. */
 export function ResourceTree() {
@@ -28,11 +28,11 @@ export function ResourceTree() {
   const activeKind = view.name === "table" ? view.kind : null;
 
   return (
-    <div className="px-2 pt-3">
+    <div className="px-2 pt-4">
       <SectionLabel>Resources</SectionLabel>
       <button type="button" aria-current={view.name === "graph" ? "page" : undefined} onClick={showGraph}
-        className={`${ROW} pl-2 ${view.name === "graph" ? ACTIVE : IDLE}`}>
-        <Waypoints className="size-3.5 shrink-0 text-text-muted" />
+        className={`${ROW} pl-3 ${view.name === "graph" ? ACTIVE : IDLE}`}>
+        <Waypoints className={`size-4 shrink-0 ${view.name === "graph" ? "text-supernova" : "text-text-muted"}`} />
         <span>Overview</span>
       </button>
       {SECTIONS.map((section) => (
@@ -50,9 +50,9 @@ function SectionGroup({ section, open, onToggle, children }: { section: Section;
   const Icon = SECTION_ICONS[section.id];
   const Chevron = open ? ChevronDown : ChevronRight;
   return (
-    <div className="mt-1">
+    <div className="mt-3">
       <button type="button" aria-expanded={open} onClick={onToggle}
-        className="flex w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-[11px] uppercase tracking-wider text-text-muted hover:text-text">
+        className="flex w-full items-center gap-2 rounded-lg px-3 py-1 text-xs font-medium text-text-muted hover:text-text">
         <Chevron className="size-3 shrink-0" />
         {Icon && <Icon className="size-3.5 shrink-0" />}
         <span>{section.label}</span>
@@ -67,9 +67,9 @@ function KindRow({ kind, active, denied, stat, onClick }: {
 }) {
   return (
     <button type="button" aria-current={active ? "page" : undefined} title={denied ? "No access (RBAC)" : undefined} onClick={onClick}
-      className={`${ROW} pl-7 ${active ? ACTIVE : IDLE} ${denied ? "line-through text-text-muted" : ""}`}>
+      className={`${ROW} pl-8 ${active ? ACTIVE : IDLE} ${denied ? "line-through text-text-muted" : ""}`}>
       <span className="flex-1 truncate">{KIND_PLURAL[kind]}</span>
-      {stat && <span className="font-mono text-xs text-text-muted">{stat.count}</span>}
+      {stat && <span className="text-xs tabular-nums text-text-muted">{stat.count}</span>}
       {stat && <Dot status={stat.worst} className="size-1.5 shrink-0" />}
     </button>
   );

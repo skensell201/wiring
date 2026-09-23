@@ -21,16 +21,17 @@ const props = {
 } as EdgeProps<RelationFlowEdge>;
 
 describe("RelationEdge", () => {
-  it("renders a per-edge userSpaceOnUse gradient so a horizontal edge still has a visible stroke", () => {
-    const { container } = render(
-      <svg>
-        <RelationEdge {...props} />
-      </svg>,
-    );
-    const gradient = container.querySelector("linearGradient");
-    expect(gradient).not.toBeNull();
-    expect(gradient).toHaveAttribute("gradientUnits", "userSpaceOnUse");
-    expect(gradient!.getAttribute("y1")).toBe(gradient!.getAttribute("y2"));
+  it("draws a resting edge in Asteroid and a highlighted one in Supernova", () => {
+    const stroke = (highlighted: boolean) => {
+      const { container } = render(
+        <svg>
+          <RelationEdge {...props} data={{ edge, highlighted, dimmed: false }} />
+        </svg>,
+      );
+      return (container.querySelector("path") as SVGPathElement).style.stroke;
+    };
+    expect(stroke(false)).toBe("var(--color-text-muted)");
+    expect(stroke(true)).toBe("var(--color-supernova)");
   });
 
   it("routes through the waypoints when the layout provides them", () => {
@@ -55,9 +56,5 @@ describe("RelationEdge", () => {
     expect(d).toContain("200 120");
     expect(d.match(/C /g)).toHaveLength(2);
     expect(d.endsWith("400 0")).toBe(true);
-    // The gradient still spans source→target.
-    const gradient = container.querySelector("linearGradient")!;
-    expect(gradient.getAttribute("x1")).toBe("0");
-    expect(gradient.getAttribute("x2")).toBe("400");
   });
 });

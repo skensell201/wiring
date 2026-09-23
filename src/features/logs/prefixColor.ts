@@ -1,4 +1,5 @@
-const PALETTE = ["#67e8f9", "#c084fc", "#2ecc71", "#fd8925", "#5aa9ff", "#f472b6", "#fde047", "#2dd4bf"];
+/** Railway's accents first, then muted tints of the ANSI colours in `theme.css`, all legible on Black Hole. */
+const PALETTE = ["#bf92ec", "#42946e", "#a05fcf", "#d9b36c", "#8f9bea", "#7fb8c4", "#9fc8a8", "#d0cfd2"];
 
 /** A stable colour per pod name for the `[pod/container]` prefix (spec §5). */
 export function prefixColor(pod: string): string {

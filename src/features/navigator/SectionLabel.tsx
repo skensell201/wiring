@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 
-/** Small uppercase caption above a Navigator section. */
+/** Caption above a Navigator section. */
 export function SectionLabel({ children }: { children: ReactNode }) {
-  return <div className="px-2 py-1 text-[11px] uppercase tracking-wider text-text-muted">{children}</div>;
+  return <div className="px-3 pb-1 pt-2 text-xs font-medium tracking-[-0.12px] text-text-muted">{children}</div>;
 }

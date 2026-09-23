@@ -59,7 +59,8 @@ function containersFromStreams(keys: Iterable<string>): ContainerOption[] {
   return [...names].sort().map((name) => ({ name, init: false }));
 }
 
-const chip = (on: boolean) => `rounded-md border px-2 py-0.5 text-xs ${on ? "border-current-b bg-current-b/20 text-text-hi" : "border-border text-text-muted hover:text-text"}`;
+const chip = (on: boolean) => `h-8 rounded-full border border-border px-3 text-xs font-medium transition-colors disabled:opacity-40 ${on ? "bg-space text-text-hi" : "text-text-muted hover:text-text-hi"}`;
+const action = "h-8 rounded-lg border border-border px-3 text-xs font-medium text-text-hi hover:bg-space";
 
 export function LogsTab() {
   const { nodeId, yaml, logs, startLogs, stopLogs, setLogsContainer, toggleLogsPrevious, toggleLogsTimestamps, toast } = useAppStore(useShallow((s) => ({
@@ -101,9 +102,9 @@ export function LogsTab() {
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex shrink-0 items-center gap-2 border-b border-border px-3 py-1.5 text-xs">
+      <div className="flex h-14 shrink-0 items-center gap-2 px-6 text-xs">
         <select aria-label="Container" value={logs.container ?? ""} onChange={(e) => void setLogsContainer(e.target.value || null)}
-          className="no-drag rounded-md border border-border bg-surface px-2 py-0.5 text-xs text-text-hi">
+          className="no-drag h-8 rounded-md border border-border bg-space px-2.5 text-sm text-text-hi outline-none focus:border-supernova">
           <option value="">All containers</option>
           {missing !== null && <option value={missing} disabled>{missing} (missing)</option>}
           {containers.map((c) => <option key={c.name} value={c.name}>{c.init ? `${c.name} (init)` : c.name}</option>)}
@@ -114,19 +115,19 @@ export function LogsTab() {
         <div className="ml-2 flex items-center gap-1">
           <input value={query} onChange={(e) => { setQuery(e.target.value); setCurrent(0); }} placeholder="Search logs" aria-label="Search logs"
             onKeyDown={(e) => { if (e.key === "Enter" && matchCount) { e.preventDefault(); setCurrent((c) => (e.shiftKey ? (c - 1 + matchCount) % matchCount : (c + 1) % matchCount)); } }}
-            className="w-44 rounded-md border border-border bg-surface px-2 py-0.5 text-xs text-text-hi outline-none focus:border-current-b" />
+            className="h-8 w-48 rounded-md border border-border bg-space px-3 text-sm text-text-hi outline-none placeholder:text-text-muted focus:border-supernova" />
           {query && <span className="tabular-nums text-text-muted">{matchCount ? `${current + 1} / ${matchCount}` : "0 / 0"}</span>}
           <button type="button" aria-label="Previous match" disabled={!matchCount} onClick={() => setCurrent((c) => (c - 1 + matchCount) % matchCount)} className="px-1 text-text-muted hover:text-text-hi disabled:opacity-40">↑</button>
           <button type="button" aria-label="Next match" disabled={!matchCount} onClick={() => setCurrent((c) => (c + 1) % matchCount)} className="px-1 text-text-muted hover:text-text-hi disabled:opacity-40">↓</button>
         </div>
-        <button type="button" className={chip(false)} onClick={() => logBuffer.clear()}>Clear</button>
-        <button type="button" className={chip(false)} onClick={() => void download()}>Download</button>
         <span className="ml-auto text-text-muted">
           {logs.truncated && <span className="mr-2 text-status-warn">truncated to 64 streams</span>}
-          <span className={logs.status === "streaming" ? "text-status-ok" : ""}>{status}</span>
+          <span className={logs.status === "streaming" ? "inline-flex h-7 items-center rounded-full border border-toast-ok-border bg-toast-ok-bg px-3 font-medium text-status-ok" : ""}>{status}</span>
         </span>
+        <button type="button" className={action} onClick={() => logBuffer.clear()}>Clear</button>
+        <button type="button" className={action} onClick={() => void download()}>Download</button>
       </div>
-      <div className="min-h-0 flex-1">
+      <div className="mx-6 mb-6 min-h-0 flex-1 overflow-hidden rounded-card border border-border bg-void">
         <LogView query={query} current={current} wrap={wrap} showPrefix={logs.streams.size > 1} problems={problems} onMatches={onMatches} />
       </div>
     </div>
