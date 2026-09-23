@@ -229,7 +229,7 @@ describe("LogsTab", () => {
     scrollToIndex.mockClear();
     push(["fresh"]); // the row count no longer changes, but the bottom row is a new line
     expect(scrollToIndex).toHaveBeenLastCalledWith(9_999, { align: "end" });
-  });
+  }, 20_000); // 10 000 lines through jsdom take ~6 s on a CI runner
 
   it("shows stream problems as lines and the status on the right", async () => {
     setup();
