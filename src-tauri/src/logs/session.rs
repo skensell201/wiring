@@ -234,7 +234,15 @@ mod tests {
         let (tx, rx) = mpsc::unbounded_channel();
         let sink = Arc::new(ClosableSink::new(Arc::new(tx)));
         let initial = targets(&shared.store(), node_id, None).unwrap();
-        let task = tokio::spawn(run(1, shared.clone(), shared.subscribe_pods(), request(node_id), initial, sink, start));
+        let task = tokio::spawn(run(
+            1,
+            shared.clone(),
+            shared.subscribe_pods(),
+            request(node_id),
+            initial,
+            sink,
+            start,
+        ));
         (AbortOnDrop(task), rx)
     }
 
@@ -251,7 +259,10 @@ mod tests {
         *shared.store() = Store::from_yaml_docs(without_b).unwrap();
         shared.notify_pods_changed();
 
-        let msg = tokio::time::timeout(Duration::from_secs(1), rx.recv()).await.expect("no message").unwrap();
+        let msg = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("no message")
+            .unwrap();
         assert_eq!(
             msg,
             LogMessage::Ended {

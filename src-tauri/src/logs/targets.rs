@@ -142,7 +142,10 @@ mod tests {
 
     #[test]
     fn a_pod_without_container_statuses_has_no_restarts() {
-        let store = Store::from_yaml_docs("apiVersion: v1\nkind: Pod\nmetadata: { name: p, namespace: n }\nspec:\n  containers: [ { name: app, image: app } ]\n").unwrap();
+        let store = Store::from_yaml_docs(
+            "apiVersion: v1\nkind: Pod\nmetadata: { name: p, namespace: n }\nspec:\n  containers: [ { name: app, image: app } ]\n",
+        )
+        .unwrap();
         assert_eq!(targets(&store, "Pod/n/p", None).unwrap()[0].restarts, 0);
     }
 
