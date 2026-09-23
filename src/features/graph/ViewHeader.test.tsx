@@ -4,7 +4,7 @@ import { applySnapshot, initialState, useAppStore } from "../../app/store";
 import type { GraphNode, Table } from "../../shared/ipc/types";
 import { ViewHeader } from "./ViewHeader";
 
-vi.mock("../../shared/ipc/tauri", () => ({ invoke: vi.fn(async () => null), listen: vi.fn(async () => () => {}) }));
+vi.mock("../../shared/ipc/tauri", () => ({ invoke: vi.fn(async () => null), listen: vi.fn(async () => () => {}), Channel: class { onmessage: (m: unknown) => void = () => {}; } }));
 
 const node = (id: string, over: Partial<GraphNode> = {}): GraphNode => ({
   id, kind: "Pod", namespace: "p", name: id.split("/").pop()!, status: "ok", badges: [], group: null, ...over,

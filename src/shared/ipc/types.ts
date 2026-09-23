@@ -62,6 +62,16 @@ export interface TableCell { text: string; status: Status | null }
 export interface TableRow { nodeId: NodeId; status: Status; cells: TableCell[] }
 export interface Table { kind: Kind; columns: TableColumn[]; rows: TableRow[] }
 
+export interface LogLine { pod: string; container: string; text: string }
+export type LogMessage =
+  | { type: "lines"; sessionId: number; lines: LogLine[] }
+  | { type: "started"; sessionId: number; pod: string; container: string }
+  | { type: "ended"; sessionId: number; pod: string; container: string }
+  | { type: "error"; sessionId: number; pod: string; container: string; message: string }
+  | { type: "truncated"; sessionId: number; limit: number };
+
+export interface LogRequest { nodeId: NodeId; container: string | null; previous: boolean; timestamps: boolean }
+
 // ---- guards ---------------------------------------------------------------
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null;
@@ -116,6 +126,17 @@ export function isTable(v: unknown): v is Table {
     && arrayOf(v.rows, isTableRowWithColumns(v.columns.length));
 }
 export function isConnectionState(v: unknown): v is ConnectionState { return oneOf(CONNECTION_STATES, v); }
+const isLogLine = (v: unknown): v is LogLine => isObj(v) && isStr(v.pod) && isStr(v.container) && isStr(v.text);
+export function isLogMessage(v: unknown): v is LogMessage {
+  if (!isObj(v) || typeof v.sessionId !== "number") return false;
+  switch (v.type) {
+    case "lines": return arrayOf(v.lines, isLogLine);
+    case "started": case "ended": return isStr(v.pod) && isStr(v.container);
+    case "error": return isStr(v.pod) && isStr(v.container) && isStr(v.message);
+    case "truncated": return typeof v.limit === "number";
+    default: return false;
+  }
+}
 export function isAppError(v: unknown): v is AppError { return isObj(v) && oneOf(ERROR_KINDS, v.kind) && isStr(v.message); }
 
 export function toAppError(e: unknown): AppError {

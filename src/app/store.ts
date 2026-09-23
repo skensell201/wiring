@@ -1,10 +1,12 @@
 import { create } from "zustand";
 import { template, type CreatableKind } from "../features/editor/templates";
 import { KIND_META } from "../features/graph/kindMeta";
+import { logBuffer } from "../features/logs/logBuffer";
+import { applyLogMessage, initialLogs, type LogsState } from "../features/logs/logsState";
 import { commands } from "../shared/ipc/commands";
 import type {
-  AppError, ConnectionState, ContextInfo, Graph, GraphDelta, GraphEdge, GraphNode, K8sEvent, Kind, NodeId, ObjectDetails, Status,
-  Table,
+  AppError, ConnectionState, ContextInfo, Graph, GraphDelta, GraphEdge, GraphNode, K8sEvent, Kind, LogMessage, NodeId, ObjectDetails,
+  Status, Table,
 } from "../shared/ipc/types";
 import { toAppError } from "../shared/ipc/types";
 import { settings } from "../shared/settings";
@@ -76,6 +78,8 @@ export interface GraphState {
   graphReady: boolean;
   selectedId: NodeId | null;
   details: Details | null;
+  /** The details panel fills the window (the centre pane hidden); reset whenever the selection clears. */
+  detailsMaximized: boolean;
 }
 
 export interface AppState extends GraphState {
@@ -97,6 +101,8 @@ export interface AppState extends GraphState {
   createDialog: CreateDialog;
   deleteDialog: DeleteDialog;
   discardDialog: DiscardDialog;
+  /** The Logs tab's session metadata; the lines themselves live in `logBuffer`. */
+  logs: LogsState;
 
   // graph events
   applySnapshot: (g: Graph) => void;
@@ -150,9 +156,21 @@ export interface AppState extends GraphState {
   requestDelete: (nodeId: NodeId) => void;
   confirmDelete: () => Promise<void>;
   cancelDelete: () => void;
+  // logs
+  /** Open a log session for the node (restart when it is the current one, keeping the options). */
+  startLogs: (nodeId: NodeId) => Promise<void>;
+  stopLogs: () => Promise<void>;
+  setLogsContainer: (container: string | null) => Promise<void>;
+  toggleLogsPrevious: () => Promise<void>;
+  toggleLogsTimestamps: () => Promise<void>;
+  toggleDetailsMaximized: () => void;
 }
 
 let toastSeq = 0;
+/** Log session generations. Module-level and monotonic: a `startLogs` still awaiting IPC across a
+ *  session reset (the slice rebuilt, backend ids restarting at 1) must never share a generation
+ *  with the next session, and a stop must orphan the channel it leaves behind. */
+let logsGen = 0;
 
 export function initialState(): Omit<AppState, keyof Actions> {
   return {
@@ -178,6 +196,8 @@ export function initialState(): Omit<AppState, keyof Actions> {
     createDialog: { open: false, kind: "Deployment", buffer: "", error: null, submitting: false },
     deleteDialog: { open: false, nodeId: null },
     discardDialog: { open: false, pendingSelect: null, pendingDeselect: false, pendingNamespace: null },
+    logs: initialLogs(),
+    detailsMaximized: false,
   };
 }
 
@@ -204,7 +224,8 @@ type Actions = Pick<AppState,
   | "dismissToast" | "setPickerOpen" | "showGraph" | "showTable" | "refreshTable" | "focusInGraph" | "clearFocusRequest"
   | "toggleSidebar" | "startEdit" | "setBuffer" | "reviewEdit" | "backToEdit" | "applyEdit" | "cancelEdit" | "reloadEdit"
   | "confirmDiscard" | "cancelDiscard" | "openCreate" | "setCreateKind" | "setCreateBuffer" | "submitCreate" | "closeCreate"
-  | "requestDelete" | "confirmDelete" | "cancelDelete">;
+  | "requestDelete" | "confirmDelete" | "cancelDelete" | "startLogs" | "stopLogs" | "setLogsContainer" | "toggleLogsPrevious"
+  | "toggleLogsTimestamps" | "toggleDetailsMaximized">;
 
 // ---- selectors --------------------------------------------------------------
 
@@ -266,7 +287,7 @@ function dropSelection<S extends GraphState>(s: S, dropped: boolean): S {
     const error: AppError = { kind: "notFound", message: "This object was deleted on the server." };
     return { ...s, details: { ...s.details, editor: { ...s.details.editor, error } } };
   }
-  return { ...s, selectedId: null, details: null };
+  return { ...s, selectedId: null, details: null, detailsMaximized: false };
 }
 
 // ---- store ----------------------------------------------------------------
@@ -357,6 +378,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
       return;
     }
     cancelTableRefresh();
+    void get().stopLogs();
     const { expandedGroups, connection } = get();
     const expanded = [...expandedGroups];
     // Remembered only once the switch is really happening (not while the discard dialog is up).
@@ -364,7 +386,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
     set((s) => ({
       nodes: new Map(), edges: new Map(), graphReady: false, selectedId: null, details: null, hoveredId: null,
       deniedKinds: new Set(), tables: new Map(), focusRequest: null, connection: { ...s.connection, namespace },
-      deleteDialog: initialState().deleteDialog, discardDialog: initialState().discardDialog,
+      deleteDialog: initialState().deleteDialog, discardDialog: initialState().discardDialog, detailsMaximized: false,
     }));
     try {
       await commands.selectNamespace(namespace, expanded);
@@ -385,8 +407,10 @@ export const useAppStore = create<AppState>()((set, get) => ({
       set({ discardDialog: { open: true, pendingSelect: id, pendingDeselect: id === null, pendingNamespace: null } });
       return;
     }
+    // The switch is really happening: the logs of the node being left go with it.
+    if (get().logs.nodeId !== null && get().logs.nodeId !== id) void get().stopLogs();
     if (id === null) {
-      set({ selectedId: null, details: null });
+      set({ selectedId: null, details: null, detailsMaximized: false });
       await commands.watchEvents(null).catch(() => {});
       return;
     }
@@ -617,6 +641,74 @@ export const useAppStore = create<AppState>()((set, get) => ({
   },
 
   cancelDelete: () => set({ deleteDialog: initialState().deleteDialog }),
+
+  // ---- logs ------------------------------------------------------------------
+
+  startLogs: async (nodeId) => {
+    const prev = get().logs;
+    if (prev.sessionId !== null) commands.stopLogs(prev.sessionId).catch(() => {});
+    logBuffer.clear();
+    const gen = ++logsGen;
+    // Keep the options (container/previous/timestamps) when restarting on the same node.
+    const same = prev.nodeId === nodeId;
+    set({
+      logs: {
+        ...initialLogs(), gen, nodeId, status: "starting",
+        container: same ? prev.container : null, previous: same ? prev.previous : false, timestamps: same ? prev.timestamps : false,
+      },
+    });
+    const { container, previous, timestamps } = get().logs;
+    const onMessage = (m: LogMessage) => {
+      const s = get().logs;
+      if (s.gen !== gen) return; // a newer session owns the tab
+      if (m.type === "lines") { logBuffer.append(m.lines); return; }
+      set({ logs: applyLogMessage(s, m) });
+    };
+    try {
+      const sessionId = await commands.startLogs({ nodeId, container, previous, timestamps }, onMessage);
+      if (get().logs.gen === gen) set((s) => ({ logs: { ...s.logs, sessionId } }));
+      else commands.stopLogs(sessionId).catch(() => {}); // superseded while starting: nobody holds this id
+    } catch (e) {
+      if (get().logs.gen !== gen) return; // superseded meanwhile: its failure is nobody's news
+      set({ logs: { ...initialLogs(), gen } });
+      get().toast(toAppError(e));
+    }
+  },
+
+  stopLogs: async () => {
+    const { sessionId } = get().logs;
+    // A fresh generation orphans the stopped channel: batches the webview already queued from it
+    // must not land in an idle slice.
+    set({ logs: { ...initialLogs(), gen: ++logsGen } });
+    logBuffer.clear();
+    if (sessionId !== null) await commands.stopLogs(sessionId).catch(() => {});
+  },
+
+  // The three option actions set the new value first and restart through `startLogs` (not
+  // `stopLogs`), which reads the options back for the same node.
+
+  setLogsContainer: async (container) => {
+    const { nodeId } = get().logs;
+    if (nodeId === null) return;
+    set((s) => ({ logs: { ...s.logs, container } }));
+    await get().startLogs(nodeId);
+  },
+
+  toggleLogsPrevious: async () => {
+    const { nodeId } = get().logs;
+    if (nodeId === null) return;
+    set((s) => ({ logs: { ...s.logs, previous: !s.logs.previous } }));
+    await get().startLogs(nodeId);
+  },
+
+  toggleLogsTimestamps: async () => {
+    const { nodeId } = get().logs;
+    if (nodeId === null) return;
+    set((s) => ({ logs: { ...s.logs, timestamps: !s.logs.timestamps } }));
+    await get().startLogs(nodeId);
+  },
+
+  toggleDetailsMaximized: () => set((s) => ({ detailsMaximized: !s.detailsMaximized })),
 }));
 
 /** Select `id` and fetch its details + events. Returns the fetch error (not toasted) or null;

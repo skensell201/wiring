@@ -10,6 +10,8 @@ vi.mock("../shared/settings", () => ({
     setLastNamespace: vi.fn(async (ctx: string, ns: string) => { mem.set(`ns:${ctx}`, ns); }),
     getSidebarCollapsed: vi.fn(async () => mem.get("sidebarCollapsed") ?? false),
     setSidebarCollapsed: vi.fn(async (v: boolean) => { mem.set("sidebarCollapsed", v); }),
+    getDetailsHeight: vi.fn(async () => (mem.get("detailsHeight") as number | undefined) ?? null),
+    setDetailsHeight: vi.fn(async (v: number) => { mem.set("detailsHeight", v); }),
   },
 }));
 vi.mock("../shared/ipc/tauri", () => ({
@@ -20,6 +22,7 @@ vi.mock("../shared/ipc/tauri", () => ({
     return null;
   }),
   listen: vi.fn(async () => () => {}),
+  Channel: class { onmessage: (m: unknown) => void = () => {}; },
 }));
 
 import { invoke } from "../shared/ipc/tauri";

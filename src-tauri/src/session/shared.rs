@@ -3,6 +3,8 @@
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use tokio::sync::broadcast;
+
 use crate::graph::{build, diff, BuildOptions, Graph, GraphDelta, NodeId};
 use crate::store::{Kind, Store};
 
@@ -15,16 +17,43 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// Pending pod-change ticks a slow log session may fall behind by before it sees `Lagged`
+/// (which it treats as "re-derive" as well, so nothing is lost either way).
+const PODS_CHANGED_CAPACITY: usize = 64;
+
 /// State shared between the reducer task and `Session` (for get_object etc.).
-#[derive(Default, Clone)]
+#[derive(Clone)]
 pub struct Shared {
     store: Arc<Mutex<Store>>,
     graph: Arc<Mutex<Graph>>,
     expanded_groups: Arc<Mutex<HashSet<NodeId>>>,
     denied_kinds: Arc<Mutex<HashSet<Kind>>>,
+    /// Fires after the reducer applied a Pod add/update/delete (or finished a Pod re-list);
+    /// log sessions re-derive their targets on it. Payload-free: receivers re-read the store.
+    pods_changed: broadcast::Sender<()>,
+}
+
+impl Default for Shared {
+    fn default() -> Self {
+        Self {
+            store: Arc::default(),
+            graph: Arc::default(),
+            expanded_groups: Arc::default(),
+            denied_kinds: Arc::default(),
+            pods_changed: broadcast::channel(PODS_CHANGED_CAPACITY).0,
+        }
+    }
 }
 
 impl Shared {
+    pub fn subscribe_pods(&self) -> broadcast::Receiver<()> {
+        self.pods_changed.subscribe()
+    }
+
+    pub fn notify_pods_changed(&self) {
+        let _ = self.pods_changed.send(()); // no receivers is fine
+    }
+
     pub fn store(&self) -> MutexGuard<'_, Store> {
         lock(&self.store)
     }

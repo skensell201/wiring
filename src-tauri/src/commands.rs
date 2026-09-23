@@ -13,6 +13,8 @@ use crate::error::{AppError, AppResult, ErrorKind};
 use crate::graph::rows::Table;
 use crate::graph::NodeId;
 use crate::kubeconfig::{self, ContextInfo};
+use crate::logs::session::LogRequest;
+use crate::logs::LogMessage;
 use crate::session::emitter::{Emitter, OutEvent};
 use crate::session::{ConnectInfo, ObjectDetails, Session};
 use crate::store::Kind;
@@ -172,6 +174,47 @@ pub async fn delete_object(state: State<'_, AppState>, node_id: String) -> AppRe
     session.delete_object(&node_id).await
 }
 
+/// Stream container logs for `node_id` into `on_message`; returns the id for `stop_logs`.
+#[tauri::command]
+pub async fn start_logs(
+    state: State<'_, AppState>,
+    node_id: String,
+    container: Option<String>,
+    previous: bool,
+    timestamps: bool,
+    on_message: tauri::ipc::Channel<LogMessage>,
+) -> AppResult<u32> {
+    let mut guard = state.session.lock().await;
+    let session = session_mut(&mut guard)?;
+    session.start_logs(
+        LogRequest {
+            node_id,
+            container,
+            previous,
+            timestamps,
+        },
+        Arc::new(on_message),
+    )
+}
+
+/// Stop a log session; unknown ids and a missing session are no-ops (the streams are gone).
+#[tauri::command]
+pub async fn stop_logs(state: State<'_, AppState>, session_id: u32) -> AppResult<()> {
+    let mut guard = state.session.lock().await;
+    if let Some(session) = guard.as_mut() {
+        session.stop_logs(session_id);
+    }
+    Ok(())
+}
+
+/// Write text the user chose a destination for (the save dialog picked `path`).
+#[tauri::command]
+pub async fn save_text(path: String, text: String) -> AppResult<()> {
+    tokio::fs::write(&path, text)
+        .await
+        .map_err(|e| AppError::internal(format!("{path}: {e}")))
+}
+
 pub fn register(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wry> {
     builder.manage(AppState::default()).invoke_handler(tauri::generate_handler![
         list_contexts,
@@ -187,5 +230,8 @@ pub fn register(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wr
         update_object,
         create_object,
         delete_object,
+        start_logs,
+        stop_logs,
+        save_text,
     ])
 }

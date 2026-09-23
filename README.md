@@ -29,6 +29,10 @@ The left Navigator lists your kubeconfig contexts and the resources of the selec
 
 The YAML tab has an **Edit** button: the object opens in a CodeMirror editor, **Save** (⌘/Ctrl+S) shows a line diff of what will be sent, and **Apply** replaces the object on the server with `fieldValidation=Strict`, so unknown fields are rejected rather than silently dropped. If the object changed meanwhile you get a conflict banner with *Reload* (drop your edits) or *Overwrite* (resend with the current `resourceVersion`); server validation errors appear inline. **+ Create** in the header opens a template for any watched kind in the current namespace (defaulting to the kind of the open table), and the trash icon in the details panel deletes the object after confirmation — for a pod group it deletes every member pod and the controller recreates them.
 
+## Logs
+
+Pods and workloads (Deployment, StatefulSet, DaemonSet, Job, CronJob, pod groups) get a **Logs** tab: the last 500 lines per container, then live follow, merged across a workload's pods with a coloured `[pod/container]` prefix. Pick a container, switch to the previous run of a crashing container, toggle server timestamps and wrapping, search with match stepping, clear, or download to a file. ANSI colours are rendered. Drag the border above the details panel to resize it (or focus it and use ↑/↓, Shift for bigger steps), or maximise it with ⤢ (Esc restores).
+
 ## Demo cluster
 
 `examples/demo/setup.sh [context]` (default `docker-desktop`) deploys the `shop` and `blog` namespaces, the `wiring-viewer` / `wiring-auditor` RBAC identities, and adds matching restricted kubeconfig contexts so you can see filters and denied-kind handling against a real cluster. See `examples/demo/*.yaml` for the workload and RBAC definitions.
@@ -44,4 +48,5 @@ examples/demo/setup.sh kind-kind
 - Frontend plan: `docs/superpowers/plans/2026-09-17-wiring-frontend.md`
 - Navigator/tables: `docs/superpowers/specs/2026-09-18-navigator-tables-design.md`
 - YAML editing: `docs/superpowers/specs/2026-09-18-yaml-editing-design.md`
+- Pod logs: `docs/superpowers/specs/2026-09-21-pod-logs-design.md`
 - IPC contract: `docs/ipc-contract.md`

@@ -1,5 +1,5 @@
-import { invoke } from "./tauri";
-import type { ConnectInfo, ContextInfo, Kind, NodeId, ObjectDetails, Table } from "./types";
+import { Channel, invoke } from "./tauri";
+import type { ConnectInfo, ContextInfo, Kind, LogMessage, LogRequest, NodeId, ObjectDetails, Table } from "./types";
 import { toAppError } from "./types";
 
 async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
@@ -24,4 +24,12 @@ export const commands = {
   updateObject: (nodeId: NodeId, yaml: string, force: boolean) => call<ObjectDetails>("update_object", { nodeId, yaml, force }),
   createObject: (namespace: string, yaml: string) => call<NodeId>("create_object", { namespace, yaml }),
   deleteObject: (nodeId: NodeId) => call<null>("delete_object", { nodeId }),
+  /** Starts a log session; `onMessage` receives every LogMessage until stopLogs. Resolves to the session id. */
+  startLogs: (req: LogRequest, onMessage: (m: LogMessage) => void) => {
+    const channel = new Channel<LogMessage>();
+    channel.onmessage = onMessage;
+    return call<number>("start_logs", { ...req, onMessage: channel });
+  },
+  stopLogs: (sessionId: number) => call<null>("stop_logs", { sessionId }),
+  saveText: (path: string, text: string) => call<null>("save_text", { path, text }),
 };

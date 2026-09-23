@@ -1,5 +1,6 @@
 //! End-to-end: apply a fixture namespace, run a headless Session, assert the graph, then
-//! exercise the write path (update / conflict / create / delete / PodGroup delete).
+//! exercise the write path (update / conflict / create / delete / PodGroup delete) and
+//! log streaming (start / lines / stop / invalid kind).
 //! Run: WIRING_SMOKE_CONTEXT=docker-desktop cargo test --test smoke -- --ignored --nocapture
 
 use std::collections::HashSet;
@@ -7,10 +8,12 @@ use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::sync::mpsc::UnboundedReceiver;
+use tokio::sync::mpsc::{self, UnboundedReceiver};
 use wiring_lib::error::ErrorKind;
 use wiring_lib::graph::{Graph, GraphDelta, Relation};
 use wiring_lib::kubeconfig;
+use wiring_lib::logs::session::LogRequest;
+use wiring_lib::logs::LogMessage;
 use wiring_lib::session::emitter::{ChannelEmitter, ConnectionState, OutEvent};
 use wiring_lib::session::Session;
 use wiring_lib::store::Kind;
@@ -84,8 +87,9 @@ fn fixture_is_live(g: &Graph) -> bool {
             .any(|e| e.source == "ConfigMap/wiring-smoke/web-cfg" && e.relation == Relation::EnvFrom)
 }
 
-fn pod_count(g: &Graph) -> usize {
-    g.nodes.iter().filter(|n| n.id.starts_with("Pod/wiring-smoke/")).count()
+/// Pods of the `web` Deployment in the graph; the `talker` pod (log fixture) is not counted.
+fn web_pod_count(g: &Graph) -> usize {
+    g.nodes.iter().filter(|n| n.id.starts_with("Pod/wiring-smoke/web-")).count()
 }
 
 fn has_node(g: &Graph, id: &str) -> bool {
@@ -96,13 +100,15 @@ const CONFIGMAP_ID: &str = "ConfigMap/wiring-smoke/web-cfg";
 const CREATED_ID: &str = "ConfigMap/wiring-smoke/smoke-created";
 const GROUP_ID: &str = "PodGroup/wiring-smoke/Deployment/web";
 
-/// Names of the pods currently in the store (the graph may have collapsed them).
+/// Names of the `web` pods currently in the store (the graph may have collapsed them);
+/// the `talker` pod is left out.
 fn pod_names(session: &Session) -> Vec<String> {
     session
         .list_rows(Kind::Pod)
         .rows
         .into_iter()
         .map(|r| r.node_id.trim_start_matches("Pod/wiring-smoke/").to_owned())
+        .filter(|n| n.starts_with("web-"))
         .collect()
 }
 
@@ -210,6 +216,69 @@ async fn exercise_writes(session: &Session, rx: &mut UnboundedReceiver<OutEvent>
     assert_eq!(err.kind, ErrorKind::NotFound, "{err:?}");
 }
 
+/// Stream the talker's logs: a `started`, then lines containing "tick"; stopping ends the flow.
+async fn exercise_logs(session: &mut Session, context: &str) {
+    kubectl(
+        context,
+        &["-n", NAMESPACE, "rollout", "status", "deployment/talker", "--timeout=180s"],
+    );
+    let (tx, mut rx) = mpsc::unbounded_channel::<LogMessage>();
+    let id = session
+        .start_logs(
+            LogRequest {
+                node_id: format!("Deployment/{NAMESPACE}/talker"),
+                container: None,
+                previous: false,
+                timestamps: true,
+            },
+            Arc::new(tx),
+        )
+        .unwrap();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    let mut started = false;
+    let mut saw_tick = false;
+    while !(started && saw_tick) {
+        let msg = tokio::time::timeout_at(deadline, rx.recv())
+            .await
+            .expect("log messages in time")
+            .expect("channel open");
+        match msg {
+            LogMessage::Started { session_id, .. } => {
+                assert_eq!(session_id, id);
+                started = true;
+            }
+            LogMessage::Lines { lines, .. } => {
+                saw_tick |= lines.iter().any(|l| l.text.contains("tick"));
+                // timestamps=true: each line starts with an RFC 3339 stamp.
+                assert!(lines.iter().all(|l| l.text.starts_with("20")), "{lines:?}");
+            }
+            LogMessage::Error { message, .. } => panic!("stream error: {message}"),
+            // A follow stream on a Ready pod must not end on its own; fail fast instead of
+            // waiting out the deadline with a generic timeout message.
+            LogMessage::Ended { pod, .. } => panic!("stream ended early: {pod}"),
+            LogMessage::Truncated { .. } => {}
+        }
+    }
+    session.stop_logs(id);
+    // Drain what was in flight; after that the sender is dropped and the channel closes.
+    let closed = tokio::time::timeout(Duration::from_secs(5), async { while rx.recv().await.is_some() {} }).await;
+    assert!(closed.is_ok(), "streams kept running after stop_logs");
+
+    // An unknown kind is rejected up front.
+    let err = session
+        .start_logs(
+            LogRequest {
+                node_id: format!("ConfigMap/{NAMESPACE}/web-cfg"),
+                container: None,
+                previous: false,
+                timestamps: false,
+            },
+            Arc::new(mpsc::unbounded_channel::<LogMessage>().0),
+        )
+        .unwrap_err();
+    assert_eq!(err.kind, ErrorKind::Invalid, "{err:?}");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 #[ignore]
 async fn graph_snapshot_reflects_applied_fixture() {
@@ -251,10 +320,11 @@ async fn graph_snapshot_reflects_applied_fixture() {
     // Scale down and expect deltas to remove a pod.
     kubectl(&context, &["-n", NAMESPACE, "scale", "deployment/web", "--replicas=1"]);
     let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
-    let ok = graph_until(&mut rx, &mut graph, deadline, |g| pod_count(g) == 1).await;
+    let ok = graph_until(&mut rx, &mut graph, deadline, |g| web_pod_count(g) == 1).await;
     assert!(ok, "scale-down never reached the graph; last graph: {graph:#?}");
 
     exercise_writes(&session, &mut rx, &mut graph, &context).await;
+    exercise_logs(&mut session, &context).await;
 
     session.shutdown();
     kubectl(&context, &["delete", "namespace", NAMESPACE, "--wait=false"]);

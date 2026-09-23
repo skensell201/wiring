@@ -6,7 +6,7 @@ pub mod shared;
 pub mod watch;
 pub mod write;
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
 use futures::StreamExt;
@@ -23,6 +23,8 @@ use tokio::task::JoinHandle;
 use crate::error::{AppError, AppResult, ErrorKind};
 use crate::graph::rows::Table;
 use crate::graph::{status::summary, Graph, NodeId};
+use crate::logs::session::{spawn_log_session, LogRequest, LogSession};
+use crate::logs::LogSink;
 use crate::store::{Kind, Store};
 use emitter::{ClosableEmitter, Emitter, K8sEvent, ObjectEvents, OutEvent};
 use reducer::{spawn_reducer, ReducerConfig, ReducerMsg};
@@ -104,6 +106,9 @@ pub struct Session {
     reducer_tx: Option<mpsc::Sender<ReducerMsg>>,
     tasks: Vec<JoinHandle<()>>,
     events_task: Option<JoinHandle<()>>,
+    /// Live log sessions by id; dropping one aborts its streams.
+    logs: HashMap<u32, LogSession>,
+    next_log_id: u32,
 }
 
 impl Session {
@@ -152,6 +157,8 @@ impl Session {
             reducer_tx: None,
             tasks: vec![],
             events_task: None,
+            logs: HashMap::new(),
+            next_log_id: 1,
         }
     }
 
@@ -256,7 +263,30 @@ impl Session {
         Ok(())
     }
 
+    /// Start streaming logs for `req` into `sink`; returns the session id for `stop_logs`.
+    pub fn start_logs(&mut self, req: LogRequest, sink: Arc<dyn LogSink>) -> AppResult<u32> {
+        let id = self.next_log_id;
+        self.next_log_id = self.next_log_id.wrapping_add(1);
+        let session = spawn_log_session(id, self.client.clone(), self.shared.clone(), req, sink)?;
+        self.logs.insert(id, session);
+        Ok(id)
+    }
+
+    /// Stop a log session: nothing reaches its channel once this returns. Unknown ids are a
+    /// no-op.
+    pub fn stop_logs(&mut self, id: u32) {
+        if let Some(session) = self.logs.remove(&id) {
+            session.close(); // then drop aborts the streams
+        }
+    }
+
     fn stop_watchers(&mut self) {
+        // A namespace switch, disconnect or drop must end every log stream of the session;
+        // close each sink first so no batch slips out before the aborts land.
+        for session in self.logs.values() {
+            session.close();
+        }
+        self.logs.clear();
         // Close before aborting: an abort only lands at the task's next `.await`, and a
         // reducer mid-rebuild would otherwise still emit one snapshot of the old namespace.
         self.ns_emitter.close();

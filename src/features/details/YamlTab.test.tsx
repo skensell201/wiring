@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { initialState, useAppStore, viewEditor, type EditorState } from "../../app/store";
 import { YamlTab } from "./YamlTab";
 
-vi.mock("../../shared/ipc/tauri", () => ({ invoke: vi.fn(async () => null), listen: vi.fn(async () => () => {}) }));
+vi.mock("../../shared/ipc/tauri", () => ({ invoke: vi.fn(async () => null), listen: vi.fn(async () => () => {}), Channel: class { onmessage: (m: unknown) => void = () => {}; } }));
 vi.mock("./yaml", () => ({ highlightYaml: vi.fn(async (src: string) => `<pre class="shiki"><code>${src}</code></pre>`) }));
 vi.mock("../editor/LazyYamlEditor", () => ({
   LazyYamlEditor: ({ value, onChange, label, readOnly }: { value: string; onChange: (t: string) => void; label: string; readOnly?: boolean }) => (

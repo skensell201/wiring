@@ -2,14 +2,23 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import graphFixture from "../shared/ipc/fixtures/graph.json";
 import type { Graph, GraphDelta, GraphNode, Kind } from "../shared/ipc/types";
 
-vi.mock("../shared/ipc/tauri", () => ({
-  invoke: vi.fn(async (cmd: string) => {
-    if (cmd === "get_object") return { yaml: "kind: Pod\n", summary: [["Name", "web-1"]], related: [] };
+const { baseInvoke, POD_YAML } = vi.hoisted(() => {
+  const POD_YAML = "kind: Pod\n";
+  /** The default backend answers: the mock factory starts with them and `selectPod` reinstalls them. */
+  const baseInvoke = async (cmd: string): Promise<unknown> => {
+    if (cmd === "get_object") return { yaml: POD_YAML, summary: [["Name", "web-1"]], related: [] };
     if (cmd === "denied_kinds") return ["Secret"];
     if (cmd === "connect") return { context: "prod", serverVersion: "v1.33.0", namespaces: ["default", "payments"] };
+    if (cmd === "start_logs") return 42;
     return null;
-  }),
+  };
+  return { baseInvoke, POD_YAML };
+});
+
+vi.mock("../shared/ipc/tauri", () => ({
+  invoke: vi.fn(baseInvoke),
   listen: vi.fn(async () => () => {}),
+  Channel: class { onmessage: (m: unknown) => void = () => {}; },
 }));
 vi.mock("../shared/settings", () => ({
   settings: {
@@ -19,11 +28,15 @@ vi.mock("../shared/settings", () => ({
     setLastNamespace: vi.fn(async () => {}),
     getSidebarCollapsed: vi.fn(async () => false),
     setSidebarCollapsed: vi.fn(async () => {}),
+    getDetailsHeight: vi.fn(async () => null),
+    setDetailsHeight: vi.fn(async () => {}),
   },
 }));
 
 import { invoke } from "../shared/ipc/tauri";
 import { template } from "../features/editor/templates";
+import { logBuffer } from "../features/logs/logBuffer";
+import { initialLogs } from "../features/logs/logsState";
 import { applyDelta, applySnapshot, disconnectedState, initialState, kindStats, useAppStore, viewEditor, type AppState } from "./store";
 
 const node = (id: string, over: Partial<GraphNode> = {}): GraphNode => ({
@@ -33,6 +46,7 @@ const node = (id: string, over: Partial<GraphNode> = {}): GraphNode => ({
 beforeEach(() => {
   useAppStore.setState(initialState());
   vi.mocked(invoke).mockClear();
+  logBuffer.clear();
 });
 
 describe("graph reducers", () => {
@@ -439,12 +453,11 @@ describe("kindStats", () => {
 
 // ---- editing ----------------------------------------------------------------
 
-const POD_YAML = "kind: Pod\n";
 const EDITED_YAML = "kind: Pod\nmetadata:\n  labels:\n    x: y\n";
 
 async function selectPod(): Promise<void> {
   // Earlier suites install their own `invoke` implementations; mockClear keeps them.
-  vi.mocked(invoke).mockImplementation(async (cmd: string) => (cmd === "get_object" ? { yaml: POD_YAML, summary: [], related: [] } : null));
+  vi.mocked(invoke).mockImplementation(baseInvoke);
   useAppStore.setState({
     ...applySnapshot(initialState(), { nodes: [node("Pod/p/a"), node("Pod/p/b")], edges: [] }),
     connection: { ...initialState().connection, context: "prod", namespace: "p" },
@@ -1027,5 +1040,147 @@ describe("delete dialog", () => {
   it("confirmDelete with nothing requested is a no-op", async () => {
     await useAppStore.getState().confirmDelete();
     expect(invoke).not.toHaveBeenCalled();
+  });
+});
+
+// ---- logs ------------------------------------------------------------------
+
+/** The channel handed to the last start_logs call, so tests can push messages through it. */
+function lastLogChannel(): { onmessage: (m: unknown) => void } {
+  const call = [...vi.mocked(invoke).mock.calls].reverse().find((c) => c[0] === "start_logs");
+  if (!call) throw new Error("start_logs was not called");
+  return (call[1] as { onMessage: { onmessage: (m: unknown) => void } }).onMessage;
+}
+
+describe("logs", () => {
+  it("startLogs opens a session with the current options and routes lines to the buffer", async () => {
+    await selectPod();
+    await useAppStore.getState().startLogs("Pod/p/a");
+    expect(invoke).toHaveBeenCalledWith("start_logs", expect.objectContaining({ nodeId: "Pod/p/a", container: null, previous: false, timestamps: false }));
+    expect(useAppStore.getState().logs).toMatchObject({ sessionId: 42, nodeId: "Pod/p/a", status: "starting" });
+    lastLogChannel().onmessage({ type: "started", sessionId: 42, pod: "a", container: "c" });
+    lastLogChannel().onmessage({ type: "lines", sessionId: 42, lines: [{ pod: "a", container: "c", text: "hi" }] });
+    expect(useAppStore.getState().logs.status).toBe("streaming");
+    expect(logBuffer.lines().map((l) => l.text)).toEqual(["hi"]);
+  });
+
+  it("stopLogs stops the backend session, resets state and clears the buffer", async () => {
+    await selectPod();
+    await useAppStore.getState().startLogs("Pod/p/a");
+    lastLogChannel().onmessage({ type: "lines", sessionId: 42, lines: [{ pod: "a", container: "c", text: "hi" }] });
+    await useAppStore.getState().stopLogs();
+    expect(invoke).toHaveBeenCalledWith("stop_logs", { sessionId: 42 });
+    expect(useAppStore.getState().logs.status).toBe("idle");
+    expect(logBuffer.lines()).toEqual([]);
+  });
+
+  it("messages still queued from a stopped session are ignored", async () => {
+    await selectPod();
+    await useAppStore.getState().startLogs("Pod/p/a");
+    const old = lastLogChannel();
+    await useAppStore.getState().stopLogs();
+    // Batches the webview had already queued from the stopped channel arrive after the stop.
+    old.onmessage({ type: "started", sessionId: 42, pod: "a", container: "c" });
+    old.onmessage({ type: "lines", sessionId: 42, lines: [{ pod: "a", container: "c", text: "late" }] });
+    expect(useAppStore.getState().logs.status).toBe("idle");
+    expect(logBuffer.lines()).toEqual([]);
+  });
+
+  it("a superseded start that resolves late stops its session and keeps the newer id", async () => {
+    await selectPod();
+    let resolveA: (id: number) => void = () => {};
+    vi.mocked(invoke).mockImplementation(async (cmd: string, args?: unknown) => {
+      if (cmd !== "start_logs") return baseInvoke(cmd);
+      return (args as { nodeId: string }).nodeId === "Pod/p/a" ? new Promise<number>((r) => { resolveA = r; }) : 43;
+    });
+    const a = useAppStore.getState().startLogs("Pod/p/a");
+    // A reconnect meanwhile: the slice is rebuilt and the backend's session ids restart, so the
+    // generation must not restart with them.
+    useAppStore.setState(disconnectedState(useAppStore.getState()));
+    await useAppStore.getState().startLogs("Pod/p/b");
+    expect(useAppStore.getState().logs).toMatchObject({ sessionId: 43, nodeId: "Pod/p/b" });
+    resolveA(42);
+    await a;
+    expect(invoke).toHaveBeenCalledWith("stop_logs", { sessionId: 42 });
+    expect(useAppStore.getState().logs).toMatchObject({ sessionId: 43, nodeId: "Pod/p/b" });
+  });
+
+  it("a superseded start that fails late is not toasted", async () => {
+    await selectPod();
+    let rejectA: (e: unknown) => void = () => {};
+    vi.mocked(invoke).mockImplementation(async (cmd: string, args?: unknown) => {
+      if (cmd !== "start_logs") return baseInvoke(cmd);
+      return (args as { nodeId: string }).nodeId === "Pod/p/a" ? new Promise<number>((_, rej) => { rejectA = rej; }) : 43;
+    });
+    const a = useAppStore.getState().startLogs("Pod/p/a");
+    await useAppStore.getState().startLogs("Pod/p/b");
+    rejectA({ kind: "internal", message: "gone" });
+    await a;
+    expect(useAppStore.getState().toasts).toEqual([]);
+    expect(useAppStore.getState().logs).toMatchObject({ sessionId: 43, nodeId: "Pod/p/b", status: "starting" });
+  });
+
+  it("messages from a superseded session are ignored", async () => {
+    await selectPod();
+    await useAppStore.getState().startLogs("Pod/p/a");
+    const old = lastLogChannel();
+    await useAppStore.getState().startLogs("Pod/p/b");
+    old.onmessage({ type: "lines", sessionId: 42, lines: [{ pod: "a", container: "c", text: "stale" }] });
+    old.onmessage({ type: "started", sessionId: 42, pod: "a", container: "c" });
+    expect(logBuffer.lines()).toEqual([]);
+    expect(useAppStore.getState().logs.status).toBe("starting");
+  });
+
+  it("changing container, previous or timestamps restarts the session with the new options", async () => {
+    await selectPod();
+    await useAppStore.getState().startLogs("Pod/p/a");
+    await useAppStore.getState().setLogsContainer("sidecar");
+    expect(invoke).toHaveBeenLastCalledWith("start_logs", expect.objectContaining({ container: "sidecar" }));
+    await useAppStore.getState().toggleLogsPrevious();
+    expect(invoke).toHaveBeenLastCalledWith("start_logs", expect.objectContaining({ container: "sidecar", previous: true }));
+    await useAppStore.getState().toggleLogsTimestamps();
+    expect(invoke).toHaveBeenLastCalledWith("start_logs", expect.objectContaining({ previous: true, timestamps: true }));
+    expect(vi.mocked(invoke).mock.calls.filter((c) => c[0] === "stop_logs")).toHaveLength(3);
+  });
+
+  it("a start_logs failure is toasted and leaves the state idle", async () => {
+    await selectPod();
+    vi.mocked(invoke).mockRejectedValueOnce({ kind: "invalid", message: "ConfigMap has no logs" });
+    await useAppStore.getState().startLogs("ConfigMap/p/x");
+    expect(useAppStore.getState().logs.status).toBe("idle");
+    expect(useAppStore.getState().toasts.at(-1)).toMatchObject({ kind: "invalid" });
+  });
+
+  it("selecting another node, switching namespace and disconnecting stop the logs", async () => {
+    await selectPod();
+    await useAppStore.getState().startLogs("Pod/p/a");
+    await useAppStore.getState().select("Pod/p/b");
+    expect(useAppStore.getState().logs.status).toBe("idle");
+    await useAppStore.getState().startLogs("Pod/p/b");
+    await useAppStore.getState().selectNamespace("q");
+    expect(useAppStore.getState().logs.status).toBe("idle");
+    useAppStore.setState({ ...disconnectedState({ ...useAppStore.getState(), logs: { ...initialLogs(), status: "streaming" } }) });
+    expect(useAppStore.getState().logs.status).toBe("idle");
+  });
+
+  it("toggleDetailsMaximized flips the flag; deselecting and switching namespace reset it", async () => {
+    await selectPod();
+    useAppStore.getState().toggleDetailsMaximized();
+    expect(useAppStore.getState().detailsMaximized).toBe(true);
+    await useAppStore.getState().select("Pod/p/b"); // another node keeps the panel as it is
+    expect(useAppStore.getState().detailsMaximized).toBe(true);
+    await useAppStore.getState().select(null);
+    expect(useAppStore.getState().detailsMaximized).toBe(false);
+    useAppStore.getState().toggleDetailsMaximized();
+    await useAppStore.getState().selectNamespace("q");
+    expect(useAppStore.getState().detailsMaximized).toBe(false);
+  });
+
+  it("the selected object deleted on the server restores the maximised panel", () => {
+    let s = applySnapshot(initialState(), { nodes: [node("Pod/p/a")], edges: [] });
+    s = { ...s, selectedId: "Pod/p/a", details: { nodeId: "Pod/p/a", data: null, events: [], loading: false, editor: viewEditor() }, detailsMaximized: true };
+    s = applyDelta(s, { addedNodes: [], updatedNodes: [], removedNodes: ["Pod/p/a"], addedEdges: [], removedEdges: [] });
+    expect(s.selectedId).toBeNull();
+    expect(s.detailsMaximized).toBe(false);
   });
 });

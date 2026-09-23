@@ -7,6 +7,7 @@ use serde::Serialize;
 use wiring_lib::error::{AppError, ErrorKind};
 use wiring_lib::graph::{Edge, Graph, GraphDelta, GroupInfo, Node, Relation, Status};
 use wiring_lib::kubeconfig::ContextInfo;
+use wiring_lib::logs::{LogLine, LogMessage};
 use wiring_lib::session::emitter::{ConnectionState, K8sEvent, ObjectEvents};
 use wiring_lib::session::{ConnectInfo, ObjectDetails};
 use wiring_lib::store::Kind;
@@ -188,4 +189,34 @@ fn table() {
         }],
     };
     assert_matches("table", &t);
+}
+
+#[test]
+fn log_message() {
+    assert_matches(
+        "log_message",
+        &LogMessage::Lines {
+            session_id: 3,
+            lines: vec![LogLine {
+                pod: "web-6f8d6c8667-2m5mh".into(),
+                container: "web".into(),
+                text: "2026-09-21T09:00:00.123456789Z GET / 200".into(),
+            }],
+        },
+    );
+}
+
+#[test]
+fn log_message_variants_are_tagged() {
+    let v = serde_json::to_value(LogMessage::Truncated { session_id: 1, limit: 64 }).unwrap();
+    assert_eq!(v, serde_json::json!({ "type": "truncated", "sessionId": 1, "limit": 64 }));
+    let v = serde_json::to_value(LogMessage::Error {
+        session_id: 1,
+        pod: "p".into(),
+        container: "c".into(),
+        message: "m".into(),
+    })
+    .unwrap();
+    assert_eq!(v["type"], "error");
+    assert_eq!(v["sessionId"], 1);
 }

@@ -158,6 +158,26 @@ fn apply(
     errored_since: &mut HashMap<Kind, Instant>,
     emitter: &Arc<dyn Emitter>,
 ) -> bool {
+    let pod_related = matches!(&ev, StoreEvent::Applied(o) if o.kind() == Kind::Pod)
+        || matches!(&ev, StoreEvent::Deleted(k) if k.kind == Kind::Pod)
+        || matches!(&ev, StoreEvent::InitDone(Kind::Pod));
+    let changed = apply_to_store(shared, ev, init_pending, stale, errored_since, emitter);
+    // `InitDone(Pod)` is `changed` only when the re-list swept something, which is exactly
+    // when the pod set differs — so `changed` is the right gate for every pod event.
+    if pod_related && changed {
+        shared.notify_pods_changed();
+    }
+    changed
+}
+
+fn apply_to_store(
+    shared: &Shared,
+    ev: StoreEvent,
+    init_pending: &mut HashSet<Kind>,
+    stale: &mut HashMap<Kind, HashSet<ObjectKey>>,
+    errored_since: &mut HashMap<Kind, Instant>,
+    emitter: &Arc<dyn Emitter>,
+) -> bool {
     match ev {
         StoreEvent::Applied(obj) => {
             let kind = obj.kind();
@@ -490,6 +510,28 @@ mod tests {
             "nothing more should be emitted once the session disconnects"
         );
         assert!(shared.denied_kinds().is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn pod_changes_tick_the_broadcast_but_configmaps_do_not() {
+        let shared = Shared::default();
+        let mut pods = shared.subscribe_pods();
+        let (tx, _h, _rx) = spawn_started(&[Kind::Pod, Kind::ConfigMap], shared.clone()).await;
+        tx.send(ReducerMsg::Store(StoreEvent::Applied(cm("a")))).await.unwrap();
+        tx.send(ReducerMsg::Store(StoreEvent::Applied(pod("a")))).await.unwrap();
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_millis(1)).await;
+        assert!(pods.try_recv().is_ok(), "the pod apply ticked");
+        assert!(pods.try_recv().is_err(), "the configmap apply did not");
+        // `pod("a")` carries no resourceVersion, so the JSON compare makes this a no-op.
+        tx.send(ReducerMsg::Store(StoreEvent::Applied(pod("a")))).await.unwrap();
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_millis(1)).await;
+        assert!(pods.try_recv().is_err(), "an unchanged re-apply is silent");
+        tx.send(ReducerMsg::Store(StoreEvent::Deleted(pod("a").key()))).await.unwrap();
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_millis(1)).await;
+        assert!(pods.try_recv().is_ok(), "the pod delete ticked");
     }
 
     #[tokio::test(start_paused = true)]
