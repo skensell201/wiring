@@ -113,36 +113,36 @@ export function DetailsPanel() {
         <div className="h-1.5" />
       ) : (
         <div role="separator" aria-orientation="horizontal" aria-label="Resize details panel" aria-valuenow={height} aria-valuemin={MIN} aria-valuemax={maxHeight()} tabIndex={0}
-          className="h-1.5 cursor-row-resize outline-none hover:bg-current-b/40 focus-visible:bg-current-b/40"
+          className="h-1.5 cursor-row-resize outline-none hover:bg-supernova/40 focus-visible:bg-supernova/40"
           onKeyDown={onSeparatorKey} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerUp} />
       )}
-      <div className="flex h-[30px] items-center gap-1 border-b border-border px-2">
-        <div role="tablist" className="flex gap-1">
+      <div className="flex h-12 items-center gap-6 border-b border-border px-6">
+        <div role="tablist" className="flex h-full gap-6">
           {tabs.map((t) => (
             <button key={t.id} role="tab" aria-selected={tab === t.id} onClick={() => setTab(t.id)}
-              className={`rounded-md px-2.5 py-0.5 text-xs ${tab === t.id ? "bg-muted text-text-hi" : "text-text-muted hover:text-text"}`}>
+              className={`-mb-px border-b-2 px-1 text-sm font-medium transition-colors ${tab === t.id ? "border-supernova text-text-hi" : "border-transparent text-text-muted hover:text-text-hi"}`}>
               {t.label}
             </button>
           ))}
         </div>
         {heading && (
-          <div className="ml-auto flex items-center gap-2 text-xs">
-            <span className="text-text-hi">{heading.name}</span>
-            {heading.kind && <span className="text-text-muted">{KIND_META[heading.kind].label}{heading.namespace ? ` · ${heading.namespace}` : ""}</span>}
+          <div className="ml-auto flex items-baseline gap-2">
+            <span className="text-sm font-medium text-text-hi">{heading.name}</span>
+            {heading.kind && <span className="text-xs text-text-muted">{KIND_META[heading.kind].label}{heading.namespace ? ` · ${heading.namespace}` : ""}</span>}
           </div>
         )}
         {selectedId && (
           <button type="button" title="Delete" aria-label="Delete" onClick={() => requestDelete(selectedId)}
-            className="ml-1 rounded-md p-1 text-text-muted hover:bg-muted hover:text-status-err">
-            <Trash2 className="size-3.5" />
+            className="-mr-3 grid size-8 place-items-center rounded-lg text-text-muted hover:bg-space hover:text-status-err">
+            <Trash2 className="size-4" />
           </button>
         )}
         <button type="button" title={maximized ? "Restore panel (Esc)" : "Maximize panel"} aria-label={maximized ? "Restore panel" : "Maximize panel"} onClick={toggleMaximized}
-          className={`rounded-md p-1 text-text-muted hover:bg-muted hover:text-text-hi ${selectedId ? "ml-1" : "ml-auto"}`}>
-          {maximized ? <Minimize2 className="size-3.5" /> : <Maximize2 className="size-3.5" />}
+          className={`grid size-8 place-items-center rounded-lg text-text-muted hover:bg-space hover:text-text-hi ${selectedId ? "" : "ml-auto"}`}>
+          {maximized ? <Minimize2 className="size-4" /> : <Maximize2 className="size-4" />}
         </button>
       </div>
-      <div className="h-[calc(100%-36px)]">
+      <div className="h-[calc(100%-54px)]">
         {!details ? (
           <div className="grid h-full place-items-center text-sm text-text-muted">Select a node to see details</div>
         ) : details.loading || !details.data ? (

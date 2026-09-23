@@ -10,21 +10,21 @@ function age(ts: string | null): string {
 }
 
 export function EventsTab({ events }: { events: K8sEvent[] }) {
-  if (events.length === 0) return <div className="p-4 text-sm text-text-muted">No events.</div>;
+  if (events.length === 0) return <div className="p-6 text-sm text-text-muted">No events.</div>;
   return (
     <div className="h-full overflow-auto selectable">
-      <table className="w-full text-xs">
-        <thead className="sticky top-0 bg-panel text-left text-[10px] uppercase tracking-wider text-text-muted">
-          <tr><th className="px-4 py-2">Type</th><th className="px-2 py-2">Reason</th><th className="px-2 py-2">Message</th><th className="px-2 py-2">Count</th><th className="px-4 py-2">Age</th></tr>
+      <table className="w-full text-sm">
+        <thead className="sticky top-0 bg-panel text-left text-xs font-medium text-text-muted">
+          <tr><th className="px-6 py-2.5 font-medium">Type</th><th className="px-3 py-2.5 font-medium">Reason</th><th className="px-3 py-2.5 font-medium">Message</th><th className="px-3 py-2.5 font-medium">Count</th><th className="px-6 py-2.5 font-medium">Age</th></tr>
         </thead>
         <tbody>
           {events.map((e) => (
             <tr key={e.name} data-type={e.type} className={`border-t border-border ${e.type === "Warning" ? "text-status-warn" : "text-text"}`}>
-              <td className="px-4 py-1.5">{e.type}</td>
-              <td className="px-2 py-1.5">{e.reason}</td>
-              <td className="px-2 py-1.5 text-text-hi">{e.message}</td>
-              <td className="px-2 py-1.5">{e.count}</td>
-              <td className="px-4 py-1.5">{age(e.lastTimestamp)}</td>
+              <td className="px-6 py-2">{e.type}</td>
+              <td className="px-3 py-2">{e.reason}</td>
+              <td className="px-3 py-2 text-text-hi">{e.message}</td>
+              <td className="px-3 py-2">{e.count}</td>
+              <td className="px-6 py-2">{age(e.lastTimestamp)}</td>
             </tr>
           ))}
         </tbody>

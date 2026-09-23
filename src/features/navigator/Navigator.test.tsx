@@ -132,7 +132,7 @@ describe("Navigator rail", () => {
     const toggleSidebar = vi.fn(async () => {});
     useAppStore.setState({ contexts, connection: connected(), toggleSidebar });
     render(<Navigator />);
-    expect(screen.getByRole("complementary").className).toMatch(/\bw-60\b/);
+    expect(screen.getByRole("complementary").className).toMatch(/\bw-64\b/);
     fireEvent.click(screen.getByRole("button", { name: /collapse navigator/i }));
     expect(toggleSidebar).toHaveBeenCalled();
   });

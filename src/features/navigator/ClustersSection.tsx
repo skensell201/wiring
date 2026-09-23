@@ -19,8 +19,8 @@ export function ClustersSection() {
         const active = c.name === current;
         return (
           <button key={c.name} type="button" disabled={busy} onClick={() => void connectContext(c.name)} title={c.cluster}
-            className={`flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-[13px] disabled:opacity-50 ${
-              active ? "bg-muted text-text-hi" : "text-text hover:bg-muted/50"
+            className={`flex h-8 w-full items-center gap-2.5 rounded-lg px-3 text-left text-sm disabled:opacity-50 ${
+              active ? "inset-hairline bg-surface text-text-hi" : "text-text-dim hover:bg-surface hover:text-text-hi"
             }`}>
             <span className="grid size-2 shrink-0 place-items-center">{active && <Dot status={state} />}</span>
             <span className="truncate">{c.name}</span>
@@ -28,7 +28,7 @@ export function ClustersSection() {
           </button>
         );
       })}
-      <button type="button" onClick={() => void add()} className="flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-left text-xs text-text-muted hover:bg-muted/50 hover:text-text">
+      <button type="button" onClick={() => void add()} className="flex h-8 w-full items-center gap-2 rounded-lg px-3 text-left text-xs text-text-muted hover:bg-surface hover:text-text-hi">
         <Plus className="size-3.5" /> Add kubeconfig…
       </button>
     </div>

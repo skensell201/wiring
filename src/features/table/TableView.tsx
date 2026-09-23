@@ -63,11 +63,11 @@ export function TableView() {
   };
 
   return (
-    <div className="h-full w-full overflow-auto bg-void">
+    <div className="h-full w-full overflow-auto bg-space px-8 py-6">
       {table && graphReady && !denied && (
         <table ref={grid} role="grid" tabIndex={0} onKeyDown={onKeyDown} aria-label={plural}
-          className="w-full border-collapse text-[13px] outline-none focus-visible:ring-1 focus-visible:ring-inset ring-current-b">
-          <thead className="sticky top-0 z-10 bg-panel">
+          className="w-full border-separate border-spacing-0 rounded-card border border-border bg-surface text-sm outline-none focus-visible:ring-1 focus-visible:ring-supernova">
+          <thead className="sticky top-0 z-10 bg-surface">
             <tr>
               {table.columns.map((c) => <HeaderCell key={c.key} column={c} sort={sort} onClick={() => setSort(nextSort(sort, c.key))} />)}
             </tr>
@@ -90,7 +90,7 @@ function HeaderCell({ column, sort, onClick }: { column: TableColumn; sort: Sort
   const Arrow = dir === "desc" ? ArrowDown : ArrowUp;
   return (
     <th scope="col" aria-sort={dir === "asc" ? "ascending" : dir === "desc" ? "descending" : undefined}
-      className={`border-b border-border px-3 py-1.5 text-[11px] font-medium uppercase tracking-wider text-text-muted ${column.numeric ? "text-right" : "text-left"}`}>
+      className={`h-11 border-b border-border px-5 text-xs first:rounded-tl-card last:rounded-tr-card font-medium text-text-muted ${column.numeric ? "text-right" : "text-left"}`}>
       <button type="button" onClick={onClick} className={`inline-flex items-center gap-1 hover:text-text ${column.numeric ? "flex-row-reverse" : ""}`}>
         {column.label}
         <Arrow className={`size-3 ${dir ? "text-text-hi" : "invisible"}`} />
@@ -102,12 +102,12 @@ function HeaderCell({ column, sort, onClick }: { column: TableColumn; sort: Sort
 function Row({ row, columns, selected, onClick, onDoubleClick }: { row: TableRow; columns: TableColumn[]; selected: boolean; onClick: () => void; onDoubleClick: () => void }) {
   return (
     <tr aria-selected={selected} onClick={onClick} onDoubleClick={onDoubleClick} title="Double-click to show in graph"
-      className={`cursor-default ${selected ? "bg-muted shadow-[inset_2px_0_0_var(--color-ember-a)]" : "hover:bg-muted/50"}`}>
+      className={`group h-12 cursor-default ${selected ? "bg-space shadow-[inset_2px_0_0_var(--color-supernova)]" : "hover:bg-space/60"}`}>
       {row.cells.map((cell, i) => {
         const numeric = columns[i]?.numeric ?? false;
         return (
           <td key={columns[i]?.key ?? i} data-status={cell.status ?? undefined}
-            className={`truncate whitespace-nowrap border-b border-border/50 px-3 py-1.5 ${numeric ? "text-right font-mono" : ""} ${
+            className={`truncate whitespace-nowrap border-b border-border px-5 group-last:border-b-0 ${numeric ? "text-right tabular-nums" : ""} ${
               cell.status ? STATUS_TEXT[cell.status] : i === 0 ? "text-text-hi" : "text-text"
             }`}>
             {cell.text}

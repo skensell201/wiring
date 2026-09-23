@@ -8,7 +8,7 @@ import { ResourceTree } from "./ResourceTree";
 import { SECTIONS, sectionOf } from "./kindTree";
 import { SECTION_ICONS } from "./sectionIcons";
 
-const RAIL_BTN = "grid size-8 place-items-center rounded-md text-text-muted hover:bg-muted/50 hover:text-text";
+const RAIL_BTN = "grid size-8 place-items-center rounded-lg text-text-muted hover:bg-surface hover:text-text-hi";
 
 /** Left sidebar: clusters, the resource tree and a collapse toggle. Collapses to a 48 px icon rail. */
 export function Navigator() {
@@ -19,7 +19,7 @@ export function Navigator() {
     })),
   );
   // The top strip lines up with the header; on macOS it is where the traffic lights live.
-  const strip = <div className={`drag-region h-12 shrink-0 border-b border-border ${isMac ? "pl-20" : ""}`} />;
+  const strip = <div className={`drag-region h-16 shrink-0 border-b border-border ${isMac ? "pl-20" : ""}`} />;
 
   if (collapsed) {
     const activeSection = view.name === "table" ? sectionOf(view.kind)?.id : undefined;
@@ -31,14 +31,14 @@ export function Navigator() {
             <Dot status={context ? state : "disconnected"} className="size-2.5" />
           </button>
           <button type="button" title="Overview" aria-label="Overview" aria-current={view.name === "graph" ? "page" : undefined} onClick={showGraph}
-            className={`${RAIL_BTN} ${view.name === "graph" ? "bg-muted text-text-hi" : ""}`}>
+            className={`${RAIL_BTN} ${view.name === "graph" ? "inset-hairline bg-surface text-supernova" : ""}`}>
             <Waypoints className="size-4" />
           </button>
           {SECTIONS.map((s) => {
             const Icon = SECTION_ICONS[s.id];
             return (
               <button key={s.id} type="button" title={s.label} aria-label={s.label} onClick={() => void toggleSidebar()}
-                className={`${RAIL_BTN} ${s.id === activeSection ? "bg-muted text-text-hi" : ""}`}>
+                className={`${RAIL_BTN} ${s.id === activeSection ? "inset-hairline bg-surface text-text-hi" : ""}`}>
                 {Icon ? <Icon className="size-4" /> : s.label[0]}
               </button>
             );
@@ -50,11 +50,11 @@ export function Navigator() {
   }
 
   return (
-    <aside aria-label="Navigator" className="flex w-60 shrink-0 flex-col border-r border-border bg-void">
+    <aside aria-label="Navigator" className="flex w-64 shrink-0 flex-col border-r border-border bg-void">
       {strip}
-      <div className="min-h-0 flex-1 overflow-y-auto pb-2">
+      <div className="min-h-0 flex-1 overflow-y-auto px-1 pb-3 pt-2">
         <ClustersSection />
-        {context ? <ResourceTree /> : <p className="px-4 pt-4 text-xs text-text-muted">Pick a cluster to browse its resources.</p>}
+        {context ? <ResourceTree /> : <p className="px-4 pt-6 text-sm text-text-muted">Pick a cluster to browse its resources.</p>}
       </div>
       <RailToggle collapsed={false} onClick={() => void toggleSidebar()} />
     </aside>
@@ -65,7 +65,7 @@ function RailToggle({ collapsed, onClick }: { collapsed: boolean; onClick: () =>
   const label = collapsed ? "Expand navigator" : "Collapse navigator";
   const Icon = collapsed ? ChevronsRight : ChevronsLeft;
   return (
-    <div className={`flex shrink-0 border-t border-border p-2 ${collapsed ? "justify-center" : "justify-end"}`}>
+    <div className={`flex shrink-0 border-t border-border p-3 ${collapsed ? "justify-center" : "justify-end"}`}>
       <button type="button" title={label} aria-label={label} onClick={onClick} className={RAIL_BTN}>
         <Icon className="size-4" />
       </button>

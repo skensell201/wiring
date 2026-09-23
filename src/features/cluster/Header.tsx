@@ -29,33 +29,33 @@ export function Header() {
   }, []);
 
   // The Navigator normally hosts the macOS traffic lights; its 48 px rail is too narrow for them.
-  const inset = isMac && sidebarCollapsed ? "pl-8" : "";
+  const inset = isMac && sidebarCollapsed ? "pl-12" : "";
   // Cluster switching lives in the Navigator; the picker stays for the empty state.
   const onContextClick = () => (hasContexts ? void toggleSidebar() : setPickerOpen(true));
 
   return (
-    <header className={`drag-region flex h-12 shrink-0 items-center gap-3 border-b border-border bg-void px-3 ${inset}`}>
-      <span className="flex items-center gap-1.5 text-sm font-semibold tracking-wide text-text-hi">
-        <img src={mark} alt="" width={20} height={20} className="select-none" draggable={false} />
+    <header className={`drag-region flex h-16 shrink-0 items-center gap-3 border-b border-border bg-space px-6 ${inset}`}>
+      <span className="mr-3 flex items-center gap-2 text-base font-semibold tracking-[-0.1px] text-text-hi">
+        <img src={mark} alt="" width={22} height={22} className="select-none" draggable={false} />
         Wiring
       </span>
-      <button type="button" className="no-drag rounded-lg border border-border bg-surface px-2.5 py-1 text-sm text-text-hi hover:bg-muted" onClick={onContextClick}
+      <button type="button" className="no-drag rounded-lg border border-border bg-surface px-4 py-1.5 text-sm font-medium text-text-hi hover:bg-muted" onClick={onContextClick}
         title={hasContexts ? "Toggle navigator" : "Choose a cluster"}>
-        ⎈ <span>{connection.context ?? "choose cluster"}</span>{connection.serverVersion ? <span className="ml-2 text-xs text-text-muted">{connection.serverVersion}</span> : null}
+        ⎈ <span>{connection.context ?? "choose cluster"}</span>{connection.serverVersion ? <span className="ml-2 text-xs font-normal text-text-muted">{connection.serverVersion}</span> : null}
       </button>
       {connection.context && <NamespacePicker />}
       {connection.context && (
-        <Button className="flex items-center gap-1 py-1" disabled={connection.namespace === null} onClick={() => openCreate()}
+        <Button className="flex items-center gap-1.5" disabled={connection.namespace === null} onClick={() => openCreate()}
           title={connection.namespace === null ? "Select a namespace first" : "Create an object in this namespace"}>
           <Plus className="size-4" /> Create
         </Button>
       )}
       <div className="no-drag relative ml-auto">
-        <Search className="pointer-events-none absolute left-2 top-1.5 size-4 text-text-muted" />
+        <Search className="pointer-events-none absolute left-3 top-2.5 size-4 text-text-muted" />
         <input ref={searchRef} value={search} onChange={(e) => setSearch(e.target.value)} placeholder={`Search  ${isMac ? "⌘" : "Ctrl+"}K`}
-          className="w-56 rounded-lg border border-border bg-surface py-1 pl-8 pr-2 text-sm text-text-hi outline-none focus:border-current-b" />
+          className="h-9 w-64 rounded-md border border-border bg-void pl-9 pr-3 text-sm text-text-hi outline-none placeholder:text-text-muted focus:border-supernova" />
       </div>
-      <Dot status={connection.state} className="size-2.5" />
+      <Dot status={connection.state} className="mx-1 size-2.5" />
       {connection.context && (
         <Button variant="primary" disabled={connection.busy} onClick={() => void reconnect()}>Reconnect</Button>
       )}

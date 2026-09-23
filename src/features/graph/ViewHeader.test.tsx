@@ -21,7 +21,8 @@ describe("ViewHeader", () => {
       edges: [],
     }));
     render(<ViewHeader />);
-    expect(screen.getByText("Overview · 5 objects")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Overview" })).toBeInTheDocument();
+    expect(screen.getByText("5 objects")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Graph" })).toHaveAttribute("aria-pressed", "true");
     const table = screen.getByRole("button", { name: "Table" });
     expect(table).toHaveAttribute("aria-pressed", "false");
@@ -38,11 +39,13 @@ describe("ViewHeader", () => {
     expect(showTable).toHaveBeenCalledWith("Service");
   });
 
-  it("shows the breadcrumb of a table view and switches back to the graph", () => {
+  it("shows the category and title of a table view and switches back to the graph", () => {
     const showGraph = vi.fn();
     useAppStore.setState({ view: { name: "table", kind: "Pod" }, tables: new Map([["Pod", pods]]), showGraph });
     render(<ViewHeader />);
-    expect(screen.getByText("Workloads / Pods · 3")).toBeInTheDocument();
+    expect(screen.getByText("Workloads")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Pods" })).toBeInTheDocument();
+    expect(screen.getByText("3 objects")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Table" })).toHaveAttribute("aria-pressed", "true");
     fireEvent.click(screen.getByRole("button", { name: "Graph" }));
     expect(showGraph).toHaveBeenCalled();
@@ -54,6 +57,6 @@ describe("ViewHeader", () => {
       view: { name: "table", kind: "Pod" },
     });
     render(<ViewHeader />);
-    expect(screen.getByText("Workloads / Pods · 2")).toBeInTheDocument();
+    expect(screen.getByText("2 objects")).toBeInTheDocument();
   });
 });

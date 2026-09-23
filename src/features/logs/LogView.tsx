@@ -17,7 +17,7 @@ interface Props {
   onMatches: (count: number) => void;
 }
 
-const ROW = 18;
+const ROW = 22;
 
 /** Identity of row `index`: the stream key for a problem row, the line's `seq` for a log row.
  *  The virtualiser caches a measured height per key, so keying by index would hand a line the
@@ -77,7 +77,7 @@ export function LogView({ query, current, wrap, showPrefix, problems, onMatches 
   return (
     <div className="relative h-full">
       <div ref={parentRef} data-testid="log-view" onScroll={onScroll}
-        className={`selectable h-full overflow-auto px-3 font-mono text-[12px] leading-[18px] text-text ${wrap ? "whitespace-pre-wrap break-all" : "whitespace-pre"}`}>
+        className={`selectable h-full overflow-auto px-5 py-3 font-mono text-base leading-[22px] text-text-dim ${wrap ? "whitespace-pre-wrap break-all" : "whitespace-pre"}`}>
         <div style={{ height: virtualizer.getTotalSize(), position: "relative" }}>
           {virtualizer.getVirtualItems().map((item) => {
             const style = { position: "absolute" as const, top: 0, left: 0, width: "100%", transform: `translateY(${item.start}px)` };
@@ -89,7 +89,7 @@ export function LogView({ query, current, wrap, showPrefix, problems, onMatches 
             const isMatch = q !== "" && line.text.toLowerCase().includes(q);
             const isCurrent = matches[current] === item.index - problems.length;
             return (
-              <div key={rowKey(problems, lines, item.index)} ref={virtualizer.measureElement} data-index={item.index} style={style} data-testid={isMatch ? "match" : undefined} className={isCurrent ? "bg-current-b/30" : isMatch ? "bg-current-b/10" : ""}>
+              <div key={rowKey(problems, lines, item.index)} ref={virtualizer.measureElement} data-index={item.index} style={style} data-testid={isMatch ? "match" : undefined} className={isCurrent ? "bg-lilac text-text-hi" : isMatch ? "bg-surface" : ""}>
                 {showPrefix && <span style={{ color: prefixColor(line.pod) }}>[{line.pod}/{line.container}]</span>}{showPrefix && " "}
                 <Line text={line.text} />
               </div>
@@ -99,7 +99,7 @@ export function LogView({ query, current, wrap, showPrefix, problems, onMatches 
       </div>
       {!stuck && (
         <button type="button" onClick={() => { setStuck(true); virtualizer.scrollToIndex(total - 1, { align: "end" }); }}
-          className="absolute bottom-3 right-4 rounded-lg border border-border bg-surface px-2.5 py-1 text-xs text-text-hi hover:bg-muted">
+          className="absolute bottom-3 right-4 rounded-lg border border-white/15 bg-lilac px-3 py-1.5 text-xs font-medium text-text-hi hover:bg-[#62499a]">
           ↓ Follow
         </button>
       )}
