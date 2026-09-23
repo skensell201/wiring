@@ -1,7 +1,14 @@
 name: Release
+# A `v*` tag builds the installers and attaches them to a draft release. Running the workflow by
+# hand builds the same installers as workflow artifacts without touching any release, which is how
+# to check a signing setup before tagging.
+#
+# Signing is used when its secrets are set and skipped otherwise, so unsigned builds keep working.
+# What to set up: docs/code-signing.md.
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
 
 jobs:
   build:
@@ -28,12 +35,83 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with: { workspaces: src-tauri }
       - run: pnpm install --frozen-lockfile
+
+      # The Tauri CLI imports APPLE_CERTIFICATE into a temporary keychain, signs with
+      # APPLE_SIGNING_IDENTITY and notarizes when APPLE_ID, APPLE_PASSWORD and APPLE_TEAM_ID are set.
+      # They are exported only when present: an empty APPLE_CERTIFICATE would still be imported.
+      - name: Configure macOS signing and notarization
+        if: runner.os == 'macOS'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          if [ -z "$APPLE_CERTIFICATE" ]; then
+            echo "::notice title=macOS build is unsigned::APPLE_CERTIFICATE is not set (see docs/code-signing.md)"
+            exit 0
+          fi
+          if [ -z "$APPLE_CERTIFICATE_PASSWORD" ] || [ -z "$APPLE_SIGNING_IDENTITY" ]; then
+            echo "::error::APPLE_CERTIFICATE is set, so APPLE_CERTIFICATE_PASSWORD and APPLE_SIGNING_IDENTITY are required too"
+            exit 1
+          fi
+          put() { { echo "$1<<__WIRING_EOF__"; printf '%s\n' "${!1}"; echo "__WIRING_EOF__"; } >> "$GITHUB_ENV"; }
+          put APPLE_CERTIFICATE; put APPLE_CERTIFICATE_PASSWORD; put APPLE_SIGNING_IDENTITY
+          if [ -n "$APPLE_ID" ] && [ -n "$APPLE_PASSWORD" ] && [ -n "$APPLE_TEAM_ID" ]; then
+            put APPLE_ID; put APPLE_PASSWORD; put APPLE_TEAM_ID
+            echo "::notice title=macOS::signed with a Developer ID and notarized"
+          else
+            echo "::warning title=macOS build is not notarized::set APPLE_ID, APPLE_PASSWORD and APPLE_TEAM_ID; Gatekeeper still blocks a signed but unnotarized app"
+          fi
+
+      # Azure Artifact Signing (formerly Trusted Signing) through trusted-signing-cli, which reads
+      # AZURE_CLIENT_ID, AZURE_CLIENT_SECRET and AZURE_TENANT_ID. Tauri merges the generated
+      # tauri.windows.conf.json into tauri.conf.json on Windows and runs signCommand on every
+      # binary and installer it produces.
+      - name: Configure Windows signing
+        if: runner.os == 'Windows'
+        shell: bash
+        env:
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          SIGNING_ENDPOINT: ${{ vars.AZURE_SIGNING_ENDPOINT }}
+          SIGNING_ACCOUNT: ${{ vars.AZURE_SIGNING_ACCOUNT }}
+          SIGNING_PROFILE: ${{ vars.AZURE_SIGNING_PROFILE }}
+        run: |
+          if [ -z "$AZURE_CLIENT_ID" ]; then
+            echo "::notice title=Windows build is unsigned::AZURE_CLIENT_ID is not set (see docs/code-signing.md)"
+            exit 0
+          fi
+          for v in AZURE_CLIENT_SECRET AZURE_TENANT_ID SIGNING_ENDPOINT SIGNING_ACCOUNT SIGNING_PROFILE; do
+            if [ -z "${!v}" ]; then echo "::error::AZURE_CLIENT_ID is set, so $v is required too"; exit 1; fi
+          done
+          cargo install trusted-signing-cli --locked
+          printf '{ "bundle": { "windows": { "signCommand": "trusted-signing-cli -e %s -a %s -c %s -d Wiring %%1" } } }\n' \
+            "$SIGNING_ENDPOINT" "$SIGNING_ACCOUNT" "$SIGNING_PROFILE" > src-tauri/tauri.windows.conf.json
+          { echo "AZURE_CLIENT_ID=$AZURE_CLIENT_ID"; echo "AZURE_CLIENT_SECRET=$AZURE_CLIENT_SECRET"; echo "AZURE_TENANT_ID=$AZURE_TENANT_ID"; } >> "$GITHUB_ENV"
+          echo "::notice title=Windows::signed with Azure Artifact Signing ($SIGNING_ACCOUNT/$SIGNING_PROFILE)"
+
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: ${{ github.ref_name }}
+          # Without a tag (a manual run) tauri-action only builds; nothing is released.
+          tagName: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
           releaseName: "Wiring ${{ github.ref_name }}"
-          releaseBody: "See the assets below. Builds are unsigned: on macOS run `xattr -d com.apple.quarantine Wiring.app`; on Windows choose *More info → Run anyway* in SmartScreen."
+          releaseBody: "Installers for macOS (universal .dmg) and Windows (.msi, -setup.exe). Install notes: https://github.com/${{ github.repository }}#install"
           releaseDraft: true
           args: ${{ matrix.args }}
+
+      - name: Upload the installers of a manual run
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: wiring-${{ runner.os }}
+          path: |
+            src-tauri/target/*/release/bundle/dmg/*.dmg
+            src-tauri/target/release/bundle/msi/*.msi
+            src-tauri/target/release/bundle/nsis/*.exe
+          if-no-files-found: error

@@ -12,6 +12,7 @@
   <a href="https://github.com/skensell201/wiring/releases/latest"><img src="https://img.shields.io/github/v/release/skensell201/wiring?label=download" alt="Latest release"></a>
   <a href="https://github.com/skensell201/wiring/actions/workflows/ci.yml"><img src="https://github.com/skensell201/wiring/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows-lightgrey" alt="macOS | Windows">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT license"></a>
 </p>
 
 ![The graph of the shop namespace, with the web Deployment selected and its wiring highlighted](docs/images/graph.png)
@@ -29,6 +30,7 @@ It is built with [Tauri 2](https://tauri.app), React and Rust ([kube-rs](https:/
 - [Project layout](#project-layout)
 - [Documentation](#documentation)
 - [Releasing](#releasing)
+- [License](#license)
 
 ## Install
 
@@ -147,6 +149,7 @@ docs/                    design specs, plans, IPC contract
 | [Navigator and tables design](docs/superpowers/specs/2026-09-18-navigator-tables-design.md) | The sidebar, per-kind tables and RBAC handling |
 | [YAML editing design](docs/superpowers/specs/2026-09-18-yaml-editing-design.md) | Edit, diff, apply, conflicts, Create and Delete |
 | [Pod logs design](docs/superpowers/specs/2026-09-21-pod-logs-design.md) | Log sessions, merging, previous runs and the log view |
+| [Code signing](docs/code-signing.md) | Signing and notarizing the macOS and Windows installers in CI |
 
 These are the implementation plans behind each feature:
 - [backend](docs/superpowers/plans/2026-09-17-wiring-backend.md)
@@ -165,3 +168,9 @@ git push origin v0.2.0
 ```
 
 The [release workflow](.github/workflows/release.yml) builds a universal macOS `.dmg` and the Windows `.msi` and `.exe` installers, then attaches them to a **draft** GitHub release. Review the draft and publish it. Bump the version in `package.json`, `src-tauri/tauri.conf.json` and `src-tauri/Cargo.toml` before tagging.
+
+The workflow signs and notarizes the macOS app and signs the Windows installers once the signing secrets are configured. Until then it builds unsigned. [Code signing](docs/code-signing.md) explains what to buy and which secrets to set. It also shows how to check a setup with a manual run (`gh workflow run release.yml`), which builds the installers as workflow artifacts without creating a release.
+
+## License
+
+Wiring is released under the [MIT License](LICENSE).
