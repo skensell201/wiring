@@ -17,13 +17,13 @@ export function CreateDialog() {
   return (
     <div className="absolute inset-0 z-20 grid place-items-center bg-void/80">
       <div role="dialog" aria-modal="true" aria-labelledby="create-dialog-title"
-        className="flex h-[min(640px,90vh)] w-[min(720px,90vw)] flex-col rounded-card border border-border bg-surface p-8">
+        className="flex h-[min(640px,90vh)] w-[min(720px,90vw)] flex-col rounded-card border border-border bg-elevated p-8">
         <div className="mb-5 flex items-center gap-3">
           <h2 id="create-dialog-title" className="text-2xl font-semibold leading-[1.33] text-text-hi">Create</h2>
           <label className="ml-auto flex items-center gap-2 text-xs text-text-muted">
             Kind
             <select value={dialog.kind} onChange={(e) => setCreateKind(e.target.value as CreatableKind)} disabled={dialog.submitting}
-              className="h-9 rounded-md border border-border bg-space px-3 text-sm text-text-hi outline-none focus:border-supernova">
+              className="h-9 rounded-xl border border-border-strong bg-surface px-3 text-sm text-text-hi outline-none focus:border-accent">
               {CREATABLE_KINDS.map((k) => <option key={k} value={k}>{KIND_META[k].label}</option>)}
             </select>
           </label>
@@ -35,7 +35,7 @@ export function CreateDialog() {
             <div className="selectable whitespace-pre-wrap font-mono text-text">{dialog.error.message}</div>
           </div>
         )}
-        <div className="min-h-0 flex-1 overflow-hidden rounded-card border border-border bg-void">
+        <div className="min-h-0 flex-1 overflow-hidden rounded-card border border-border bg-surface">
           <LazyYamlEditor value={dialog.buffer} onChange={setCreateBuffer} label="Manifest" readOnly={dialog.submitting} autoFocus />
         </div>
         <div className="mt-6 flex justify-end gap-2">

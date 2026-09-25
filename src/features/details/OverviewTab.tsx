@@ -21,7 +21,7 @@ export function OverviewTab({ data }: { data: ObjectDetails }) {
         <ul className="space-y-1.5">
           {related.map((n) => (
             <li key={n.id}>
-              <button type="button" onClick={() => void select(n.id)} className="w-full truncate rounded-lg border border-border bg-space px-3 py-1.5 text-left text-sm text-haze hover:border-supernova hover:text-text-hi">
+              <button type="button" onClick={() => void select(n.id)} className="w-full truncate rounded-lg border border-border bg-surface px-3 py-1.5 text-left text-sm text-accent hover:border-accent hover:text-text-hi">
                 <span className="text-text-muted">{KIND_META[n.kind].short}</span>&nbsp; {n.name}
               </button>
             </li>

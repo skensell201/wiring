@@ -1,9 +1,9 @@
 import type { HighlighterCore, ThemeRegistration } from "shiki/core";
 import { SYNTAX } from "../../shared/syntax";
 
-/** The Railway palette as a TextMate theme, matching the editor's (`editor/theme.ts`). */
+/** The Doppler palette as a TextMate theme, matching the editor's (`editor/theme.ts`). */
 const THEME: ThemeRegistration = {
-  name: "railway",
+  name: "doppler",
   type: "dark",
   colors: { "editor.background": SYNTAX.background, "editor.foreground": SYNTAX.foreground },
   tokenColors: [

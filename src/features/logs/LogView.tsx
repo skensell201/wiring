@@ -89,7 +89,7 @@ export function LogView({ query, current, wrap, showPrefix, problems, onMatches 
             const isMatch = q !== "" && line.text.toLowerCase().includes(q);
             const isCurrent = matches[current] === item.index - problems.length;
             return (
-              <div key={rowKey(problems, lines, item.index)} ref={virtualizer.measureElement} data-index={item.index} style={style} data-testid={isMatch ? "match" : undefined} className={isCurrent ? "bg-lilac text-text-hi" : isMatch ? "bg-surface" : ""}>
+              <div key={rowKey(problems, lines, item.index)} ref={virtualizer.measureElement} data-index={item.index} style={style} data-testid={isMatch ? "match" : undefined} className={isCurrent ? "bg-accent/35 text-text-hi" : isMatch ? "bg-accent/15" : ""}>
                 {showPrefix && <span style={{ color: prefixColor(line.pod) }}>[{line.pod}/{line.container}]</span>}{showPrefix && " "}
                 <Line text={line.text} />
               </div>
@@ -99,7 +99,7 @@ export function LogView({ query, current, wrap, showPrefix, problems, onMatches 
       </div>
       {!stuck && (
         <button type="button" onClick={() => { setStuck(true); virtualizer.scrollToIndex(total - 1, { align: "end" }); }}
-          className="absolute bottom-3 right-4 rounded-lg border border-white/15 bg-lilac px-3 py-1.5 text-xs font-medium text-text-hi hover:bg-[#62499a]">
+          className="absolute bottom-3 right-4 rounded-xl border border-border-strong bg-elevated px-3 py-1.5 text-xs font-medium text-text-hi hover:bg-muted">
           ↓ Follow
         </button>
       )}

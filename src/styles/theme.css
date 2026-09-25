@@ -1,36 +1,33 @@
 @import "tailwindcss";
-@import "@fontsource-variable/inter";
-@import "@fontsource/ibm-plex-serif/400.css";
-@import "@fontsource/ibm-plex-serif/500.css";
+@import "@fontsource-variable/geist";
 
-/* Railway ("Cosmic Midnight Express"): near-black space, lilac accents, depth from surface shifts
-   and 1px borders rather than shadows. */
+/* Doppler ("violet-lit vault at midnight"): a violet-tinted near-black canvas, surfaces stepped by
+   colour and separated by faint fog hairlines, one lavender accent for brand voice and emphasis, and
+   one signal green rationed to the action a screen is asking for. */
 @theme {
-  --color-void: #0d0c14;      /* Black Hole: navigator, log body */
-  --color-space: #13111c;     /* Deep Space: page, header, canvas */
-  --color-surface: #1a191f;   /* cards, panels, inputs on space */
-  --color-panel: #1a191f;
-  --color-muted: #33323e;     /* Crater: hover fills, count pills */
-  --color-border: #33323e;
-  --color-text: #d0cfd2;      /* Starlight Dim */
-  --color-text-dim: #a1a0ab;  /* Comet */
-  --color-text-muted: #868593;/* Asteroid */
-  --color-text-hi: #f7f7f8;   /* Starlight */
-  --color-lilac: #553f83;     /* Cosmic Lilac: primary CTA only */
-  --color-supernova: #a05fcf; /* focus rings, active states */
-  --color-haze: #bf92ec;      /* Nebula Haze: decorative highlights */
-  --color-status-ok: #42946e;
-  --color-status-warn: #d9b36c; /* not in the Railway palette: a muted amber, so warnings never read as the lilac accent */
-  --color-status-err: #d82c20;
-  --color-status-unknown: #868593;
-  --color-toast-ok-bg: #15231d;
-  --color-toast-ok-border: #26543f;
-  --font-sans: "Inter Variable", Inter, system-ui, -apple-system, sans-serif;
-  --font-serif: "IBM Plex Serif", Georgia, "Times New Roman", serif;
+  --color-void: #1c1624;      /* Midnight Plum: navigator, page canvas */
+  --color-space: #1c1624;     /* Midnight Plum: header, graph, tables */
+  --color-panel: #1c1624;     /* the details panel sits on the canvas; its contents are cards */
+  --color-surface: #2d2734;   /* Shadow Plum: cards, nodes, inputs, the log and YAML bodies */
+  --color-elevated: #3a3340;  /* Elevated Panel: dialogs, popovers */
+  --color-muted: #3a3340;     /* hover fills */
+  --color-border: rgb(229 231 235 / 0.12); /* Fog Line at 12%: every hairline */
+  --color-border-strong: #55505b;          /* Iron Edge: input borders at rest */
+  --color-text: #d0c9c4;      /* Ash Veil */
+  --color-text-dim: #d0c9c4;  /* Ash Veil */
+  --color-text-muted: #a5a2a5;/* Mid Ash */
+  --color-text-hi: #f1f0ec;   /* Bone White: never pure white */
+  --color-accent: #b997ff;    /* Lavender Spark: brand voice, active states, focus */
+  --color-primary: #00f575;   /* Signal Green: the one action a screen asks for */
+  --color-status-ok: #00f575;
+  --color-status-warn: #ffb547; /* not in the Doppler palette, which has no warning colour */
+  --color-status-err: #ff5632;  /* Ember Orange */
+  --color-status-unknown: #a5a2a5;
+  --font-sans: "Geist Variable", Geist, Inter, ui-sans-serif, system-ui, -apple-system, sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  --radius-node: 12px;
-  --radius-card: 12px;
-  --radius-toast: 4px;
+  --radius-node: 20px;
+  --radius-card: 20px;
+  --radius-toast: 12px;
 }
 
 :root { color-scheme: dark; }
@@ -40,22 +37,23 @@ body {
   color: var(--color-text);
   font-family: var(--font-sans);
   font-size: 14px;
-  letter-spacing: -0.14px;
+  font-weight: 450;
   -webkit-font-smoothing: antialiased;
   overflow: hidden;
   user-select: none;
 }
-:focus-visible { outline: 2px solid var(--color-supernova); outline-offset: 2px; }
-.gradient-warp { background-image: radial-gradient(73.46% 138.39% at 50.21% 0%, rgb(170, 10, 170) 50%, rgb(109, 29, 189) 75.47%, rgb(56, 29, 189) 100%); }
-.inset-hairline { box-shadow: rgba(255, 255, 255, 0.1) 0px 0px 0px 1px inset; }
-.ansi-black { color: #868593 } .ansi-red { color: #e5584e } .ansi-green { color: #42946e } .ansi-yellow { color: #d9b36c }
-.ansi-blue { color: #8f9bea } .ansi-magenta { color: #bf92ec } .ansi-cyan { color: #7fb8c4 } .ansi-white { color: #f7f7f8 }
+:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+/* Neon Violet into Lavender Spark: the workload icon tiles on graph nodes. */
+.gradient-brand { background-image: linear-gradient(135deg, #6b13f5, #b997ff); }
+.inset-hairline { box-shadow: rgb(229 231 235 / 0.12) 0px 0px 0px 1px inset; }
+.ansi-black { color: #a5a2a5 } .ansi-red { color: #ff5632 } .ansi-green { color: #00f575 } .ansi-yellow { color: #ffb547 }
+.ansi-blue { color: #8fa8ff } .ansi-magenta { color: #b997ff } .ansi-cyan { color: #7fdbe4 } .ansi-white { color: #f1f0ec }
 .ansi-bold { font-weight: 600 }
 .drag-region { -webkit-app-region: drag; }
 .no-drag { -webkit-app-region: no-drag; }
 .selectable { user-select: text; }
 
-/* React Flow's dark theme paints its own near-black; put the canvas back on Deep Space. */
+/* React Flow's dark theme paints its own near-black; put the graph on the Doppler canvas. */
 .react-flow {
   --xy-background-color: var(--color-space);
   --xy-minimap-background-color: var(--color-surface);
@@ -67,5 +65,5 @@ body {
   --xy-controls-box-shadow: none;
   --xy-attribution-background-color: transparent;
 }
-.react-flow__controls { border: 1px solid var(--color-border); border-radius: 8px; overflow: hidden; }
+.react-flow__controls { border: 1px solid var(--color-border); border-radius: 12px; overflow: hidden; }
 .react-flow__attribution a { color: var(--color-text-muted); }

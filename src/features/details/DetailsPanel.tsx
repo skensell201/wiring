@@ -113,14 +113,14 @@ export function DetailsPanel() {
         <div className="h-1.5" />
       ) : (
         <div role="separator" aria-orientation="horizontal" aria-label="Resize details panel" aria-valuenow={height} aria-valuemin={MIN} aria-valuemax={maxHeight()} tabIndex={0}
-          className="h-1.5 cursor-row-resize outline-none hover:bg-supernova/40 focus-visible:bg-supernova/40"
+          className="h-1.5 cursor-row-resize outline-none hover:bg-accent/40 focus-visible:bg-accent/40"
           onKeyDown={onSeparatorKey} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerUp} />
       )}
       <div className="flex h-12 items-center gap-6 border-b border-border px-6">
         <div role="tablist" className="flex h-full gap-6">
           {tabs.map((t) => (
             <button key={t.id} role="tab" aria-selected={tab === t.id} onClick={() => setTab(t.id)}
-              className={`-mb-px border-b-2 px-1 text-sm font-medium transition-colors ${tab === t.id ? "border-supernova text-text-hi" : "border-transparent text-text-muted hover:text-text-hi"}`}>
+              className={`-mb-px border-b-2 px-1 text-sm font-medium transition-colors ${tab === t.id ? "border-accent text-text-hi" : "border-transparent text-text-muted hover:text-text-hi"}`}>
               {t.label}
             </button>
           ))}
@@ -133,12 +133,12 @@ export function DetailsPanel() {
         )}
         {selectedId && (
           <button type="button" title="Delete" aria-label="Delete" onClick={() => requestDelete(selectedId)}
-            className="-mr-3 grid size-8 place-items-center rounded-lg text-text-muted hover:bg-space hover:text-status-err">
+            className="-mr-3 grid size-8 place-items-center rounded-lg text-text-muted hover:bg-surface hover:text-status-err">
             <Trash2 className="size-4" />
           </button>
         )}
         <button type="button" title={maximized ? "Restore panel (Esc)" : "Maximize panel"} aria-label={maximized ? "Restore panel" : "Maximize panel"} onClick={toggleMaximized}
-          className={`grid size-8 place-items-center rounded-lg text-text-muted hover:bg-space hover:text-text-hi ${selectedId ? "" : "ml-auto"}`}>
+          className={`grid size-8 place-items-center rounded-lg text-text-muted hover:bg-surface hover:text-text-hi ${selectedId ? "" : "ml-auto"}`}>
           {maximized ? <Minimize2 className="size-4" /> : <Maximize2 className="size-4" />}
         </button>
       </div>

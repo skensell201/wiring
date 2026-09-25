@@ -34,9 +34,9 @@ export function ViewHeader() {
   return (
     <div className="flex shrink-0 items-end gap-4 border-b border-border bg-space px-8 pt-5">
       <div className="min-w-0 pb-3">
-        {eyebrow && <div className="text-xs text-text-muted">{eyebrow}</div>}
+        {eyebrow && <div className="text-xs font-medium tracking-[0.36px] text-accent">{eyebrow}</div>}
         <div className="flex items-baseline gap-4">
-          <h1 className="truncate font-serif text-[36px] font-normal leading-[1.2] tracking-[-0.72px] text-text-hi">{title}</h1>
+          <h1 className="truncate text-[32px] font-medium leading-[1.15] tracking-[-0.32px] text-text-hi">{title}</h1>
           <span className="shrink-0 text-sm text-text-muted">{caption}</span>
         </div>
         {view.name === "graph" && (
@@ -57,7 +57,7 @@ function Segment({ active, disabled, onClick, children }: { active: boolean; dis
   return (
     <button type="button" aria-pressed={active} disabled={disabled} onClick={onClick}
       className={`-mb-px h-12 border-b-2 px-1 text-sm font-medium transition-colors disabled:opacity-40 ${
-        active ? "border-supernova text-text-hi" : "border-transparent text-text-muted hover:text-text-hi"
+        active ? "border-accent text-text-hi" : "border-transparent text-text-muted hover:text-text-hi"
       }`}>
       {children}
     </button>

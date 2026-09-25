@@ -31,7 +31,7 @@ export function Navigator() {
             <Dot status={context ? state : "disconnected"} className="size-2.5" />
           </button>
           <button type="button" title="Overview" aria-label="Overview" aria-current={view.name === "graph" ? "page" : undefined} onClick={showGraph}
-            className={`${RAIL_BTN} ${view.name === "graph" ? "inset-hairline bg-surface text-supernova" : ""}`}>
+            className={`${RAIL_BTN} ${view.name === "graph" ? "inset-hairline bg-surface text-accent" : ""}`}>
             <Waypoints className="size-4" />
           </button>
           {SECTIONS.map((s) => {

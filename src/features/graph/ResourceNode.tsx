@@ -17,13 +17,13 @@ export function ResourceCard({ node, dimmed, expanded, selected }: { node: Graph
       title={isGroup ? "Double-click to expand" : undefined}
       style={{ width: NODE_WIDTH, height: NODE_HEIGHT }}
       className={`flex items-center gap-3 rounded-node border bg-surface px-3 transition-opacity ${
-        selected ? "border-supernova shadow-[0_0_0_1px_var(--color-supernova)]" : "inset-hairline border-border"
+        selected ? "border-accent shadow-[0_0_0_1px_var(--color-accent)]" : "inset-hairline border-border"
       } ${dimmed ? "opacity-30" : "opacity-100"}`}
     >
       {isPod || isGroup ? (
         <Dot status={node.status} className="size-2.5 shrink-0" />
       ) : (
-        <span className={`grid size-7 shrink-0 place-items-center rounded-lg text-[10px] font-semibold text-text-hi ${GRADIENT_KINDS.has(node.kind) ? "gradient-warp" : "bg-muted"}`}>
+        <span className={`grid size-7 shrink-0 place-items-center rounded-lg text-[10px] font-semibold text-text-hi ${GRADIENT_KINDS.has(node.kind) ? "gradient-brand" : "bg-muted"}`}>
           {meta.letter}
         </span>
       )}
@@ -49,9 +49,9 @@ export function ResourceCard({ node, dimmed, expanded, selected }: { node: Graph
 export const ResourceNode = memo(function ResourceNode({ data, selected }: NodeProps<ResourceFlowNode>) {
   return (
     <>
-      <Handle type="target" position={Position.Left} className="!size-2 !border-space !bg-supernova" />
+      <Handle type="target" position={Position.Left} className="!size-2 !border-space !bg-accent" />
       <ResourceCard node={data.node} dimmed={data.dimmed} expanded={data.expanded} selected={!!selected} />
-      <Handle type="source" position={Position.Right} className="!size-2 !border-space !bg-supernova" />
+      <Handle type="source" position={Position.Right} className="!size-2 !border-space !bg-accent" />
     </>
   );
 });
