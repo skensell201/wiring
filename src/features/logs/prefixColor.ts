@@ -1,5 +1,5 @@
-/** Railway's accents first, then muted tints of the ANSI colours in `theme.css`, all legible on Black Hole. */
-const PALETTE = ["#bf92ec", "#42946e", "#a05fcf", "#d9b36c", "#8f9bea", "#7fb8c4", "#9fc8a8", "#d0cfd2"];
+/** Doppler's accents (Lavender Spark, Signal Green, Plasma Pink) first, then the ANSI tints in `theme.css`; all legible on Shadow Plum. */
+const PALETTE = ["#b997ff", "#00f575", "#ff9efa", "#ffb547", "#8fa8ff", "#7fdbe4", "#d0c9c4", "#c9b8ff"];
 
 /** A stable colour per pod name for the `[pod/container]` prefix (spec §5). */
 export function prefixColor(pod: string): string {

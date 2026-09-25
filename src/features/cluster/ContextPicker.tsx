@@ -31,8 +31,8 @@ export function ContextPicker() {
 
   return (
     <div className="absolute inset-0 z-20 grid place-items-center bg-void/80">
-      <div role="dialog" aria-modal="true" aria-labelledby="context-picker-title" className="w-[520px] rounded-card border border-border bg-surface p-8">
-        <h2 id="context-picker-title" className="mb-2 font-serif text-[36px] font-normal leading-[1.2] tracking-[-0.72px] text-text-hi">Choose a cluster</h2>
+      <div role="dialog" aria-modal="true" aria-labelledby="context-picker-title" className="w-[520px] rounded-card border border-border bg-elevated p-8">
+        <h2 id="context-picker-title" className="mb-2 text-[32px] font-medium leading-[1.15] tracking-[-0.32px] text-text-hi">Choose a cluster</h2>
         <p className="mb-6 text-sm text-text-dim">Contexts from your kubeconfig files.</p>
         {contexts.length === 0 ? (
           <p className="mb-4 text-sm">No kubeconfig contexts found. Add a kubeconfig file, or set <code>KUBECONFIG</code> and restart.</p>
@@ -41,7 +41,7 @@ export function ContextPicker() {
             {contexts.map((c) => (
               <li key={c.name}>
                 <button type="button" disabled={busy} onClick={() => void pick(c.name)}
-                  className="flex w-full items-center justify-between rounded-lg px-3 py-2.5 text-left hover:bg-space disabled:opacity-50">
+                  className="flex w-full items-center justify-between rounded-lg px-3 py-2.5 text-left hover:bg-surface disabled:opacity-50">
                   <span className="text-text-hi">{c.name}</span>
                   <span className="truncate pl-4 text-xs text-text-muted">{c.cluster}{c.namespace ? ` · ${c.namespace}` : ""}</span>
                 </button>

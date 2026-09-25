@@ -16,8 +16,8 @@ export const RelationEdge = memo(function RelationEdge(props: EdgeProps<Relation
     <BaseEdge
       path={path}
       style={{
-        // Asteroid at rest; the selection's wiring lights up in Supernova.
-        stroke: data?.highlighted ? "var(--color-supernova)" : "var(--color-text-muted)",
+        // Iron Edge at rest; the selection's wiring lights up in Lavender Spark.
+        stroke: data?.highlighted ? "var(--color-accent)" : "var(--color-border-strong)",
         strokeWidth: data?.highlighted ? 2 : 1.5,
         strokeDasharray: solid ? undefined : "6 4",
         opacity,

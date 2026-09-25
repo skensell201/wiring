@@ -34,13 +34,13 @@ function ViewMode({ yaml, editable }: { yaml: string; editable: boolean }) {
       <div className={TOOLBAR}>
         <div className="ml-auto flex items-center gap-2">
           <button type="button" title="Copy YAML" onClick={() => void navigator.clipboard.writeText(yaml)}
-            className="grid size-8 place-items-center rounded-lg border border-border text-text-muted hover:bg-space hover:text-text-hi">
+            className="grid size-8 place-items-center rounded-lg border border-border text-text-muted hover:bg-surface hover:text-text-hi">
             <Copy className="size-4" />
           </button>
           {editable && <Button className="py-1" onClick={startEdit}>Edit</Button>}
         </div>
       </div>
-      <div className="selectable mx-6 mb-6 min-h-0 flex-1 overflow-auto rounded-card border border-border bg-void">
+      <div className="selectable mx-6 mb-6 min-h-0 flex-1 overflow-auto rounded-card border border-border bg-surface">
         <div className="p-5 font-mono text-[13px] leading-5 [&_pre]:!bg-transparent" dangerouslySetInnerHTML={{ __html: html }} />
       </div>
     </div>

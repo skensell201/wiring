@@ -21,7 +21,7 @@ const props = {
 } as EdgeProps<RelationFlowEdge>;
 
 describe("RelationEdge", () => {
-  it("draws a resting edge in Asteroid and a highlighted one in Supernova", () => {
+  it("draws a resting edge in Iron Edge and a highlighted one in the accent", () => {
     const stroke = (highlighted: boolean) => {
       const { container } = render(
         <svg>
@@ -30,8 +30,8 @@ describe("RelationEdge", () => {
       );
       return (container.querySelector("path") as SVGPathElement).style.stroke;
     };
-    expect(stroke(false)).toBe("var(--color-text-muted)");
-    expect(stroke(true)).toBe("var(--color-supernova)");
+    expect(stroke(false)).toBe("var(--color-border-strong)");
+    expect(stroke(true)).toBe("var(--color-accent)");
   });
 
   it("routes through the waypoints when the layout provides them", () => {

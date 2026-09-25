@@ -34,12 +34,12 @@ export function Header() {
   const onContextClick = () => (hasContexts ? void toggleSidebar() : setPickerOpen(true));
 
   return (
-    <header className={`drag-region flex h-16 shrink-0 items-center gap-3 border-b border-border bg-space px-6 ${inset}`}>
+    <header className={`drag-region flex h-16 shrink-0 items-center gap-3 border-b border-border bg-space/80 px-6 backdrop-blur-md ${inset}`}>
       <span className="mr-3 flex items-center gap-2 text-base font-semibold tracking-[-0.1px] text-text-hi">
         <img src={mark} alt="" width={22} height={22} className="select-none" draggable={false} />
         Wiring
       </span>
-      <button type="button" className="no-drag rounded-lg border border-border bg-surface px-4 py-1.5 text-sm font-medium text-text-hi hover:bg-muted" onClick={onContextClick}
+      <button type="button" className="no-drag rounded-xl border border-border-strong bg-surface px-4 py-1.5 text-sm font-medium text-text-hi hover:bg-muted" onClick={onContextClick}
         title={hasContexts ? "Toggle navigator" : "Choose a cluster"}>
         ⎈ <span>{connection.context ?? "choose cluster"}</span>{connection.serverVersion ? <span className="ml-2 text-xs font-normal text-text-muted">{connection.serverVersion}</span> : null}
       </button>
@@ -53,11 +53,11 @@ export function Header() {
       <div className="no-drag relative ml-auto">
         <Search className="pointer-events-none absolute left-3 top-2.5 size-4 text-text-muted" />
         <input ref={searchRef} value={search} onChange={(e) => setSearch(e.target.value)} placeholder={`Search  ${isMac ? "⌘" : "Ctrl+"}K`}
-          className="h-9 w-64 rounded-md border border-border bg-void pl-9 pr-3 text-sm text-text-hi outline-none placeholder:text-text-muted focus:border-supernova" />
+          className="h-9 w-64 rounded-xl border border-border-strong bg-surface pl-9 pr-3 text-sm text-text-hi outline-none placeholder:text-text-muted focus:border-accent" />
       </div>
       <Dot status={connection.state} className="mx-1 size-2.5" />
       {connection.context && (
-        <Button variant="primary" disabled={connection.busy} onClick={() => void reconnect()}>Reconnect</Button>
+        <Button disabled={connection.busy} onClick={() => void reconnect()}>Reconnect</Button>
       )}
     </header>
   );

@@ -8,12 +8,12 @@ function ToastItem({ toast, dismiss }: { toast: Toast; dismiss: (id: number) => 
     return () => clearTimeout(t);
   }, [toast.id, dismiss]);
   const info = toast.kind === "info";
-  // Railway's success toast; an error keeps the same shape on a surface card with an error mark.
-  const look = info ? "border-toast-ok-border bg-toast-ok-bg text-status-ok" : "border-border bg-surface text-text-hi";
+  // Both kinds are elevated cards; only the mark says which one it is.
+  const look = "border-border bg-elevated text-text-hi";
   const Icon = info ? Check : TriangleAlert;
   return (
     <div role="alert" className={`pointer-events-auto flex items-start gap-2.5 rounded-toast border px-3.5 py-2.5 text-sm font-medium ${look}`}>
-      <Icon className={`mt-0.5 size-4 shrink-0 ${info ? "" : "text-status-err"}`} />
+      <Icon className={`mt-0.5 size-4 shrink-0 ${info ? "text-status-ok" : "text-status-err"}`} />
       <div className="min-w-0 flex-1 break-words">
         {!info && <div className="text-xs font-normal text-text-muted">{toast.kind}</div>}
         {toast.message}

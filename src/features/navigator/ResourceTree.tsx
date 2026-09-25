@@ -32,7 +32,7 @@ export function ResourceTree() {
       <SectionLabel>Resources</SectionLabel>
       <button type="button" aria-current={view.name === "graph" ? "page" : undefined} onClick={showGraph}
         className={`${ROW} pl-3 ${view.name === "graph" ? ACTIVE : IDLE}`}>
-        <Waypoints className={`size-4 shrink-0 ${view.name === "graph" ? "text-supernova" : "text-text-muted"}`} />
+        <Waypoints className={`size-4 shrink-0 ${view.name === "graph" ? "text-accent" : "text-text-muted"}`} />
         <span>Overview</span>
       </button>
       {SECTIONS.map((section) => (

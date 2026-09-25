@@ -111,17 +111,17 @@ function CanvasInner() {
         onPaneClick={onPaneClick}
         colorMode="dark"
       >
-        <Background variant={BackgroundVariant.Dots} gap={24} size={1} color="#33323e" />
+        <Background variant={BackgroundVariant.Dots} gap={24} size={1} color="#3a3340" />
         <Controls showInteractive={false} position="bottom-left" />
         <MiniMap
           pannable
           zoomable
           position="bottom-right"
-          nodeColor="#33323e"
-          nodeStrokeColor="#a05fcf"
+          nodeColor="#3a3340"
+          nodeStrokeColor="#b997ff"
           nodeStrokeWidth={2}
-          maskColor="rgba(13,12,20,0.6)"
-          style={{ background: "#1a191f", border: "1px solid #33323e", borderRadius: 12 }}
+          maskColor="rgba(28,22,36,0.6)"
+          style={{ background: "#2d2734", border: "1px solid rgb(229 231 235 / 0.12)", borderRadius: 20 }}
         />
       </ReactFlow>
       {overlay && (

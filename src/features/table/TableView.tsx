@@ -66,7 +66,7 @@ export function TableView() {
     <div className="h-full w-full overflow-auto bg-space px-8 py-6">
       {table && graphReady && !denied && (
         <table ref={grid} role="grid" tabIndex={0} onKeyDown={onKeyDown} aria-label={plural}
-          className="w-full border-separate border-spacing-0 rounded-card border border-border bg-surface text-sm outline-none focus-visible:ring-1 focus-visible:ring-supernova">
+          className="w-full border-separate border-spacing-0 rounded-card border border-border bg-surface text-sm outline-none focus-visible:ring-1 focus-visible:ring-accent">
           <thead className="sticky top-0 z-10 bg-surface">
             <tr>
               {table.columns.map((c) => <HeaderCell key={c.key} column={c} sort={sort} onClick={() => setSort(nextSort(sort, c.key))} />)}
@@ -107,7 +107,7 @@ function Row({ row, columns, selected, onClick, onDoubleClick }: { row: TableRow
         const numeric = columns[i]?.numeric ?? false;
         return (
           <td key={columns[i]?.key ?? i} data-status={cell.status ?? undefined}
-            className={`truncate whitespace-nowrap border-b border-border px-5 group-last:border-b-0 ${selected && i === 0 ? "shadow-[inset_2px_0_0_var(--color-supernova)]" : ""} ${numeric ? "text-right tabular-nums" : ""} ${
+            className={`truncate whitespace-nowrap border-b border-border px-5 group-last:border-b-0 ${selected && i === 0 ? "shadow-[inset_2px_0_0_var(--color-accent)]" : ""} ${numeric ? "text-right tabular-nums" : ""} ${
               cell.status ? STATUS_TEXT[cell.status] : i === 0 ? "text-text-hi" : "text-text"
             }`}>
             {cell.text}

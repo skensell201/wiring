@@ -2,18 +2,18 @@ import { tags as t } from "@lezer/highlight";
 import { createTheme } from "@uiw/codemirror-themes";
 import { SYNTAX } from "../../shared/syntax";
 
-/** CodeMirror theme from the Railway tokens (`theme.css`). */
+/** CodeMirror theme from the Doppler tokens (`theme.css`). */
 export const yamlTheme = createTheme({
   theme: "dark",
   settings: {
     background: SYNTAX.background,
     foreground: SYNTAX.foreground,
-    caret: "#a05fcf",
-    selection: "#33323e",
-    selectionMatch: "#33323e",
-    lineHighlight: "#13111c",
+    caret: "#b997ff",
+    selection: "#55505b",
+    selectionMatch: "#55505b",
+    lineHighlight: "#3a3340",
     gutterBackground: SYNTAX.background,
-    gutterForeground: "#868593",
+    gutterForeground: "#a5a2a5",
     gutterBorder: "transparent",
     fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
   },
