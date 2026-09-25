@@ -77,7 +77,7 @@ If the object changed on the server while you were editing, you can **Reload** (
 - Search with match stepping, clear the view, or download the log to a file.
 - ANSI colours are rendered.
 
-![Live logs of the web Deployment, merged across its three pods](docs/images/logs.png)
+![The Deployments table with live logs of the web Deployment, merged across its three pods](docs/images/logs.png)
 
 ## Try it on a demo cluster
 
