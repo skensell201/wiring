@@ -3,7 +3,7 @@ import type { GraphEdge, GraphNode, Kind, NodeId } from "../../shared/ipc/types"
 import { problemPath } from "./problemPath";
 import { layout, NODE_HEIGHT, NODE_WIDTH, type Position } from "./layout";
 
-/** Status colour of the selected node's problem path. */
+/** Status colour of the root cause of the selected node's problem path. */
 export type PathTone = "err" | "warn";
 
 export interface ResourceNodeData extends Record<string, unknown> {
@@ -70,10 +70,12 @@ export function toFlow(input: ToFlowInput): { nodes: ResourceFlowNode[]; edges: 
   const matches = (n: GraphNode) => q === "" || n.name.toLowerCase().includes(q) || n.kind.toLowerCase().includes(q);
 
   // The selected node's problem chain (only when it leads somewhere): its nodes and the edges
-  // between consecutive steps (either direction) are tinted in the selected node's status colour.
+  // between consecutive steps (either direction) are tinted in the root cause's status colour,
+  // the same colour the details' problem block uses.
   const selected = input.selectedId !== null ? input.nodes.get(input.selectedId) : undefined;
-  const tone: PathTone | undefined = selected?.status === "err" || selected?.status === "warn" ? selected.status : undefined;
-  const path = tone && selected ? problemPath(selected.id, input.nodes) : [];
+  const path = selected?.status === "err" || selected?.status === "warn" ? problemPath(selected.id, input.nodes) : [];
+  const rootStatus = path.length > 0 ? input.nodes.get(path[path.length - 1])?.status : undefined;
+  const tone: PathTone | undefined = rootStatus === "err" || rootStatus === "warn" ? rootStatus : undefined;
   const onPath = new Set(path.length > 1 ? path : []);
   const pathLinks = new Set(onPath.size > 0 ? path.slice(1).flatMap((to, i) => [`${path[i]}\n${to}`, `${to}\n${path[i]}`]) : []);
 

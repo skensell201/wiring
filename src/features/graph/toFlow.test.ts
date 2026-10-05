@@ -10,9 +10,21 @@ const nodes = new Map([n("Service/p/web", "Service"), n("Pod/p/a", "Pod"), n("Co
 const edges = new Map([e("Service/p/web", "Pod/p/a", "selects"), e("ConfigMap/p/cfg", "Pod/p/a", "envFrom")].map((x) => [x.id, x]));
 
 describe("toFlow", () => {
+  it("tints the path in the root cause's colour, like the problem block", () => {
+    const dep: GraphNode = { ...n("Deployment/p/bad", "Deployment"), status: "warn", problem: { reason: "1 of 2 not ready", message: null, cause: "Pod/p/bad-1" } };
+    const pod: GraphNode = { ...n("Pod/p/bad-1", "Pod"), status: "err", problem: { reason: "CrashLoopBackOff", message: null, cause: null } };
+    const owns = e(dep.id, pod.id, "owns");
+    const f = toFlow({
+      nodes: new Map([dep, pod].map((x) => [x.id, x])), edges: new Map([[owns.id, owns]]),
+      hiddenKinds: new Set(), search: "", hoveredId: null, expandedGroups: new Set<string>(), selectedId: dep.id,
+    });
+    expect(f.nodes.map((x) => x.data.pathTone)).toEqual(["err", "err"]);
+    expect(f.edges[0].data.pathTone).toBe("err");
+  });
+
   it("tints the selected node's problem path in its status colour", () => {
     const dep: GraphNode = { ...n("Deployment/p/bad", "Deployment"), status: "warn", problem: { reason: "1 of 1 not ready", message: null, cause: "Pod/p/bad-1" } };
-    const pod: GraphNode = { ...n("Pod/p/bad-1", "Pod"), status: "err", problem: { reason: "ImagePullBackOff", message: null, cause: null } };
+    const pod: GraphNode = { ...n("Pod/p/bad-1", "Pod"), status: "warn", problem: { reason: "ImagePullBackOff", message: null, cause: null } };
     const svc = n("Service/p/bad", "Service");
     const owns = e(dep.id, pod.id, "owns");
     const sel = e(svc.id, pod.id, "selects");
