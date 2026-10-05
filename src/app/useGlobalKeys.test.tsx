@@ -194,4 +194,19 @@ describe("editing keys", () => {
     window.dispatchEvent(ev);
     expect(cancelEdit).not.toHaveBeenCalled();
   });
+
+  it("Escape closes the actions menu, then an action dialog, before touching the selection", () => {
+    const select = vi.fn(async () => {});
+    useAppStore.setState({
+      connection: { ...initialState().connection, context: "prod", state: "connected" }, selectedId: "Deployment/p/web", select,
+      actionsMenu: { nodeId: "Deployment/p/web", x: 0, y: 0 },
+    });
+    render(<App />);
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(useAppStore.getState().actionsMenu).toBeNull();
+    useAppStore.setState({ actionDialog: { type: "restart", nodeId: "Deployment/p/web" } });
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(useAppStore.getState().actionDialog).toBeNull();
+    expect(select).not.toHaveBeenCalled();
+  });
 });

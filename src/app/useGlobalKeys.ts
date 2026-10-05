@@ -8,7 +8,7 @@ export function useGlobalKeys(): void {
     const onKey = (e: KeyboardEvent) => {
       if (e.defaultPrevented) return;
       const s = useAppStore.getState();
-      const modal = s.pickerOpen || s.discardDialog.open || s.deleteDialog.open || s.createDialog.open;
+      const modal = s.pickerOpen || s.discardDialog.open || s.deleteDialog.open || s.createDialog.open || s.actionDialog !== null || s.actionsMenu !== null;
       if ((isMac ? e.metaKey : e.ctrlKey) && !e.shiftKey && e.key.toLowerCase() === "s") {
         // Save = review the diff, unless something sits on top of the editor. Outside edit mode
         // the browser's own Save is as useless as ever; leave it.
@@ -21,6 +21,8 @@ export function useGlobalKeys(): void {
       if (e.key !== "Escape") return;
       // An open context picker owns Escape (it closes itself when it can, marking the event handled).
       if (s.pickerOpen) return;
+      if (s.actionsMenu) { s.closeActionsMenu(); return; }
+      if (s.actionDialog) { if (!s.actionBusy) s.closeActionDialog(); return; }
       // Innermost layer first: dialogs, then a maximised details panel, then the editor, then the selection.
       if (s.discardDialog.open) { s.cancelDiscard(); return; }
       if (s.deleteDialog.open) { s.cancelDelete(); return; }

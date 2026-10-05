@@ -36,6 +36,14 @@ export interface DeleteDialog { open: boolean; nodeId: NodeId | null }
  *  while dirty (which then waits in `pendingSelect` / `pendingDeselect` / `pendingNamespace` until confirmed). */
 export interface DiscardDialog { open: boolean; pendingSelect: NodeId | null; pendingDeselect: boolean; pendingNamespace: string | null }
 
+/** The Actions menu, open for `nodeId` at viewport position (x, y). */
+export interface ActionsMenu { nodeId: NodeId; x: number; y: number }
+export type ActionDialog =
+  | { type: "scale"; nodeId: NodeId }
+  | { type: "restart"; nodeId: NodeId }
+  | { type: "rollback"; nodeId: NodeId; revision: number };
+export type DetailsTab = "overview" | "yaml" | "events" | "logs" | "history";
+
 export function viewEditor(original = ""): EditorState {
   return { mode: "view", buffer: "", original, error: null, saving: false };
 }
@@ -103,6 +111,12 @@ export interface AppState extends GraphState {
   discardDialog: DiscardDialog;
   /** The Logs tab's session metadata; the lines themselves live in `logBuffer`. */
   logs: LogsState;
+  actionsMenu: ActionsMenu | null;
+  actionDialog: ActionDialog | null;
+  /** A scale/restart/rollback request is in flight; a second one is ignored. */
+  actionBusy: boolean;
+  /** A tab the details panel should switch to once it shows the selection (e.g. Rollback… → History). */
+  requestedTab: DetailsTab | null;
 
   // graph events
   applySnapshot: (g: Graph) => void;
@@ -163,6 +177,18 @@ export interface AppState extends GraphState {
   setLogsContainer: (container: string | null) => Promise<void>;
   toggleLogsPrevious: () => Promise<void>;
   toggleLogsTimestamps: () => Promise<void>;
+
+  // workload actions
+  /** Select `nodeId` and open the Actions menu for it at (x, y), unless a dirty editor asks first. */
+  openActionsMenu: (nodeId: NodeId, x: number, y: number) => void;
+  closeActionsMenu: () => void;
+  openActionDialog: (dialog: ActionDialog) => void;
+  closeActionDialog: () => void;
+  scaleObject: (nodeId: NodeId, replicas: number) => Promise<void>;
+  restartObject: (nodeId: NodeId) => Promise<void>;
+  rollbackObject: (nodeId: NodeId, revision: number) => Promise<void>;
+  requestTab: (tab: DetailsTab) => void;
+  consumeRequestedTab: () => void;
   toggleDetailsMaximized: () => void;
 }
 
@@ -197,6 +223,10 @@ export function initialState(): Omit<AppState, keyof Actions> {
     deleteDialog: { open: false, nodeId: null },
     discardDialog: { open: false, pendingSelect: null, pendingDeselect: false, pendingNamespace: null },
     logs: initialLogs(),
+    actionsMenu: null,
+    actionDialog: null,
+    actionBusy: false,
+    requestedTab: null,
     detailsMaximized: false,
   };
 }
@@ -225,7 +255,8 @@ type Actions = Pick<AppState,
   | "toggleSidebar" | "startEdit" | "setBuffer" | "reviewEdit" | "backToEdit" | "applyEdit" | "cancelEdit" | "reloadEdit"
   | "confirmDiscard" | "cancelDiscard" | "openCreate" | "setCreateKind" | "setCreateBuffer" | "submitCreate" | "closeCreate"
   | "requestDelete" | "confirmDelete" | "cancelDelete" | "startLogs" | "stopLogs" | "setLogsContainer" | "toggleLogsPrevious"
-  | "toggleLogsTimestamps" | "toggleDetailsMaximized">;
+  | "toggleLogsTimestamps" | "toggleDetailsMaximized" | "openActionsMenu" | "closeActionsMenu" | "openActionDialog"
+  | "closeActionDialog" | "scaleObject" | "restartObject" | "rollbackObject" | "requestTab" | "consumeRequestedTab">;
 
 // ---- selectors --------------------------------------------------------------
 
@@ -709,10 +740,46 @@ export const useAppStore = create<AppState>()((set, get) => ({
   },
 
   toggleDetailsMaximized: () => set((s) => ({ detailsMaximized: !s.detailsMaximized })),
+  openActionsMenu: (nodeId, x, y) => {
+    void get().select(nodeId);
+    // `select` decides synchronously whether a dirty editor must be confirmed first; then no menu.
+    if (get().discardDialog.open) return;
+    set({ actionsMenu: { nodeId, x, y } });
+  },
+  closeActionsMenu: () => set({ actionsMenu: null }),
+  openActionDialog: (dialog) => set({ actionDialog: dialog }),
+  closeActionDialog: () => set({ actionDialog: null }),
+  scaleObject: (nodeId, replicas) =>
+    runAction(nodeId, () => commands.scaleObject(nodeId, replicas), `Scaled ${describeNode(nodeId)} to ${replicas}`),
+  restartObject: (nodeId) => runAction(nodeId, () => commands.restartObject(nodeId), `Restarted ${describeNode(nodeId)}`),
+  rollbackObject: (nodeId, revision) =>
+    runAction(nodeId, () => commands.rollbackObject(nodeId, revision), `Rolled ${describeNode(nodeId)} back to revision ${revision}`),
+  requestTab: (tab) => set({ requestedTab: tab }),
+  consumeRequestedTab: () => set({ requestedTab: null }),
 }));
 
 /** Select `id` and fetch its details + events. Returns the fetch error (not toasted) or null;
  *  a stale result — the selection moved on meanwhile — is dropped either way. */
+/** A scale/restart/rollback write. The open details take the returned object unless an edit is in
+ *  progress there (its own conflict handling covers that); the dialog closes and a toast reports
+ *  the outcome either way. */
+async function runAction(nodeId: NodeId, call: () => Promise<ObjectDetails>, done: string): Promise<void> {
+  if (useAppStore.getState().actionBusy) return;
+  useAppStore.setState({ actionBusy: true });
+  try {
+    const data = await call();
+    useAppStore.setState((s) => ({
+      actionBusy: false,
+      actionDialog: null,
+      ...(s.details?.nodeId === nodeId && s.details.editor.mode === "view" ? { details: { ...s.details, data, editor: viewEditor(data.yaml) } } : {}),
+    }));
+    useAppStore.getState().toast({ kind: "info", message: done });
+  } catch (e) {
+    useAppStore.setState({ actionBusy: false, actionDialog: null });
+    useAppStore.getState().toast(toAppError(e));
+  }
+}
+
 async function loadDetails(id: NodeId): Promise<AppError | null> {
   const { setState: set } = useAppStore;
   set({ selectedId: id, details: { nodeId: id, data: null, events: [], loading: true, editor: viewEditor() } });
