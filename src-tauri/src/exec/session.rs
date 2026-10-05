@@ -77,6 +77,7 @@ impl ExecSessions {
     /// Start a session for an already-validated request (see `targets::check_target`). Returns
     /// at once; connect failures arrive as `error` messages.
     pub fn start(&mut self, namespace: String, req: ExecRequest, sink: Arc<dyn ExecSink>) -> u32 {
+        self.live.retain(|_, l| !l.task.0.is_finished());
         let id = self.next_id;
         self.next_id = self.next_id.wrapping_add(1).max(1);
         let sink = Arc::new(ClosableExecSink::new(sink));
@@ -91,6 +92,12 @@ impl ExecSessions {
             },
         );
         id
+    }
+
+    /// Whether the session is known and its task still runs (a session whose sink failed has
+    /// ended on its own and is pruned on the next `start`).
+    pub fn is_active(&self, id: u32) -> bool {
+        self.live.get(&id).is_some_and(|l| !l.task.0.is_finished())
     }
 
     /// Queue keystrokes (also while still connecting). Unknown ids are a no-op.
@@ -143,12 +150,16 @@ async fn session_task(
     let opening = connector.open(&namespace, &req.pod, &req.container, req.cols, req.rows);
     let process = match tokio::time::timeout(CONNECT_TIMEOUT, opening).await {
         Ok(Ok(process)) => process,
-        Ok(Err(message)) => return sink.send(ExecMessage::Error { session_id: id, message }),
+        Ok(Err(message)) => {
+            sink.send(ExecMessage::Error { session_id: id, message });
+            return;
+        }
         Err(_) => {
-            return sink.send(ExecMessage::Error {
+            sink.send(ExecMessage::Error {
                 session_id: id,
                 message: TIMED_OUT.into(),
-            })
+            });
+            return;
         }
     };
     pump(id, process, sink, input).await;
@@ -160,7 +171,12 @@ async fn pump(id: u32, mut p: Process, sink: Arc<ClosableExecSink>, mut input: m
         tokio::select! {
             read = p.stdout.read(&mut buf) => match read {
                 Ok(0) | Err(_) => break,
-                Ok(n) => sink.send(ExecMessage::Output { session_id: id, data: encode_output(&buf[..n]) }),
+                Ok(n) => {
+                    if !sink.send(ExecMessage::Output { session_id: id, data: encode_output(&buf[..n]) }) {
+                        // The frontend is gone: drop the process so the remote shell gets a hangup.
+                        return;
+                    }
+                }
             },
             msg = input.recv() => match msg {
                 Some(Input::Data(bytes)) => {
@@ -418,5 +434,66 @@ mod tests {
             a.dropped.load(Ordering::SeqCst) && b.dropped.load(Ordering::SeqCst),
             "sessions survived stop_all"
         );
+    }
+
+    /// Delivers the first `left` messages (mirrored to `seen`), then refuses like a gone webview.
+    struct FailsAfter {
+        left: std::sync::atomic::AtomicUsize,
+        seen: mpsc::UnboundedSender<ExecMessage>,
+    }
+
+    impl ExecSink for FailsAfter {
+        fn send(&self, msg: ExecMessage) -> bool {
+            let ok = self
+                .left
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+                .is_ok();
+            if ok {
+                let _ = self.seen.send(msg);
+            }
+            ok
+        }
+    }
+
+    #[tokio::test]
+    async fn a_failing_sink_ends_the_session_and_drops_the_process() {
+        let (ends_tx, mut ends_rx) = mpsc::unbounded_channel();
+        let mut sessions = ExecSessions::new(Arc::new(Fake {
+            behaviour: Behaviour::Open,
+            ends: ends_tx,
+        }));
+        let (seen_tx, mut seen_rx) = mpsc::unbounded_channel();
+        let sink = Arc::new(FailsAfter {
+            left: std::sync::atomic::AtomicUsize::new(1),
+            seen: seen_tx,
+        });
+        let req = ExecRequest {
+            node_id: "Pod/shop/solo".into(),
+            pod: "solo".into(),
+            container: "main".into(),
+            cols: 80,
+            rows: 24,
+        };
+        let id = sessions.start("shop".into(), req, sink);
+        let mut ends = next(&mut ends_rx).await;
+        ends.stdout.write_all(b"one").await.unwrap();
+        assert!(matches!(next(&mut seen_rx).await, ExecMessage::Output { .. })); // delivered
+        ends.stdout.write_all(b"two").await.unwrap(); // refused: the frontend is gone
+                                                      // The process is dropped, so its stdin sees EOF.
+        let mut rest = Vec::new();
+        tokio::time::timeout(Duration::from_secs(5), ends.stdin.read_to_end(&mut rest))
+            .await
+            .expect("in time")
+            .unwrap();
+        assert!(ends.dropped.load(Ordering::SeqCst));
+        assert!(seen_rx.try_recv().is_err(), "no Ended after a failed send");
+        // The task finishes right after dropping the process.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while sessions.is_active(id) {
+            assert!(tokio::time::Instant::now() < deadline, "the session never ended");
+            tokio::task::yield_now().await;
+        }
+        sessions.stop(id).await; // still safe
+        assert!(!sessions.is_active(id));
     }
 }

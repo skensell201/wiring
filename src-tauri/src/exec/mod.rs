@@ -49,20 +49,25 @@ pub enum ExecMessage {
 
 /// Where a session's messages go: the Tauri channel in the app, an mpsc sender in tests.
 pub trait ExecSink: Send + Sync + 'static {
-    fn send(&self, msg: ExecMessage);
+    /// False once the receiver is gone (closed sink, dropped channel); the session then ends.
+    fn send(&self, msg: ExecMessage) -> bool;
 }
 
 impl ExecSink for tauri::ipc::Channel<ExecMessage> {
-    fn send(&self, msg: ExecMessage) {
-        if let Err(e) = tauri::ipc::Channel::send(self, msg) {
-            tracing::debug!(error = %e, "exec channel closed");
+    fn send(&self, msg: ExecMessage) -> bool {
+        match tauri::ipc::Channel::send(self, msg) {
+            Ok(()) => true,
+            Err(e) => {
+                tracing::debug!(error = %e, "exec channel closed");
+                false
+            }
         }
     }
 }
 
 impl ExecSink for tokio::sync::mpsc::UnboundedSender<ExecMessage> {
-    fn send(&self, msg: ExecMessage) {
-        let _ = tokio::sync::mpsc::UnboundedSender::send(self, msg);
+    fn send(&self, msg: ExecMessage) -> bool {
+        tokio::sync::mpsc::UnboundedSender::send(self, msg).is_ok()
     }
 }
 
@@ -87,10 +92,8 @@ impl ClosableExecSink {
 }
 
 impl ExecSink for ClosableExecSink {
-    fn send(&self, msg: ExecMessage) {
-        if !self.closed.load(Ordering::SeqCst) {
-            self.inner.send(msg);
-        }
+    fn send(&self, msg: ExecMessage) -> bool {
+        !self.closed.load(Ordering::SeqCst) && self.inner.send(msg)
     }
 }
 
