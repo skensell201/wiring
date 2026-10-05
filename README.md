@@ -163,6 +163,7 @@ docs/                    design specs, plans, IPC contract
 | [YAML editing design](docs/superpowers/specs/2026-09-18-yaml-editing-design.md) | Edit, diff, apply, conflicts, Create and Delete |
 | [Pod logs design](docs/superpowers/specs/2026-09-21-pod-logs-design.md) | Log sessions, merging, previous runs and the log view |
 | [Code signing](docs/code-signing.md) | Signing and notarizing the macOS and Windows installers in CI |
+| [Automatic updates](docs/updates.md) | The updater key and secrets, the update feed, checking a release |
 
 These are the implementation plans behind each feature:
 - [backend](docs/superpowers/plans/2026-09-17-wiring-backend.md)
@@ -183,6 +184,8 @@ git push origin v0.2.0
 The [release workflow](.github/workflows/release.yml) builds a universal macOS `.dmg` and the Windows `.msi` and `.exe` installers, then attaches them to a **draft** GitHub release. Review the draft and publish it. Bump the version in `package.json`, `src-tauri/tauri.conf.json` and `src-tauri/Cargo.toml` before tagging.
 
 The workflow signs and notarizes the macOS app and signs the Windows installers once the signing secrets are configured. Until then it builds unsigned. [Code signing](docs/code-signing.md) explains what to buy and which secrets to set. It also shows how to check a setup with a manual run (`gh workflow run release.yml`), which builds the installers as workflow artifacts without creating a release.
+
+Installed copies update themselves from the latest published release; updates are signed with a separate updater key. [Automatic updates](docs/updates.md) explains the key, the secrets and how to check a release.
 
 ## License
 

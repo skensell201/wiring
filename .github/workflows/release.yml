@@ -94,16 +94,33 @@ jobs:
           { echo "AZURE_CLIENT_ID=$AZURE_CLIENT_ID"; echo "AZURE_CLIENT_SECRET=$AZURE_CLIENT_SECRET"; echo "AZURE_TENANT_ID=$AZURE_TENANT_ID"; } >> "$GITHUB_ENV"
           echo "::notice title=Windows::signed with Azure Artifact Signing ($SIGNING_ACCOUNT/$SIGNING_PROFILE)"
 
+      # Updates are signed with Wiring's updater key (not the Apple/Windows certificates). With the
+      # key present the bundle also gets `.sig` files and tauri-action uploads `latest.json`.
+      # The config is a file so the path passes through `args` with no quoting on either runner.
+      - name: Updater artifacts
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            echo "::warning title=Updater::TAURI_SIGNING_PRIVATE_KEY is not set; building without update packages"
+            exit 0
+          fi
+          echo '{ "bundle": { "createUpdaterArtifacts": true } }' > src-tauri/tauri.updater.conf.json
+          echo "UPDATER_ARGS=--config src-tauri/tauri.updater.conf.json" >> "$GITHUB_ENV"
+
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           # Without a tag (a manual run) tauri-action only builds; nothing is released.
           tagName: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
           releaseName: "Wiring ${{ github.ref_name }}"
           releaseBody: "Installers for macOS (universal .dmg) and Windows (.msi, -setup.exe). Install notes: https://github.com/${{ github.repository }}#install"
           releaseDraft: true
-          args: ${{ matrix.args }}
+          args: ${{ matrix.args }} ${{ env.UPDATER_ARGS }}
 
       - name: Upload the installers of a manual run
         if: github.event_name == 'workflow_dispatch'
@@ -114,4 +131,8 @@ jobs:
             src-tauri/target/*/release/bundle/dmg/*.dmg
             src-tauri/target/release/bundle/msi/*.msi
             src-tauri/target/release/bundle/nsis/*.exe
+            src-tauri/target/*/release/bundle/macos/*.app.tar.gz*
+            src-tauri/target/release/bundle/msi/*.sig
+            src-tauri/target/release/bundle/nsis/*.sig
+            src-tauri/target/*/release/bundle/latest.json
           if-no-files-found: error
