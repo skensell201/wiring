@@ -8,13 +8,15 @@ export interface ConfirmDialogProps {
   confirmLabel: string;
   /** A destructive action: the confirm button is red. */
   danger?: boolean;
+  /** Disables the confirm button while the action runs. */
+  busy?: boolean;
   onConfirm: () => void;
   onCancel: () => void;
 }
 
 /** A modal yes/no question. Cancel holds the focus on open so Enter never confirms by accident.
  *  Escape cancels from the global key handler (`useGlobalKeys`), which knows which dialog is on top. */
-export function ConfirmDialog({ open, title, body, confirmLabel, danger = false, onConfirm, onCancel }: ConfirmDialogProps) {
+export function ConfirmDialog({ open, title, body, confirmLabel, danger = false, busy = false, onConfirm, onCancel }: ConfirmDialogProps) {
   const titleId = useId();
   const cancelRef = useRef<HTMLButtonElement>(null);
 
@@ -30,7 +32,7 @@ export function ConfirmDialog({ open, title, body, confirmLabel, danger = false,
         <p className="mb-6 text-sm text-text-dim">{body}</p>
         <div className="flex justify-end gap-2">
           <Button ref={cancelRef} onClick={onCancel}>Cancel</Button>
-          <Button variant={danger ? "danger" : "primary"} onClick={onConfirm}>{confirmLabel}</Button>
+          <Button variant={danger ? "danger" : "primary"} disabled={busy} onClick={onConfirm}>{confirmLabel}</Button>
         </div>
       </div>
     </div>
