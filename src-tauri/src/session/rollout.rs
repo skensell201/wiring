@@ -237,6 +237,15 @@ pub fn selector_string(selector: &LabelSelector) -> String {
         .unwrap_or_default()
 }
 
+/// The details after a successful write: the store's view when it could be read, else the
+/// server's answer itself. A write that went through must never be reported as an error.
+pub fn details_or_saved(read: AppResult<ObjectDetails>, saved: &Object) -> AppResult<ObjectDetails> {
+    match read {
+        Ok(d) => Ok(d),
+        Err(_) => super::saved_details(saved),
+    }
+}
+
 impl Session {
     /// The watched object `node_id` names, cloned so no lock is held across awaits.
     fn cached(&self, kind: Kind, namespace: Option<&str>, name: &str, node_id: &str) -> AppResult<Object> {
@@ -252,11 +261,13 @@ impl Session {
     async fn save_patched(&self, node_id: &str, saved: DynamicObject) -> AppResult<ObjectDetails> {
         let value = serde_json::to_value(saved).map_err(|e| AppError::internal(e.to_string()))?;
         let obj = Object::from_json_value(value).map_err(AppError::internal)?;
+        let fallback = obj.clone();
         let stored = store_saved(&mut self.shared.store(), obj);
         if stored {
-            self.request_rebuild().await?;
+            // The write already happened: a failed rebuild only delays the badges until the watch echo.
+            let _ = self.request_rebuild().await;
         }
-        self.get_object(node_id)
+        details_or_saved(self.get_object(node_id), &fallback)
     }
 
     /// `kubectl scale`: a merge patch on the `/scale` subresource, then the object itself.
@@ -349,6 +360,17 @@ impl Session {
 mod tests {
     use super::*;
     use crate::store::Store;
+
+    #[test]
+    fn a_failed_read_after_a_successful_write_falls_back_to_the_saved_object() {
+        let store = Store::from_fixture("deployment-basic").unwrap();
+        let saved = store.find(Kind::Deployment, Some("payments"), "web").unwrap().clone();
+        let read = Err(AppError::new(ErrorKind::NotFound, "Deployment/payments/web not in store"));
+        let d = details_or_saved(read, &saved).unwrap();
+        assert!(d.yaml.starts_with("apiVersion: apps/v1\nkind: Deployment\n"), "{}", d.yaml);
+        assert!(d.summary.iter().any(|(k, _)| k == "Replicas"));
+        assert!(d.related.is_empty());
+    }
 
     #[test]
     fn scale_accepts_deployments_and_statefulsets_within_range() {

@@ -246,9 +246,17 @@ describe("DetailsPanel maximise", () => {
   });
 
   it("the Actions button opens the menu for the selection", () => {
+    const dep = { ...node, id: "Deployment/p/web", kind: "Deployment" as const, name: "web" };
+    useAppStore.setState((s) => ({ nodes: new Map([...s.nodes, [dep.id, dep]]), selectedId: dep.id, details: { ...s.details!, nodeId: dep.id } }));
     render(<DetailsPanel />);
     fireEvent.click(screen.getByRole("button", { name: "Actions" }));
-    expect(useAppStore.getState().actionsMenu).toMatchObject({ nodeId: "Pod/p/web-1" });
+    expect(useAppStore.getState().actionsMenu).toMatchObject({ nodeId: "Deployment/p/web" });
+  });
+
+  it("has no Actions button when delete is the only action (the trash button covers it)", () => {
+    render(<DetailsPanel />); // a Pod
+    expect(screen.queryByRole("button", { name: "Actions" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Delete" })).toBeInTheDocument();
   });
 
   it("offers a History tab for rollout kinds only, and opens it on request", () => {

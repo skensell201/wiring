@@ -407,12 +407,22 @@ pub fn object_details(store: &Store, graph: &Graph, node_id: &str) -> AppResult<
     let obj = store
         .find(kind, ns.as_deref(), &name)
         .ok_or_else(|| AppError::new(ErrorKind::NotFound, format!("{node_id} not in store")))?;
+    details_of(obj, related)
+}
+
+/// The details of one object: its YAML and summary rows, with the given related nodes.
+fn details_of(obj: &crate::store::Object, related: Vec<NodeId>) -> AppResult<ObjectDetails> {
     let yaml = serde_yaml_ng::to_string(&obj.to_json_value()).map_err(|e| AppError::internal(e.to_string()))?;
     Ok(ObjectDetails {
         yaml,
         summary: summary(obj),
         related,
     })
+}
+
+/// Details built from an object the server just returned, when the store cannot supply them.
+pub(super) fn saved_details(obj: &crate::store::Object) -> AppResult<ObjectDetails> {
+    details_of(obj, Vec::new())
 }
 
 pub fn events_to_list(events: &BTreeMap<String, CoreEvent>) -> Vec<K8sEvent> {

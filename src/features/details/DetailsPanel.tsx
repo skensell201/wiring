@@ -5,7 +5,7 @@ import { useAppStore, type DetailsTab } from "../../app/store";
 import { KINDS, type GraphNode, type Kind, type NodeId } from "../../shared/ipc/types";
 import { settings } from "../../shared/settings";
 import { ConfirmDialog } from "../../shared/ui/ConfirmDialog";
-import { ROLLOUT_KINDS } from "../actions/actionKinds";
+import { actionsFor, kindOf, ROLLOUT_KINDS } from "../actions/actionKinds";
 import { KIND_META } from "../graph/kindMeta";
 import { LogsTab } from "../logs/LogsTab";
 import { EventsTab } from "./EventsTab";
@@ -141,7 +141,7 @@ export function DetailsPanel() {
             {heading.kind && <span className="text-xs text-text-muted">{KIND_META[heading.kind].label}{heading.namespace ? ` · ${heading.namespace}` : ""}</span>}
           </div>
         )}
-        {selectedId && (
+        {selectedId && actionsFor(kindOf(selectedId)).some((a) => a !== "delete") && (
           <button type="button" aria-label="Actions" aria-haspopup="menu" aria-expanded={menuOpen}
             onClick={(e) => { const r = e.currentTarget.getBoundingClientRect(); openActionsMenu(selectedId, r.left, r.bottom + 4, r.top - 4); }}
             className="flex h-8 items-center gap-1 rounded-lg px-2 text-sm text-text-muted hover:bg-surface hover:text-text-hi">

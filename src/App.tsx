@@ -53,7 +53,7 @@ export function App() {
       <ErrorBoundary name="cluster picker"><ContextPicker /></ErrorBoundary>
       <ErrorBoundary name="create dialog"><CreateDialog /></ErrorBoundary>
       <ErrorBoundary name="action dialogs"><ActionDialogs /></ErrorBoundary>
-      <ActionsMenu />
+      <ErrorBoundary name="actions menu"><ActionsMenu /></ErrorBoundary>
       <Toasts />
     </div>
   );

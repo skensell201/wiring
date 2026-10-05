@@ -13,7 +13,7 @@ vi.mock("../shared/settings", () => ({
 }));
 
 import { invoke } from "../shared/ipc/tauri";
-import { initialState, useAppStore, viewEditor } from "./store";
+import { applyDelta, initialState, useAppStore, viewEditor } from "./store";
 
 const WEB = "Deployment/p/web";
 const fresh = { yaml: "kind: Deployment\nspec:\n  replicas: 5\n", summary: [["Name", "web"]] as [string, string][], related: [] };
@@ -140,5 +140,34 @@ describe("stale menu and dialog", () => {
     useAppStore.setState({ graphReady: true, selectedId: WEB, actionDialog: other });
     useAppStore.getState().applyDelta({ addedNodes: [], updatedNodes: [], removedNodes: [WEB], addedEdges: [], removedEdges: [] });
     expect(useAppStore.getState().actionDialog).toBe(other);
+  });
+});
+
+describe("stale requests and dialogs", () => {
+  const removeWeb = { addedNodes: [], updatedNodes: [], removedNodes: [WEB], addedEdges: [], removedEdges: [] };
+  const withWeb = (mode: "view" | "edit") => {
+    selectWeb(mode);
+    useAppStore.setState({ graphReady: true, requestedTab: "history", actionDialog: { type: "restart", nodeId: WEB }, actionsMenu: { nodeId: WEB, x: 0, y: 0 } });
+  };
+
+  it("a dropped selection takes a pending tab request with it", () => {
+    withWeb("view");
+    const s = applyDelta(useAppStore.getState(), removeWeb);
+    expect(s.selectedId).toBeNull();
+    expect(s.requestedTab).toBeNull();
+  });
+
+  it("an object deleted under an open editor closes its action dialog and menu", () => {
+    withWeb("edit");
+    const s = applyDelta(useAppStore.getState(), removeWeb);
+    expect(s.selectedId).toBe(WEB);
+    expect(s.actionDialog).toBeNull();
+    expect(s.actionsMenu).toBeNull();
+  });
+
+  it("switching namespace clears a pending tab request", async () => {
+    useAppStore.setState({ requestedTab: "history", connection: { ...useAppStore.getState().connection, context: null } });
+    await useAppStore.getState().selectNamespace("other");
+    expect(useAppStore.getState().requestedTab).toBeNull();
   });
 });

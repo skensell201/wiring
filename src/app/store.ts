@@ -317,16 +317,16 @@ export function applyDelta<S extends GraphState>(s: S, d: GraphDelta): S {
  *  editor the edits are worth more than the stale selection, so it stays and the tab tells. */
 function dropSelection<S extends GraphState>(s: S, dropped: boolean): S {
   if (!dropped) return s;
-  if (s.details && s.details.editor.mode !== "view") {
-    const error: AppError = { kind: "notFound", message: "This object was deleted on the server." };
-    return { ...s, details: { ...s.details, editor: { ...s.details.editor, error } } };
-  }
   const gone = s.selectedId;
-  return {
-    ...s, selectedId: null, details: null, detailsMaximized: false,
+  const closed = {
     ...(s.actionsMenu?.nodeId === gone ? { actionsMenu: null } : {}),
     ...(s.actionDialog?.nodeId === gone ? { actionDialog: null } : {}),
   };
+  if (s.details && s.details.editor.mode !== "view") {
+    const error: AppError = { kind: "notFound", message: "This object was deleted on the server." };
+    return { ...s, ...closed, details: { ...s.details, editor: { ...s.details.editor, error } } };
+  }
+  return { ...s, ...closed, selectedId: null, details: null, detailsMaximized: false, requestedTab: null };
 }
 
 // ---- store ----------------------------------------------------------------
@@ -426,7 +426,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
       nodes: new Map(), edges: new Map(), graphReady: false, selectedId: null, details: null, hoveredId: null,
       deniedKinds: new Set(), tables: new Map(), focusRequest: null, connection: { ...s.connection, namespace },
       deleteDialog: initialState().deleteDialog, discardDialog: initialState().discardDialog, detailsMaximized: false,
-      actionsMenu: null, actionDialog: null,
+      actionsMenu: null, actionDialog: null, requestedTab: null,
     }));
     try {
       await commands.selectNamespace(namespace, expanded);
