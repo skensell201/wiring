@@ -88,6 +88,8 @@ export interface GraphState {
   details: Details | null;
   /** The details panel fills the window (the centre pane hidden); reset whenever the selection clears. */
   detailsMaximized: boolean;
+  actionsMenu?: ActionsMenu | null;
+  actionDialog?: ActionDialog | null;
 }
 
 export interface AppState extends GraphState {
@@ -318,7 +320,12 @@ function dropSelection<S extends GraphState>(s: S, dropped: boolean): S {
     const error: AppError = { kind: "notFound", message: "This object was deleted on the server." };
     return { ...s, details: { ...s.details, editor: { ...s.details.editor, error } } };
   }
-  return { ...s, selectedId: null, details: null, detailsMaximized: false };
+  const gone = s.selectedId;
+  return {
+    ...s, selectedId: null, details: null, detailsMaximized: false,
+    ...(s.actionsMenu?.nodeId === gone ? { actionsMenu: null } : {}),
+    ...(s.actionDialog?.nodeId === gone ? { actionDialog: null } : {}),
+  };
 }
 
 // ---- store ----------------------------------------------------------------
@@ -418,6 +425,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
       nodes: new Map(), edges: new Map(), graphReady: false, selectedId: null, details: null, hoveredId: null,
       deniedKinds: new Set(), tables: new Map(), focusRequest: null, connection: { ...s.connection, namespace },
       deleteDialog: initialState().deleteDialog, discardDialog: initialState().discardDialog, detailsMaximized: false,
+      actionsMenu: null, actionDialog: null,
     }));
     try {
       await commands.selectNamespace(namespace, expanded);
@@ -758,28 +766,29 @@ export const useAppStore = create<AppState>()((set, get) => ({
   consumeRequestedTab: () => set({ requestedTab: null }),
 }));
 
-/** Select `id` and fetch its details + events. Returns the fetch error (not toasted) or null;
- *  a stale result — the selection moved on meanwhile — is dropped either way. */
 /** A scale/restart/rollback write. The open details take the returned object unless an edit is in
- *  progress there (its own conflict handling covers that); the dialog closes and a toast reports
- *  the outcome either way. */
+ *  progress there (its own conflict handling covers that); the dialog closes on success (unless a newer
+ *  one replaced it meanwhile); on failure it stays open for a retry. A toast reports the outcome. */
 async function runAction(nodeId: NodeId, call: () => Promise<ObjectDetails>, done: string): Promise<void> {
   if (useAppStore.getState().actionBusy) return;
+  const dialog = useAppStore.getState().actionDialog;
   useAppStore.setState({ actionBusy: true });
   try {
     const data = await call();
     useAppStore.setState((s) => ({
       actionBusy: false,
-      actionDialog: null,
+      ...(s.actionDialog === dialog ? { actionDialog: null } : {}),
       ...(s.details?.nodeId === nodeId && s.details.editor.mode === "view" ? { details: { ...s.details, data, editor: viewEditor(data.yaml) } } : {}),
     }));
     useAppStore.getState().toast({ kind: "info", message: done });
   } catch (e) {
-    useAppStore.setState({ actionBusy: false, actionDialog: null });
+    useAppStore.setState({ actionBusy: false });
     useAppStore.getState().toast(toAppError(e));
   }
 }
 
+/** Select `id` and fetch its details + events. Returns the fetch error (not toasted) or null;
+ *  a stale result — the selection moved on meanwhile — is dropped either way. */
 async function loadDetails(id: NodeId): Promise<AppError | null> {
   const { setState: set } = useAppStore;
   set({ selectedId: id, details: { nodeId: id, data: null, events: [], loading: true, editor: viewEditor() } });

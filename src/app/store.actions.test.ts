@@ -82,17 +82,63 @@ describe("rollout actions", () => {
     expect(useAppStore.getState().toasts.at(-1)).toMatchObject({ kind: "info", message: "Rolled Deployment web back to revision 3" });
   });
 
-  it("a failure is toasted and closes the dialog", async () => {
+  it("a failure is toasted and keeps the dialog open for a retry", async () => {
     useAppStore.getState().openActionDialog({ type: "restart", nodeId: WEB });
     vi.mocked(invoke).mockRejectedValueOnce({ kind: "invalid", message: "deployment is paused; resume it first" });
     await useAppStore.getState().restartObject(WEB);
-    expect(useAppStore.getState().actionDialog).toBeNull();
+    expect(useAppStore.getState().actionDialog).toEqual({ type: "restart", nodeId: WEB });
+    expect(useAppStore.getState().actionBusy).toBe(false);
     expect(useAppStore.getState().toasts.at(-1)).toMatchObject({ kind: "invalid", message: "deployment is paused; resume it first" });
   });
 
+  it("does not close a dialog that belongs to a newer session", async () => {
+    useAppStore.getState().openActionDialog({ type: "scale", nodeId: WEB });
+    let resolve!: (v: typeof fresh) => void;
+    vi.mocked(invoke).mockReturnValueOnce(new Promise((r) => { resolve = r as typeof resolve; }));
+    const p = useAppStore.getState().scaleObject(WEB, 5);
+    useAppStore.setState(initialState());
+    const next = { type: "scale", nodeId: "Deployment/q/api" } as const;
+    useAppStore.getState().openActionDialog(next);
+    resolve(fresh);
+    await p;
+    expect(useAppStore.getState().actionDialog).toBe(next);
+  });
+
+  it("skips the refresh when the selection moved to another node meanwhile", async () => {
+    selectWeb();
+    let resolve!: (v: typeof fresh) => void;
+    vi.mocked(invoke).mockReturnValueOnce(new Promise((r) => { resolve = r as typeof resolve; }));
+    const p = useAppStore.getState().scaleObject(WEB, 5);
+    const other = { nodeId: "Deployment/p/api", data: { yaml: "api", summary: [], related: [] }, events: [], loading: false, editor: viewEditor("api") };
+    useAppStore.setState({ selectedId: other.nodeId, details: other });
+    resolve(fresh);
+    await p;
+    expect(useAppStore.getState().details).toBe(other);
+  });
   it("ignores a second action while one is in flight", async () => {
     useAppStore.setState({ actionBusy: true });
     await useAppStore.getState().scaleObject(WEB, 2);
     expect(invoke).not.toHaveBeenCalled();
+  });
+});
+
+describe("stale menu and dialog", () => {
+  it("selectNamespace closes the menu and the dialog", async () => {
+    useAppStore.setState({ actionsMenu: { nodeId: WEB, x: 0, y: 0 }, actionDialog: { type: "restart", nodeId: WEB } });
+    await useAppStore.getState().selectNamespace("other");
+    expect(useAppStore.getState().actionsMenu).toBeNull();
+    expect(useAppStore.getState().actionDialog).toBeNull();
+  });
+
+  it("a delta removing the object closes its menu and dialog, but not another object's", () => {
+    useAppStore.setState({ graphReady: true, selectedId: WEB, actionsMenu: { nodeId: WEB, x: 0, y: 0 }, actionDialog: { type: "restart", nodeId: WEB } });
+    useAppStore.getState().applyDelta({ addedNodes: [], updatedNodes: [], removedNodes: [WEB], addedEdges: [], removedEdges: [] });
+    expect(useAppStore.getState().actionsMenu).toBeNull();
+    expect(useAppStore.getState().actionDialog).toBeNull();
+
+    const other = { type: "restart", nodeId: "Deployment/p/api" } as const;
+    useAppStore.setState({ graphReady: true, selectedId: WEB, actionDialog: other });
+    useAppStore.getState().applyDelta({ addedNodes: [], updatedNodes: [], removedNodes: [WEB], addedEdges: [], removedEdges: [] });
+    expect(useAppStore.getState().actionDialog).toBe(other);
   });
 });

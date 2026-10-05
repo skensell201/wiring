@@ -209,4 +209,14 @@ describe("editing keys", () => {
     expect(useAppStore.getState().actionDialog).toBeNull();
     expect(select).not.toHaveBeenCalled();
   });
+
+  it("Escape does not close the action dialog while the action is in flight", () => {
+    useAppStore.setState({
+      connection: { ...initialState().connection, context: "prod", state: "connected" },
+      actionDialog: { type: "restart", nodeId: "Deployment/p/web" }, actionBusy: true,
+    });
+    render(<App />);
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(useAppStore.getState().actionDialog).not.toBeNull();
+  });
 });
