@@ -5,7 +5,7 @@ import { logBuffer } from "../features/logs/logBuffer";
 import { applyLogMessage, initialLogs, type LogsState } from "../features/logs/logsState";
 import { commands } from "../shared/ipc/commands";
 import type {
-  AppError, ConnectionState, ContextInfo, Graph, GraphDelta, GraphEdge, GraphNode, K8sEvent, Kind, LogMessage, NodeId, ObjectDetails,
+  AppError, ConnectionState, ContextInfo, Graph, GraphDelta, GraphEdge, Forward, GraphNode, K8sEvent, Kind, LogMessage, NodeId, ObjectDetails,
   Status, Table,
 } from "../shared/ipc/types";
 import { toAppError } from "../shared/ipc/types";
@@ -35,6 +35,16 @@ export interface DeleteDialog { open: boolean; nodeId: NodeId | null }
 /** "Discard your edits?" — opened by Cancel on a dirty buffer, or by a selection or namespace change
  *  while dirty (which then waits in `pendingSelect` / `pendingDeselect` / `pendingNamespace` until confirmed). */
 export interface DiscardDialog { open: boolean; pendingSelect: NodeId | null; pendingDeselect: boolean; pendingNamespace: string | null }
+
+/** The Actions menu, open for `nodeId` at viewport position (x, y). */
+/** `flipY`: where the menu's bottom edge goes if it would overflow the viewport (the anchor's top). */
+export interface ActionsMenu { nodeId: NodeId; x: number; y: number; flipY?: number }
+export type ActionDialog =
+  | { type: "scale"; nodeId: NodeId }
+  | { type: "restart"; nodeId: NodeId }
+  | { type: "rollback"; nodeId: NodeId; revision: number }
+  | { type: "forward"; nodeId: NodeId };
+export type DetailsTab = "overview" | "yaml" | "events" | "logs" | "history";
 
 export function viewEditor(original = ""): EditorState {
   return { mode: "view", buffer: "", original, error: null, saving: false };
@@ -80,6 +90,8 @@ export interface GraphState {
   details: Details | null;
   /** The details panel fills the window (the centre pane hidden); reset whenever the selection clears. */
   detailsMaximized: boolean;
+  actionsMenu?: ActionsMenu | null;
+  actionDialog?: ActionDialog | null;
 }
 
 export interface AppState extends GraphState {
@@ -103,6 +115,16 @@ export interface AppState extends GraphState {
   discardDialog: DiscardDialog;
   /** The Logs tab's session metadata; the lines themselves live in `logBuffer`. */
   logs: LogsState;
+  actionsMenu: ActionsMenu | null;
+  actionDialog: ActionDialog | null;
+  /** A scale/restart/rollback request is in flight; a second one is ignored. */
+  actionBusy: boolean;
+  /** A tab the details panel should switch to once it shows the selection (e.g. Rollback… → History). */
+  requestedTab: DetailsTab | null;
+  /** Running port-forwards, replaced by every `forwards_changed`. */
+  forwards: Forward[];
+  /** The header's port-forward popover. */
+  forwardsOpen: boolean;
 
   // graph events
   applySnapshot: (g: Graph) => void;
@@ -163,7 +185,27 @@ export interface AppState extends GraphState {
   setLogsContainer: (container: string | null) => Promise<void>;
   toggleLogsPrevious: () => Promise<void>;
   toggleLogsTimestamps: () => Promise<void>;
+
+  // workload actions
+  /** Select `nodeId` and open the Actions menu for it at (x, y), unless a dirty editor asks first. */
+  openActionsMenu: (nodeId: NodeId, x: number, y: number, flipY?: number) => void;
+  closeActionsMenu: () => void;
+  openActionDialog: (dialog: ActionDialog) => void;
+  closeActionDialog: () => void;
+  scaleObject: (nodeId: NodeId, replicas: number) => Promise<void>;
+  restartObject: (nodeId: NodeId) => Promise<void>;
+  rollbackObject: (nodeId: NodeId, revision: number) => Promise<void>;
+  requestTab: (tab: DetailsTab) => void;
+  consumeRequestedTab: () => void;
   toggleDetailsMaximized: () => void;
+
+  // port-forwards
+  setForwards: (forwards: Forward[]) => void;
+  setForwardsOpen: (open: boolean) => void;
+  /** Start a forward; resolves to the error (shown in the dialog, not toasted) or null. */
+  startForward: (nodeId: NodeId, remotePort: number, localPort: number) => Promise<AppError | null>;
+  stopForward: (id: number) => Promise<void>;
+  openForward: (id: number) => Promise<void>;
 }
 
 let toastSeq = 0;
@@ -197,6 +239,12 @@ export function initialState(): Omit<AppState, keyof Actions> {
     deleteDialog: { open: false, nodeId: null },
     discardDialog: { open: false, pendingSelect: null, pendingDeselect: false, pendingNamespace: null },
     logs: initialLogs(),
+    actionsMenu: null,
+    actionDialog: null,
+    actionBusy: false,
+    requestedTab: null,
+    forwards: [],
+    forwardsOpen: false,
     detailsMaximized: false,
   };
 }
@@ -225,7 +273,9 @@ type Actions = Pick<AppState,
   | "toggleSidebar" | "startEdit" | "setBuffer" | "reviewEdit" | "backToEdit" | "applyEdit" | "cancelEdit" | "reloadEdit"
   | "confirmDiscard" | "cancelDiscard" | "openCreate" | "setCreateKind" | "setCreateBuffer" | "submitCreate" | "closeCreate"
   | "requestDelete" | "confirmDelete" | "cancelDelete" | "startLogs" | "stopLogs" | "setLogsContainer" | "toggleLogsPrevious"
-  | "toggleLogsTimestamps" | "toggleDetailsMaximized">;
+  | "toggleLogsTimestamps" | "toggleDetailsMaximized" | "openActionsMenu" | "closeActionsMenu" | "openActionDialog"
+  | "closeActionDialog" | "scaleObject" | "restartObject" | "rollbackObject" | "requestTab" | "consumeRequestedTab"
+  | "setForwards" | "setForwardsOpen" | "startForward" | "stopForward" | "openForward">;
 
 // ---- selectors --------------------------------------------------------------
 
@@ -283,11 +333,16 @@ export function applyDelta<S extends GraphState>(s: S, d: GraphDelta): S {
  *  editor the edits are worth more than the stale selection, so it stays and the tab tells. */
 function dropSelection<S extends GraphState>(s: S, dropped: boolean): S {
   if (!dropped) return s;
+  const gone = s.selectedId;
+  const closed = {
+    ...(s.actionsMenu?.nodeId === gone ? { actionsMenu: null } : {}),
+    ...(s.actionDialog?.nodeId === gone ? { actionDialog: null } : {}),
+  };
   if (s.details && s.details.editor.mode !== "view") {
     const error: AppError = { kind: "notFound", message: "This object was deleted on the server." };
-    return { ...s, details: { ...s.details, editor: { ...s.details.editor, error } } };
+    return { ...s, ...closed, details: { ...s.details, editor: { ...s.details.editor, error } } };
   }
-  return { ...s, selectedId: null, details: null, detailsMaximized: false };
+  return { ...s, ...closed, selectedId: null, details: null, detailsMaximized: false, requestedTab: null };
 }
 
 // ---- store ----------------------------------------------------------------
@@ -295,16 +350,21 @@ function dropSelection<S extends GraphState>(s: S, dropped: boolean): S {
 export const useAppStore = create<AppState>()((set, get) => ({
   ...initialState(),
 
-  applySnapshot: (g) =>
+  applySnapshot: (g) => {
+    const before = get();
     set((s) => {
       // Belt and braces: a snapshot of the previous namespace can still be queued behind
       // select_namespace; the namespaced nodes tell which namespace it belongs to.
       const namespaced = g.nodes.find((n) => n.namespace !== null);
       if (namespaced && namespaced.namespace !== s.connection.namespace) return s;
       return applySnapshot(s, g);
-    }),
+    });
+    refreshDetailsIfTouched(before, get());
+  },
   applyDelta: (d) => {
+    const before = get();
     set((s) => applyDelta(s, d));
+    refreshDetailsIfTouched(before, get());
     // A selection made before its node existed (an object just created here): fetch it now.
     const { selectedId, details } = get();
     if (selectedId !== null && details && details.data === null && !details.loading && d.addedNodes.some((n) => n.id === selectedId)) {
@@ -367,6 +427,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
     } catch (e) {
       get().toast(toAppError(e));
     } finally {
+      cancelDetailsRefresh();
       set(disconnectedState(get()));
     }
   },
@@ -378,6 +439,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
       return;
     }
     cancelTableRefresh();
+    cancelDetailsRefresh();
     void get().stopLogs();
     const { expandedGroups, connection } = get();
     const expanded = [...expandedGroups];
@@ -387,6 +449,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
       nodes: new Map(), edges: new Map(), graphReady: false, selectedId: null, details: null, hoveredId: null,
       deniedKinds: new Set(), tables: new Map(), focusRequest: null, connection: { ...s.connection, namespace },
       deleteDialog: initialState().deleteDialog, discardDialog: initialState().discardDialog, detailsMaximized: false,
+      actionsMenu: null, actionDialog: null, requestedTab: null,
     }));
     try {
       await commands.selectNamespace(namespace, expanded);
@@ -410,6 +473,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
     // The switch is really happening: the logs of the node being left go with it.
     if (get().logs.nodeId !== null && get().logs.nodeId !== id) void get().stopLogs();
     if (id === null) {
+      cancelDetailsRefresh();
       set({ selectedId: null, details: null, detailsMaximized: false });
       await commands.watchEvents(null).catch(() => {});
       return;
@@ -456,10 +520,14 @@ export const useAppStore = create<AppState>()((set, get) => ({
 
   refreshTable: async (kind) => {
     const ns = get().connection.namespace;
+    const onTable = (v: View) => v.name === "table" && v.kind === kind;
+    const wasOnTable = onTable(get().view);
     try {
       const table = await commands.listRows(kind);
       // The namespace moved on while this fetch was in flight — its rows are stale.
       if (ns === null || get().connection.namespace !== ns) return;
+      // The user left this table while its refetch was in flight; showing it again refetches.
+      if (wasOnTable && !onTable(get().view)) return;
       set((s) => {
         const tables = new Map(s.tables);
         tables.set(kind, table);
@@ -709,7 +777,142 @@ export const useAppStore = create<AppState>()((set, get) => ({
   },
 
   toggleDetailsMaximized: () => set((s) => ({ detailsMaximized: !s.detailsMaximized })),
+  openActionsMenu: (nodeId, x, y, flipY) => {
+    void get().select(nodeId);
+    // `select` decides synchronously whether a dirty editor must be confirmed first; then no menu.
+    if (get().discardDialog.open) return;
+    set({ actionsMenu: flipY === undefined ? { nodeId, x, y } : { nodeId, x, y, flipY } });
+  },
+  closeActionsMenu: () => set({ actionsMenu: null }),
+  openActionDialog: (dialog) => set({ actionDialog: dialog }),
+  closeActionDialog: () => set({ actionDialog: null }),
+  setForwards: (forwards) => set((s) => ({ forwards, forwardsOpen: forwards.length > 0 && s.forwardsOpen })),
+  setForwardsOpen: (forwardsOpen) => set({ forwardsOpen }),
+  startForward: async (nodeId, remotePort, localPort) => {
+    try {
+      const f = await commands.startForward(nodeId, remotePort, localPort);
+      set((s) => ({
+        // `forwards_changed` may have listed it already (with a fresher status).
+        forwards: s.forwards.some((x) => x.id === f.id) ? s.forwards : [...s.forwards, f],
+        actionDialog: s.actionDialog?.type === "forward" && s.actionDialog.nodeId === nodeId ? null : s.actionDialog,
+      }));
+      get().toast({ kind: "info", message: `Forwarding 127.0.0.1:${f.localPort} → ${f.targetLabel}:${f.remotePort}` });
+      return null;
+    } catch (e) {
+      return toAppError(e);
+    }
+  },
+  stopForward: async (id) => {
+    try {
+      await commands.stopForward(id);
+      set((s) => {
+        const forwards = s.forwards.filter((f) => f.id !== id);
+        return { forwards, forwardsOpen: forwards.length > 0 && s.forwardsOpen };
+      });
+    } catch (e) {
+      get().toast(toAppError(e));
+    }
+  },
+  openForward: async (id) => {
+    try {
+      await commands.openForward(id);
+    } catch (e) {
+      get().toast(toAppError(e));
+    }
+  },
+  scaleObject: (nodeId, replicas) =>
+    runAction(nodeId, () => commands.scaleObject(nodeId, replicas), `Scaled ${describeNode(nodeId)} to ${replicas}`),
+  restartObject: (nodeId) => runAction(nodeId, () => commands.restartObject(nodeId), `Restarted ${describeNode(nodeId)}`),
+  rollbackObject: (nodeId, revision) =>
+    runAction(nodeId, () => commands.rollbackObject(nodeId, revision), `Rolled ${describeNode(nodeId)} back to revision ${revision}`),
+  requestTab: (tab) => set({ requestedTab: tab }),
+  consumeRequestedTab: () => set({ requestedTab: null }),
 }));
+
+/** A scale/restart/rollback write. The open details take the returned object unless an edit is in
+ *  progress there (its own conflict handling covers that); the dialog closes on success (unless a newer
+ *  one replaced it meanwhile); on failure it stays open for a retry. A toast reports the outcome. */
+async function runAction(nodeId: NodeId, call: () => Promise<ObjectDetails>, done: string): Promise<void> {
+  if (useAppStore.getState().actionBusy) return;
+  const dialog = useAppStore.getState().actionDialog;
+  useAppStore.setState({ actionBusy: true });
+  try {
+    const data = await call();
+    useAppStore.setState((s) => ({
+      actionBusy: false,
+      ...(s.actionDialog === dialog ? { actionDialog: null } : {}),
+      ...(s.details?.nodeId === nodeId && s.details.editor.mode === "view" ? { details: { ...s.details, data, editor: viewEditor(data.yaml) } } : {}),
+    }));
+    useAppStore.getState().toast({ kind: "info", message: done });
+  } catch (e) {
+    useAppStore.setState({ actionBusy: false });
+    useAppStore.getState().toast(toAppError(e));
+  }
+}
+
+const DETAILS_REFRESH_MS = 1000;
+let detailsRefreshAt = 0;
+let detailsRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+
+export function cancelDetailsRefresh(): void {
+  if (detailsRefreshTimer !== null) clearTimeout(detailsRefreshTimer);
+  detailsRefreshTimer = null;
+  detailsRefreshAt = 0;
+}
+
+/** Reload the open details soon (throttled like graph-driven reloads), e.g. after a metrics sample. */
+export function requestDetailsRefresh(): void {
+  scheduleDetailsRefresh();
+}
+
+/** The graph changed under the open details: the selected node was replaced, or an edge touching
+ *  it came or went (its Related list and summary derive from them). */
+function refreshDetailsIfTouched(before: GraphState, after: GraphState): void {
+  const id = after.selectedId;
+  if (id === null || !after.nodes.has(id) || before.nodes.get(id) === undefined) return;
+  const touching = (g: GraphState) => [...g.edges.values()].filter((e) => e.source === id || e.target === id).map((e) => e.id).sort().join("\n");
+  if (before.nodes.get(id) !== after.nodes.get(id) || touching(before) !== touching(after)) scheduleDetailsRefresh();
+}
+
+/** Reload the open details' object at most once a second (a leading reload, then one trailing).
+ *  View mode only, so an edit or review in progress is never clobbered; events stay with the
+ *  existing watch. */
+function scheduleDetailsRefresh(): void {
+  if (detailsRefreshTimer !== null) return;
+  const wait = detailsRefreshAt + DETAILS_REFRESH_MS - Date.now();
+  if (wait > 0) {
+    detailsRefreshTimer = setTimeout(() => { detailsRefreshTimer = null; void reloadDetails(); }, wait);
+  } else {
+    void reloadDetails();
+  }
+}
+
+function selectionInDetailsPanel(): boolean {
+  const sel = typeof window !== "undefined" ? window.getSelection() : null;
+  if (!sel || sel.toString() === "") return false;
+  const node = sel.anchorNode;
+  const el = node instanceof Element ? node : node?.parentElement;
+  return !!el?.closest("[data-details-panel]");
+}
+
+async function reloadDetails(): Promise<void> {
+  const { selectedId: id, details } = useAppStore.getState();
+  if (id === null || !details || details.nodeId !== id || !details.data || details.loading || details.editor.mode !== "view") return;
+  detailsRefreshAt = Date.now();
+  try {
+    const data = await commands.getObject(id);
+    useAppStore.setState((s) => {
+      if (s.selectedId !== id || s.details?.nodeId !== id || s.details.editor.mode !== "view") return {};
+      // Nothing new: leave the state alone so the YAML tab is not re-rendered every second.
+      if (s.details.data && JSON.stringify(s.details.data) === JSON.stringify(data)) return {};
+      // Do not swap the text out from under a selection being made in the panel; the next change retries.
+      if (selectionInDetailsPanel()) return {};
+      return { details: { ...s.details, data, editor: viewEditor(data.yaml) } };
+    });
+  } catch {
+    // The next change retries; a failed background refresh is not worth a toast.
+  }
+}
 
 /** Select `id` and fetch its details + events. Returns the fetch error (not toasted) or null;
  *  a stale result — the selection moved on meanwhile — is dropped either way. */

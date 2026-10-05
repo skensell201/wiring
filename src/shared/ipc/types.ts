@@ -25,6 +25,9 @@ export type NodeId = string;
 
 export interface GroupInfo { count: number; ok: number; warn: number; err: number }
 
+/** Why a node is yellow or red; `cause` names the neighbour to blame (see docs/ipc-contract.md#problems). */
+export interface Problem { reason: string; message: string | null; cause: NodeId | null }
+
 export interface GraphNode {
   id: NodeId;
   kind: Kind;
@@ -33,6 +36,8 @@ export interface GraphNode {
   status: Status;
   badges: string[];
   group: GroupInfo | null;
+  /** Present only on warn/err nodes. */
+  problem?: Problem;
 }
 
 export interface GraphEdge { id: string; source: NodeId; target: NodeId; relation: Relation }
@@ -72,17 +77,61 @@ export type LogMessage =
 
 export interface LogRequest { nodeId: NodeId; container: string | null; previous: boolean; timestamps: boolean }
 
+export interface Revision {
+  revision: number;
+  current: boolean;
+  createdAt: string | null;
+  changeCause: string | null;
+  images: string[];
+  /** The revision's pod template as YAML. */
+  template: string;
+}
+
+export const METRICS_STATES = ["pending", "available", "unavailable", "forbidden"] as const;
+export type MetricsState = (typeof METRICS_STATES)[number];
+/** Payload of `metrics_updated`: a new metrics-server sample (or the API's absence) for the namespace. */
+export interface MetricsUpdate { state: MetricsState }
+
+export const FORWARD_STATUSES = ["active", "noReadyPod", "podGone", "error"] as const;
+export type ForwardStatus = (typeof FORWARD_STATUSES)[number];
+
+/** A running port-forward (docs/ipc-contract.md#port-forward). */
+export interface Forward {
+  id: number;
+  nodeId: NodeId;
+  /** "Service web" */
+  targetLabel: string;
+  remotePort: number;
+  localPort: number;
+  /** The pod behind the latest connection. */
+  pod: string | null;
+  status: ForwardStatus;
+  message: string | null;
+}
+
+export interface PortOption { port: number; label: string }
+
+/** A newer published release (docs/ipc-contract.md#updates). */
+export interface UpdateInfo { version: string; date: string | null; notes: string | null }
+export interface UpdateCheck { current: string; update: UpdateInfo | null }
+export interface UpdateProgress { downloaded: number; total: number | null }
+
 // ---- guards ---------------------------------------------------------------
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null;
 const isStr = (v: unknown): v is string => typeof v === "string";
 const isStrOrNull = (v: unknown): v is string | null => v === null || isStr(v);
+const isNumOrNull = (v: unknown): v is number | null => v === null || typeof v === "number";
 const oneOf = <T extends readonly string[]>(list: T, v: unknown): v is T[number] => isStr(v) && (list as readonly string[]).includes(v);
 const arrayOf = <T>(v: unknown, g: (x: unknown) => x is T): v is T[] => Array.isArray(v) && v.every(g);
 
+function isProblem(v: unknown): v is Problem {
+  return isObj(v) && isStr(v.reason) && isStrOrNull(v.message) && isStrOrNull(v.cause);
+}
 export function isGraphNode(v: unknown): v is GraphNode {
   return isObj(v) && isStr(v.id) && oneOf(KINDS, v.kind) && isStrOrNull(v.namespace) && isStr(v.name)
-    && oneOf(STATUSES, v.status) && arrayOf(v.badges, isStr) && (v.group === null || (isObj(v.group) && typeof v.group.count === "number"));
+    && oneOf(STATUSES, v.status) && arrayOf(v.badges, isStr) && (v.group === null || (isObj(v.group) && typeof v.group.count === "number"))
+    && (v.problem === undefined || isProblem(v.problem));
 }
 export function isGraphEdge(v: unknown): v is GraphEdge {
   return isObj(v) && isStr(v.id) && isStr(v.source) && isStr(v.target) && oneOf(RELATIONS, v.relation);
@@ -137,10 +186,35 @@ export function isLogMessage(v: unknown): v is LogMessage {
     default: return false;
   }
 }
+export function isRevision(v: unknown): v is Revision {
+  return isObj(v) && typeof v.revision === "number" && typeof v.current === "boolean" && isStrOrNull(v.createdAt)
+    && isStrOrNull(v.changeCause) && arrayOf(v.images, isStr) && isStr(v.template);
+}
+export function isMetricsUpdate(v: unknown): v is MetricsUpdate {
+  return isObj(v) && oneOf(METRICS_STATES, v.state);
+}
+
+export function isForward(v: unknown): v is Forward {
+  return isObj(v) && typeof v.id === "number" && isStr(v.nodeId) && isStr(v.targetLabel) && typeof v.remotePort === "number"
+    && typeof v.localPort === "number" && isStrOrNull(v.pod) && oneOf(FORWARD_STATUSES, v.status) && isStrOrNull(v.message);
+}
+export function isPortOption(v: unknown): v is PortOption {
+  return isObj(v) && typeof v.port === "number" && isStr(v.label);
+}
 export function isAppError(v: unknown): v is AppError { return isObj(v) && oneOf(ERROR_KINDS, v.kind) && isStr(v.message); }
 
 export function toAppError(e: unknown): AppError {
   if (isAppError(e)) return e;
   if (e instanceof Error) return { kind: "internal", message: e.message };
   return { kind: "internal", message: String(e) };
+}
+
+export function isUpdateInfo(v: unknown): v is UpdateInfo {
+  return isObj(v) && isStr(v.version) && isStrOrNull(v.date) && isStrOrNull(v.notes);
+}
+export function isUpdateCheck(v: unknown): v is UpdateCheck {
+  return isObj(v) && isStr(v.current) && (v.update === null || isUpdateInfo(v.update));
+}
+export function isUpdateProgress(v: unknown): v is UpdateProgress {
+  return isObj(v) && typeof v.downloaded === "number" && isNumOrNull(v.total);
 }

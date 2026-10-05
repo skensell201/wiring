@@ -27,6 +27,13 @@
       "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src ipc: http://ipc.localhost"
     }
   },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEMzM0NCREIxNTA5QkY5RUUKUldUdStadFFzYjA4dzRQQ2czWS9WVWJBTmFjQXg0UHRFRG5jemk1Nng5NHc2UHFDY2oydVdJMUEK",
+      "endpoints": ["https://github.com/skensell201/wiring/releases/latest/download/latest.json"],
+      "windows": { "installMode": "passive" }
+    }
+  },
   "bundle": {
     "active": true,
     "copyright": "Copyright (c) 2026 skensel. MIT License.",

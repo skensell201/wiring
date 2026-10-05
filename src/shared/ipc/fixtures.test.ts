@@ -3,15 +3,21 @@ import appError from "./fixtures/app_error.json";
 import connectInfo from "./fixtures/connect_info.json";
 import connectionState from "./fixtures/connection_state.json";
 import contextInfo from "./fixtures/context_info.json";
+import forward from "./fixtures/forward.json";
 import graph from "./fixtures/graph.json";
 import graphDelta from "./fixtures/graph_delta.json";
 import logMessage from "./fixtures/log_message.json";
+import metricsUpdated from "./fixtures/metrics_updated.json";
 import objectDetails from "./fixtures/object_details.json";
 import objectEvents from "./fixtures/object_events.json";
+import portOption from "./fixtures/port_option.json";
+import revision from "./fixtures/revision.json";
 import table from "./fixtures/table.json";
+import updateCheck from "./fixtures/update_check.json";
+import updateProgress from "./fixtures/update_progress.json";
 import {
   CONNECTION_STATES, ERROR_KINDS, KINDS, RELATIONS, STATUSES,
-  isAppError, isConnectInfo, isConnectionState, isContextInfo, isGraph, isGraphDelta, isLogMessage, isObjectDetails, isObjectEvents, isTable,
+  isAppError, isConnectInfo, isConnectionState, isContextInfo, isForward, isGraph, isGraphDelta, isGraphNode, isLogMessage, isMetricsUpdate, isObjectDetails, isObjectEvents, isPortOption, isRevision, isTable, isUpdateCheck, isUpdateProgress,
 } from "./types";
 
 // The JSON files are the contract shared with the Rust side (guarded there by
@@ -26,7 +32,29 @@ describe("IPC fixtures match the TypeScript types", () => {
   it("connection_state", () => expect(isConnectionState(connectionState)).toBe(true));
   it("app_error", () => expect(isAppError(appError)).toBe(true));
   it("table", () => expect(isTable(table)).toBe(true));
+  it("forward", () => expect(isForward(forward)).toBe(true));
+  it("port_option", () => expect(isPortOption(portOption)).toBe(true));
+  it("rejects a forward with an unknown status", () => {
+    expect(isForward({ ...forward, status: "sleeping" })).toBe(false);
+  });
+  it("metrics_updated", () => expect(isMetricsUpdate(metricsUpdated)).toBe(true));
+  it("rejects a metrics update with an unknown state", () => {
+    expect(isMetricsUpdate({ state: "sleeping" })).toBe(false);
+  });
+  it("update_check", () => expect(isUpdateCheck(updateCheck)).toBe(true));
+  it("update_check without an offer", () => expect(isUpdateCheck({ current: "0.2.0", update: null })).toBe(true));
+  it("rejects an update_check without a current version", () => expect(isUpdateCheck({ update: null })).toBe(false));
+  it("update_progress", () => {
+    expect(isUpdateProgress(updateProgress)).toBe(true);
+    expect(isUpdateProgress({ downloaded: 1, total: null })).toBe(true);
+  });
   it("log_message", () => expect(isLogMessage(logMessage)).toBe(true));
+
+  it("revision", () => expect(isRevision(revision)).toBe(true));
+
+  it("rejects a revision without images", () => {
+    expect(isRevision({ ...revision, images: undefined })).toBe(false);
+  });
 
   it("enum lists match docs/ipc-contract.md", () => {
     expect(KINDS).toHaveLength(16);
@@ -50,5 +78,14 @@ describe("IPC fixtures match the TypeScript types", () => {
   it("rejects a log message with an unknown type", () => {
     expect(isLogMessage({ type: "bogus", sessionId: 1 })).toBe(false);
     expect(isLogMessage({ type: "lines", sessionId: 1, lines: [{ pod: "p" }] })).toBe(false);
+  });
+
+  it("graph nodes carry an optional problem", () => {
+    const group = graph.nodes[1];
+    expect(group.problem?.reason).toBe("1 of 7 pods: CrashLoopBackOff");
+    expect(isGraphNode(group)).toBe(true);
+    expect(isGraphNode(graph.nodes[0])).toBe(true); // no problem key at all
+    expect(isGraphNode({ ...group, problem: { reason: 3, message: null, cause: null } })).toBe(false);
+    expect(isGraphNode({ ...group, problem: { reason: "x", message: null } })).toBe(false);
   });
 });

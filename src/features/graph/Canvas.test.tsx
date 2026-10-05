@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { applySnapshot, initialState, useAppStore } from "../../app/store";
 import { Canvas } from "./Canvas";
@@ -52,5 +52,15 @@ describe("Canvas", () => {
     });
     render(<Canvas />);
     expect(screen.getByText("web-1")).toBeInTheDocument();
+  });
+
+  it("right-clicking a node opens the Actions menu for it", () => {
+    useAppStore.setState({
+      ...applySnapshot(initialState(), { nodes: [{ id: "Deployment/p/web", kind: "Deployment", namespace: "p", name: "web", status: "ok", badges: ["1/1"], group: null }], edges: [] }),
+      connection: { ...initialState().connection, context: "prod", state: "connected", namespace: "p" },
+    });
+    render(<Canvas />);
+    fireEvent.contextMenu(screen.getByText("web"), { clientX: 120, clientY: 80 });
+    expect(useAppStore.getState().actionsMenu).toEqual({ nodeId: "Deployment/p/web", x: 120, y: 80 });
   });
 });

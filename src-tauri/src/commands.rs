@@ -6,16 +6,19 @@ use std::sync::Arc;
 
 use serde_json::json;
 use tauri::{AppHandle, Emitter as TauriEmit, State};
+use tauri_plugin_opener::OpenerExt;
 use tauri_plugin_store::StoreExt;
 use tokio::sync::Mutex;
 
 use crate::error::{AppError, AppResult, ErrorKind};
+use crate::forward::{Forward, PortOption};
 use crate::graph::rows::Table;
 use crate::graph::NodeId;
 use crate::kubeconfig::{self, ContextInfo};
 use crate::logs::session::LogRequest;
 use crate::logs::LogMessage;
 use crate::session::emitter::{Emitter, OutEvent};
+use crate::session::rollout::Revision;
 use crate::session::{ConnectInfo, ObjectDetails, Session};
 use crate::store::Kind;
 
@@ -84,7 +87,7 @@ pub async fn connect(app: AppHandle, state: State<'_, AppState>, context: String
     // would only hit a torn-down session in the meantime anyway.
     let mut guard = state.session.lock().await;
     if let Some(mut old) = guard.take() {
-        old.shutdown();
+        old.shutdown().await;
     }
     let (session, info) = Session::connect(merged, &context, emitter).await?;
     let session = guard.insert(session);
@@ -97,7 +100,7 @@ pub async fn disconnect(state: State<'_, AppState>) -> AppResult<()> {
     let mut guard = state.session.lock().await;
     if let Some(mut s) = guard.take() {
         drop(guard);
-        s.shutdown();
+        s.shutdown().await;
     }
     Ok(())
 }
@@ -174,6 +177,34 @@ pub async fn delete_object(state: State<'_, AppState>, node_id: String) -> AppRe
     session.delete_object(&node_id).await
 }
 
+#[tauri::command]
+pub async fn scale_object(state: State<'_, AppState>, node_id: String, replicas: i64) -> AppResult<ObjectDetails> {
+    let mut guard = state.session.lock().await;
+    let session = session_mut(&mut guard)?;
+    session.scale_object(&node_id, replicas).await
+}
+
+#[tauri::command]
+pub async fn restart_object(state: State<'_, AppState>, node_id: String) -> AppResult<ObjectDetails> {
+    let mut guard = state.session.lock().await;
+    let session = session_mut(&mut guard)?;
+    session.restart_object(&node_id).await
+}
+
+#[tauri::command]
+pub async fn rollout_history(state: State<'_, AppState>, node_id: String) -> AppResult<Vec<Revision>> {
+    let mut guard = state.session.lock().await;
+    let session = session_mut(&mut guard)?;
+    session.rollout_history(&node_id).await
+}
+
+#[tauri::command]
+pub async fn rollback_object(state: State<'_, AppState>, node_id: String, revision: i64) -> AppResult<ObjectDetails> {
+    let mut guard = state.session.lock().await;
+    let session = session_mut(&mut guard)?;
+    session.rollback_object(&node_id, revision).await
+}
+
 /// Stream container logs for `node_id` into `on_message`; returns the id for `stop_logs`.
 #[tauri::command]
 pub async fn start_logs(
@@ -207,6 +238,49 @@ pub async fn stop_logs(state: State<'_, AppState>, session_id: u32) -> AppResult
     Ok(())
 }
 
+#[tauri::command]
+pub async fn forward_ports(state: State<'_, AppState>, node_id: String) -> AppResult<Vec<PortOption>> {
+    let mut guard = state.session.lock().await;
+    let session = session_mut(&mut guard)?;
+    session.forward_ports(&node_id)
+}
+
+#[tauri::command]
+pub fn suggest_local_port(port: u16) -> u16 {
+    crate::forward::resolve::suggest_local_port(port)
+}
+
+#[tauri::command]
+pub async fn start_forward(state: State<'_, AppState>, node_id: String, remote_port: u16, local_port: u16) -> AppResult<Forward> {
+    let mut guard = state.session.lock().await;
+    let session = session_mut(&mut guard)?;
+    session.start_forward(&node_id, remote_port, local_port).await
+}
+
+/// Unknown ids and a missing session are no-ops (the forward is gone either way).
+#[tauri::command]
+pub async fn stop_forward(state: State<'_, AppState>, id: u32) -> AppResult<()> {
+    let mut guard = state.session.lock().await;
+    if let Some(session) = guard.as_mut() {
+        session.stop_forward(id).await;
+    }
+    Ok(())
+}
+
+/// Open `http://127.0.0.1:<port>` of forward `id` in the default browser. The URL is built here
+/// from the forward's own port, so the webview cannot open arbitrary URLs through this.
+#[tauri::command]
+pub async fn open_forward(app: AppHandle, state: State<'_, AppState>, id: u32) -> AppResult<()> {
+    let port = {
+        let guard = state.session.lock().await;
+        guard.as_ref().and_then(|s| s.forward_local_port(id))
+    }
+    .ok_or_else(|| AppError::new(ErrorKind::NotFound, format!("no forward {id}")))?;
+    app.opener()
+        .open_url(format!("http://127.0.0.1:{port}"), None::<&str>)
+        .map_err(|e| AppError::internal(e.to_string()))
+}
+
 /// Write text the user chose a destination for (the save dialog picked `path`).
 #[tauri::command]
 pub async fn save_text(path: String, text: String) -> AppResult<()> {
@@ -216,22 +290,36 @@ pub async fn save_text(path: String, text: String) -> AppResult<()> {
 }
 
 pub fn register(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wry> {
-    builder.manage(AppState::default()).invoke_handler(tauri::generate_handler![
-        list_contexts,
-        add_kubeconfig,
-        connect,
-        disconnect,
-        select_namespace,
-        set_expanded_groups,
-        get_object,
-        watch_events,
-        denied_kinds,
-        list_rows,
-        update_object,
-        create_object,
-        delete_object,
-        start_logs,
-        stop_logs,
-        save_text,
-    ])
+    builder
+        .manage(AppState::default())
+        .manage(crate::updates::UpdateState::default())
+        .invoke_handler(tauri::generate_handler![
+            list_contexts,
+            add_kubeconfig,
+            connect,
+            disconnect,
+            select_namespace,
+            set_expanded_groups,
+            get_object,
+            watch_events,
+            denied_kinds,
+            list_rows,
+            update_object,
+            create_object,
+            delete_object,
+            scale_object,
+            restart_object,
+            rollout_history,
+            rollback_object,
+            start_logs,
+            stop_logs,
+            forward_ports,
+            suggest_local_port,
+            start_forward,
+            stop_forward,
+            open_forward,
+            save_text,
+            crate::updates::check_update,
+            crate::updates::install_update,
+        ])
 }

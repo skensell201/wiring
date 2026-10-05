@@ -1,7 +1,9 @@
 //! One live connection to a cluster: watchers, store, graph, events.
 
 pub mod emitter;
+pub mod metrics;
 pub mod reducer;
+pub mod rollout;
 pub mod shared;
 pub mod watch;
 pub mod write;
@@ -21,6 +23,9 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use crate::error::{AppError, AppResult, ErrorKind};
+use crate::forward::kube::KubeConnector;
+use crate::forward::manager::ForwardManager;
+use crate::forward::{self, Forward, PortOption};
 use crate::graph::rows::Table;
 use crate::graph::{status::summary, Graph, NodeId};
 use crate::logs::session::{spawn_log_session, LogRequest, LogSession};
@@ -109,6 +114,8 @@ pub struct Session {
     /// Live log sessions by id; dropping one aborts its streams.
     logs: HashMap<u32, LogSession>,
     next_log_id: u32,
+    /// Port-forwards outlive namespace switches; they end with the connection.
+    forwards: ForwardManager,
 }
 
 impl Session {
@@ -149,6 +156,7 @@ impl Session {
     }
 
     fn new(client: Client, emitter: Arc<dyn Emitter>) -> Session {
+        let forwards = ForwardManager::new(Arc::new(KubeConnector::new(client.clone())), emitter.clone());
         Session {
             client,
             shared: Shared::default(),
@@ -159,6 +167,7 @@ impl Session {
             events_task: None,
             logs: HashMap::new(),
             next_log_id: 1,
+            forwards,
         }
     }
 
@@ -194,6 +203,13 @@ impl Session {
             }
         });
         self.tasks = spawn_all(&self.client, namespace, &store_tx);
+        self.tasks.push(metrics::spawn(
+            self.client.clone(),
+            namespace,
+            self.shared.clone(),
+            reducer_tx.clone(),
+            Arc::new(self.ns_emitter.clone()),
+        ));
         self.tasks.push(bridge);
         self.tasks.push(reducer_task);
         self.reducer_tx = Some(reducer_tx);
@@ -280,6 +296,26 @@ impl Session {
         }
     }
 
+    /// The remote ports the Port-forward dialog offers for `node_id`.
+    pub fn forward_ports(&self, node_id: &str) -> AppResult<Vec<PortOption>> {
+        let target = forward::resolve::target(node_id)?;
+        forward::resolve::ports(&self.shared.store(), &target)
+    }
+
+    pub async fn start_forward(&mut self, node_id: &str, remote_port: u16, local_port: u16) -> AppResult<Forward> {
+        let target = forward::resolve::target(node_id)?;
+        let label = format!("{} {}", target.kind.as_str(), target.name);
+        self.forwards.start(node_id, target, label, remote_port, local_port)
+    }
+
+    pub async fn stop_forward(&mut self, id: u32) {
+        self.forwards.stop(id).await;
+    }
+
+    pub fn forward_local_port(&self, id: u32) -> Option<u16> {
+        self.forwards.local_port(id)
+    }
+
     fn stop_watchers(&mut self) {
         // A namespace switch, disconnect or drop must end every log stream of the session;
         // close each sink first so no batch slips out before the aborts land.
@@ -299,8 +335,10 @@ impl Session {
         self.reducer_tx = None;
     }
 
-    pub fn shutdown(&mut self) {
+    /// Ends watchers, logs and forwards (awaited, so the ports are free), then announces the disconnect.
+    pub async fn shutdown(&mut self) {
         self.stop_watchers();
+        self.forwards.stop_all().await;
         self.emitter.emit(OutEvent::ConnectionState(emitter::ConnectionState::Disconnected));
     }
 }
@@ -406,12 +444,28 @@ pub fn object_details(store: &Store, graph: &Graph, node_id: &str) -> AppResult<
     let obj = store
         .find(kind, ns.as_deref(), &name)
         .ok_or_else(|| AppError::new(ErrorKind::NotFound, format!("{node_id} not in store")))?;
+    let mut details = details_of(obj, related)?;
+    details.summary.extend(crate::metrics::usage::usage_rows(
+        store,
+        &crate::metrics::usage::PodIndex::new(store),
+        obj,
+    ));
+    Ok(details)
+}
+
+/// The details of one object: its YAML and summary rows, with the given related nodes.
+fn details_of(obj: &crate::store::Object, related: Vec<NodeId>) -> AppResult<ObjectDetails> {
     let yaml = serde_yaml_ng::to_string(&obj.to_json_value()).map_err(|e| AppError::internal(e.to_string()))?;
     Ok(ObjectDetails {
         yaml,
         summary: summary(obj),
         related,
     })
+}
+
+/// Details built from an object the server just returned, when the store cannot supply them.
+pub(super) fn saved_details(obj: &crate::store::Object) -> AppResult<ObjectDetails> {
+    details_of(obj, Vec::new())
 }
 
 pub fn events_to_list(events: &BTreeMap<String, CoreEvent>) -> Vec<K8sEvent> {
@@ -444,6 +498,32 @@ pub fn events_to_list(events: &BTreeMap<String, CoreEvent>) -> Vec<K8sEvent> {
 mod tests {
     use super::*;
     use crate::store::{Kind, Store};
+
+    #[test]
+    fn object_details_carry_usage_rows() {
+        let store = crate::metrics::usage::tests::sampled();
+        let graph = crate::graph::build(&store, &Default::default());
+        let d = object_details(&store, &graph, "Deployment/m/api").unwrap();
+        assert!(
+            d.summary
+                .contains(&("CPU usage".to_string(), "200m / req 200m / lim 1000m (20%)".to_string())),
+            "{:?}",
+            d.summary
+        );
+        assert!(d
+            .summary
+            .contains(&("Memory usage".to_string(), "100Mi / req 128Mi / lim 256Mi (39%)".to_string())));
+        let mut missing = Store::from_fixture("metrics").unwrap();
+        missing.metrics.state = crate::metrics::MetricsState::Unavailable;
+        let graph = crate::graph::build(&missing, &Default::default());
+        let d = object_details(&missing, &graph, "Pod/m/hot").unwrap();
+        assert!(d.summary.contains(&(
+            "Usage".to_string(),
+            "Metrics API not available (install metrics-server)".to_string()
+        )));
+        let d = object_details(&missing, &graph, "StatefulSet/m/db").unwrap();
+        assert!(d.summary.iter().any(|(k, _)| k == "Usage"));
+    }
 
     #[tokio::test]
     async fn announce_connected_emits_connected_state() {

@@ -5,7 +5,8 @@ use k8s_openapi::jiff;
 use serde::{Deserialize, Serialize};
 
 use super::model::{node_id, NodeId, Status};
-use super::status::describe;
+use super::status::describe_with;
+use crate::metrics::usage::PodIndex;
 use crate::store::{Kind, Object, Store};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -75,12 +76,16 @@ pub fn age(created: Option<&Time>, now: jiff::Timestamp) -> String {
 pub fn columns(kind: Kind) -> Vec<TableColumn> {
     let name = || col("name", "Name", false);
     let age_c = || col("age", "Age", true);
+    let cpu = || col("cpu", "CPU", true);
+    let memory = || col("memory", "Memory", true);
     match kind {
         Kind::Pod => vec![
             name(),
             col("ready", "Ready", false),
             col("status", "Status", false),
             col("restarts", "Restarts", true),
+            cpu(),
+            memory(),
             age_c(),
             col("node", "Node", false),
             col("ip", "IP", false),
@@ -90,14 +95,25 @@ pub fn columns(kind: Kind) -> Vec<TableColumn> {
             col("ready", "Ready", false),
             col("upToDate", "Up-to-date", true),
             col("available", "Available", true),
+            cpu(),
+            memory(),
             age_c(),
             col("images", "Images", false),
         ],
-        Kind::StatefulSet => vec![name(), col("ready", "Ready", false), age_c(), col("images", "Images", false)],
+        Kind::StatefulSet => vec![
+            name(),
+            col("ready", "Ready", false),
+            cpu(),
+            memory(),
+            age_c(),
+            col("images", "Images", false),
+        ],
         Kind::DaemonSet => vec![
             name(),
             col("desired", "Desired", true),
             col("ready", "Ready", true),
+            cpu(),
+            memory(),
             age_c(),
             col("images", "Images", false),
         ],
@@ -162,12 +178,17 @@ pub fn columns(kind: Kind) -> Vec<TableColumn> {
 /// Build the table for `kind` from the store. Rows sorted by name.
 pub fn table(store: &Store, kind: Kind, now: jiff::Timestamp) -> Table {
     let columns = columns(kind);
+    let pods = if crate::metrics::usage::has_usage(kind) {
+        PodIndex::new(store)
+    } else {
+        PodIndex::default()
+    };
     let mut rows: Vec<TableRow> = store
         .iter_kind(kind)
         .map(|obj| {
-            let (status, badges) = describe(obj, store);
+            let (status, badges) = describe_with(obj, store, &pods);
             let mut cells = vec![plain(obj.name())];
-            cells.extend(kind_cells(obj, &badges, status, now));
+            cells.extend(kind_cells(obj, store, &pods, &badges, status, now));
             TableRow {
                 node_id: node_id(kind, obj.namespace(), obj.name()),
                 status,
@@ -189,9 +210,18 @@ fn join<T: ToString>(items: Option<&Vec<T>>) -> String {
         .unwrap_or_default()
 }
 
-fn kind_cells(obj: &Object, badges: &[String], status: Status, now: jiff::Timestamp) -> Vec<TableCell> {
+fn kind_cells<'a>(
+    obj: &'a Object,
+    store: &'a Store,
+    pods: &PodIndex<'a>,
+    badges: &[String],
+    status: Status,
+    now: jiff::Timestamp,
+) -> Vec<TableCell> {
     let created = obj.meta().creation_timestamp.as_ref();
     let age_cell = plain(age(created, now));
+    let (cpu, memory) = crate::metrics::usage::usage_cells(store, pods, obj);
+    let (cpu, memory) = (plain(cpu), plain(memory));
     match obj {
         Object::Pod(p) => {
             let st = p.status.as_ref();
@@ -204,6 +234,8 @@ fn kind_cells(obj: &Object, badges: &[String], status: Status, now: jiff::Timest
                 plain(format!("{ready}/{total}")),
                 coloured(label, status),
                 plain(restarts.to_string()),
+                cpu,
+                memory,
                 age_cell,
                 plain(p.spec.as_ref().and_then(|s| s.node_name.clone()).unwrap_or_default()),
                 plain(st.and_then(|s| s.pod_ip.clone()).unwrap_or_default()),
@@ -217,6 +249,8 @@ fn kind_cells(obj: &Object, badges: &[String], status: Status, now: jiff::Timest
                 coloured(format!("{ready}/{desired}"), status),
                 plain(st.and_then(|s| s.updated_replicas).unwrap_or(0).to_string()),
                 plain(st.and_then(|s| s.available_replicas).unwrap_or(0).to_string()),
+                cpu,
+                memory,
                 age_cell,
                 plain(
                     d.spec
@@ -232,6 +266,8 @@ fn kind_cells(obj: &Object, badges: &[String], status: Status, now: jiff::Timest
             let ready = s.status.as_ref().and_then(|s| s.ready_replicas).unwrap_or(0);
             vec![
                 coloured(format!("{ready}/{desired}"), status),
+                cpu,
+                memory,
                 age_cell,
                 plain(
                     s.spec
@@ -247,6 +283,8 @@ fn kind_cells(obj: &Object, badges: &[String], status: Status, now: jiff::Timest
             vec![
                 plain(st.map(|s| s.desired_number_scheduled).unwrap_or(0).to_string()),
                 coloured(st.map(|s| s.number_ready).unwrap_or(0).to_string(), status),
+                cpu,
+                memory,
                 age_cell,
                 plain(
                     d.spec
@@ -390,6 +428,33 @@ mod tests {
     }
 
     #[test]
+    fn usage_columns_for_pods_and_workloads() {
+        let s = crate::metrics::usage::tests::sampled();
+        for kind in [Kind::Pod, Kind::Deployment, Kind::StatefulSet, Kind::DaemonSet] {
+            let keys: Vec<String> = columns(kind).into_iter().map(|c| c.key).collect();
+            assert!(
+                keys.contains(&"cpu".to_string()) && keys.contains(&"memory".to_string()),
+                "{kind:?}: {keys:?}"
+            );
+            assert!(columns(kind)
+                .iter()
+                .filter(|c| c.key == "cpu" || c.key == "memory")
+                .all(|c| c.numeric));
+        }
+        let pods = table(&s, Kind::Pod, now());
+        assert_eq!(cell(&pods, "hot", "cpu").text, "300m");
+        assert_eq!(cell(&pods, "hot", "memory").text, "92Mi");
+        assert_eq!(cell(&pods, "unsampled", "cpu").text, "—");
+        let deployments = table(&s, Kind::Deployment, now());
+        assert_eq!(cell(&deployments, "api", "cpu").text, "200m");
+        assert_eq!(cell(&deployments, "api", "memory").text, "100Mi");
+        let statefulsets = table(&s, Kind::StatefulSet, now());
+        assert_eq!(cell(&statefulsets, "db", "memory").text, "128Mi");
+        let pending = Store::from_fixture("metrics").unwrap();
+        assert_eq!(cell(&table(&pending, Kind::Pod, now()), "hot", "cpu").text, "—");
+    }
+
+    #[test]
     fn age_formats_like_kubectl() {
         let n = now();
         let at = |s: &str| Some(k8s_openapi::apimachinery::pkg::apis::meta::v1::Time(s.parse().unwrap()));
@@ -407,7 +472,7 @@ mod tests {
         assert_eq!(t.kind, Kind::Pod);
         assert_eq!(
             t.columns.iter().map(|c| c.key.as_str()).collect::<Vec<_>>(),
-            ["name", "ready", "status", "restarts", "age", "node", "ip"]
+            ["name", "ready", "status", "restarts", "cpu", "memory", "age", "node", "ip"]
         );
         assert_eq!(cell(&t, "crashing", "status").text, "CrashLoopBackOff");
         assert_eq!(cell(&t, "crashing", "status").status, Some(Status::Err));

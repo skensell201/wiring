@@ -31,6 +31,10 @@ Argument names are camelCase on the JS side; Tauri maps them to the Rust snake_c
 | `update_object` | `{ nodeId, yaml, force: boolean }` | `ObjectDetails` — fresh YAML/summary of the saved object (see [Writes](#writes)) |
 | `create_object` | `{ namespace, yaml }` | `NodeId` of the created object; it reaches the graph through the watch |
 | `delete_object` | `{ nodeId }` | `null` — a PodGroup id deletes every member pod |
+| `scale_object` | `{ nodeId, replicas }` | `ObjectDetails` (see [Rollout actions](#rollout-actions)) |
+| `restart_object` | `{ nodeId }` | `ObjectDetails` |
+| `rollout_history` | `{ nodeId }` | `Revision[]`, newest first |
+| `rollback_object` | `{ nodeId, revision }` | `ObjectDetails` |
 
 `ConnectInfo.namespaces` may be **empty** when the user cannot list namespaces (namespace-scoped RBAC); offer a free-text namespace input in that case. If the kubeconfig context has a default namespace it is included.
 
@@ -41,6 +45,14 @@ Argument names are camelCase on the JS side; Tauri maps them to the Rust snake_c
 - `delete_object` on `Kind/ns/name` is a plain delete (`404` counts as success). On `PodGroup/<ns>/<OwnerKind>/<owner>` the member pods are resolved from the cached store (pods whose ownerReferences chain reaches the owner — the same rule the graph uses) and deleted in parallel; if some fail, the error names them (`failed to delete: a, b (...)`) and carries the first failure's kind. A group with no members rejects with `notFound`.
 - Manifests may contain Secret data: the backend never logs them.
 
+### Rollout actions
+
+- `scale_object` takes a Deployment or StatefulSet and an integer `replicas` in 0 … 10 000; anything else is `invalid` before a request is sent. It patches the `/scale` subresource (as `kubectl scale`), then returns the object's fresh details.
+- `restart_object`, `rollout_history` and `rollback_object` take a Deployment, StatefulSet or DaemonSet (PodGroup and every other kind: `invalid`). Restart sets `spec.template.metadata.annotations["kubectl.kubernetes.io/restartedAt"]` (as `kubectl rollout restart`). Restart and rollback on a paused Deployment are `invalid` ("deployment is paused; resume it first").
+- `Revision = { revision: number, current: boolean, createdAt: string | null, changeCause: string | null, images: string[], template: string }`; `template` is the pod template as YAML. Deployment revisions come from its ReplicaSets in the cached store (`deployment.kubernetes.io/revision`; ReplicaSets without it are skipped, `pod-template-hash` is left out of `template`), the newest being current. StatefulSet/DaemonSet revisions are listed from ControllerRevisions (label selector = `matchLabels`, filtered by ownerReference uid); `current` is a StatefulSet's `status.updateRevision`, else the newest. A role without `list controllerrevisions` gets `forbidden`. Fixture: `revision.json`.
+- `rollback_object` to the current revision is `invalid` ("already at revision N"); an unknown one is `notFound`. Deployments get their old template back with `$patch: replace` (as `kubectl rollout undo`); StatefulSets/DaemonSets get the revision's `data` as a strategic merge patch.
+- Like `update_object`, every successful action stores the server's object and rebuilds the graph at once, so the returned details and the `graph_delta` arrive before the watch echo.
+
 ## Events (`listen`)
 
 | Event | Payload | Notes |
@@ -50,6 +62,8 @@ Argument names are camelCase on the JS side; Tauri maps them to the Rust snake_c
 | `graph_snapshot` | `Graph` | Full replace. Arrives after every kind finished its initial list, and again after recovery from `degraded`. |
 | `graph_delta` | `GraphDelta` | Apply `addedNodes`/`updatedNodes` (full node objects) / `removedNodes` (ids) / `addedEdges` / `removedEdges` (ids). Only sent when non-empty. |
 | `object_events` | `ObjectEvents` | Full list, newest first, for the node passed to `watch_events`. Ignore payloads whose `nodeId` is not the current selection. |
+| `forwards_changed` | `Forward[]` | Every running forward, ordered by id, after each start, stop and status change (see [Port-forward](#port-forward)). Empty after a disconnect. |
+| `metrics_updated` | `{ state: "pending" \| "available" \| "unavailable" \| "forbidden" }` | After each metrics-server sample of the selected namespace (every 15 s), and once when the Metrics API turns out to be missing (404 → `unavailable`) or forbidden (403 → `forbidden`), after which polling stops for that namespace session. Three failed polls in a row before any sample (a registered but unhealthy metrics-server) also send `unavailable`, with the Overview note "metrics-server not responding"; polling continues and a sample sends `available`. A sample older than 60 s adds "(stale)" to the Overview usage rows. Refetch the open Pod / Deployment / StatefulSet / DaemonSet table and the selected details. Usage badges arrive as an ordinary `graph_delta`. |
 
 ### Ordering rules the frontend must follow
 
@@ -63,6 +77,14 @@ Argument names are camelCase on the JS side; Tauri maps them to the Rust snake_c
 - Collapsed pods: `PodGroup/<namespace>/<OwnerKind>/<ownerName>`. The owner is the *visible* owner — a Deployment whose single ReplicaSet is hidden yields `PodGroup/ns/Deployment/web`. During a rollout two ReplicaSets are visible, so the groups are `PodGroup/ns/ReplicaSet/<rs>` and the id changes back when the old ReplicaSet drains; expanded-group state does not survive that.
 - `get_object` on a PodGroup returns `yaml: ""` and a summary of member counts; `watch_events` on a PodGroup is a no-op.
 
+## Problems
+
+A node whose `status` is `warn` or `err` may carry `problem: { reason, message, cause }`; healthy nodes have no `problem` key at all.
+- `reason` is short (`ImagePullBackOff`, `2 of 3 not ready`, `No ready endpoints`, `Backend not found`, `1 of 7 pods: CrashLoopBackOff`). `message` is the Kubernetes text behind it (kubelet, scheduler or controller), at most 300 characters, or `null`.
+- `cause` is the id of a node in the same graph to blame next (a workload's worst-status owned child, a Service's worst-status selected pod or pod group), or `null` at the root. It is resolved after ReplicaSet hiding and pod-group collapse, so it always names a visible node. Follow it to the root, stopping at a missing node, a repeat or 8 steps.
+- A PodGroup's problem summarises its members: `K of N pods: <reason>` with the message of the first such pod by name, prefixed with the pod name.
+- Problems change with the objects, so they arrive through the usual `graph_snapshot` / `graph_delta` (`updatedNodes`).
+
 ## Table
 
 `list_rows({ kind })` returns `Table { kind, columns: TableColumn[], rows: TableRow[] }`:
@@ -72,6 +94,13 @@ Argument names are camelCase on the JS side; Tauri maps them to the Rust snake_c
 - `TableCell { text, status: Status | null }` — `status` colours the cell (e.g. the Pod `status` cell, or a workload's `ready` cell) and is `null` for plain cells.
 - `PodGroup` is not a table kind (`columns` is empty, `rows` is always empty) — `list_rows({ kind: "Pod" })` always lists individual pods; collapsing pods into groups is a graph-only concern.
 - Requesting a kind the session could not watch (see `denied_kinds`) returns an empty table, not an error — the frontend shows the RBAC empty state itself.
+
+## Metrics
+
+- Source: `metrics.k8s.io/v1beta1` `PodMetrics` in the selected namespace, polled every 15 s while the namespace session lives.
+- Tables: Pod, Deployment, StatefulSet and DaemonSet gain numeric `cpu` (`CPU`) and `memory` (`Memory`) columns. Values are `kubectl top` style — CPU always in millicores (`120m`), memory always in whole MiB (`64Mi`) — so the leading number sorts correctly; `—` without a sample. Workloads sum the pods they own.
+- `get_object` summary for those kinds ends with `CPU usage` and `Memory usage` rows (`120m / req 100m / lim 500m (24%)`: requests and limits summed over containers, a total omitted when any container lacks it; the percentage is of the limit, else of the request), or a single `Usage` row: `waiting for the first metrics sample`, `Metrics API not available (install metrics-server)`, `No access to pod metrics (RBAC)` or `no sample yet`.
+- Graph: a pod or workload at ≥ 80 % of a CPU or memory limit gets a last badge `mem 92%` / `cpu 85%` (the higher; memory on a tie). Usage never changes `status`.
 
 ## Timestamps
 
@@ -118,3 +147,35 @@ Container logs stream through a Tauri `Channel` passed to `start_logs`, not thro
 | `truncated` | `sessionId`, `limit` |
 
 `ended` means the stream is over, whether the server closed it or the session stopped it because its pod (or that run of its container) went away. Batches arrive at most every 50 ms or every 256 lines. After `stop_logs` nothing more is sent on that channel. Fixture: `log_message.json`.
+
+## Port-forward
+
+### Commands
+
+| Command | Args | Returns |
+|---|---|---|
+| `forward_ports` | `{ nodeId }` | `PortOption[]` — `{ port, label }`: container ports (TCP) of a Pod or a workload's template, `port → targetPort` of a Service |
+| `suggest_local_port` | `{ port }` | `number` — `port` if ≥ 1024 and free on 127.0.0.1, else the first free port from 8080 |
+| `start_forward` | `{ nodeId, remotePort, localPort }` | `Forward` — returns immediately with `status: active` and `pod: null`; the first pod resolution happens in the background and is reported through `forwards_changed` |
+| `stop_forward` | `{ id }` | `null` — unknown ids are a no-op; the local port is released when the call returns |
+| `open_forward` | `{ id }` | `null` — opens `http://127.0.0.1:<localPort>` in the default browser; unknown id is `notFound` |
+
+`nodeId` may be a `Pod`, `Service`, `Deployment`, `StatefulSet` or `DaemonSet` (anything else, and PodGroups, are `invalid`). `localPort` below 1024 is `invalid`; a port already in use is `conflict` ("port N is already in use"). Forwards bind `127.0.0.1` only, survive `select_namespace` and stop on `disconnect` / `connect`.
+
+Each accepted local connection picks its pod at that moment: a Pod target itself (Running and Ready), otherwise the ready pod with the smallest name among those the Service's or workload's selector matches. For a Service, `remotePort` is a Service port mapped to its `targetPort` (a number, or a name looked up in the chosen pod's container ports). A connection that finds no pod is closed and sets the status. A selector with only `matchExpressions` is not supported (status `error`, "unsupported selector (matchExpressions)").
+
+### `Forward`
+
+`{ id, nodeId, targetLabel, remotePort, localPort, pod: string | null, status, message: string | null }`, `status` ∈ `active`, `noReadyPod`, `podGone` (a Pod target that no longer exists), `error` (with `message`: `forbidden (pods/portforward)` for RBAC, a kubelet stream error, `unsupported selector (matchExpressions)`, a timeout). Fixtures: `forward.json`, `port_option.json`.
+
+## Updates
+
+| Command | Args | Returns |
+|---|---|---|
+| `check_update` | — | `UpdateCheck { current, update: UpdateInfo \| null }`; `UpdateInfo = { version, date: string \| null (YYYY-MM-DD), notes: string \| null }`. Rejects `network` when the feed is unreachable or no published release has a `latest.json`. |
+| `install_update` | — | Downloads, verifies and installs the update found by the last `check_update`, then relaunches — the promise never resolves on success. Rejects `notFound` without a prior offer, `network` / `internal` on download, signature or install failures. |
+
+| Event | Payload | Notes |
+|---|---|---|
+| `update_progress` | `{ downloaded, total: number \| null }` | During `install_update`, at most every 256 KiB and for the last chunk. |
+| `menu_check_updates` | `null` | **Check for Updates…** was chosen in the app menu. |

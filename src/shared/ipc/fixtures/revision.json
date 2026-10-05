@@ -1,0 +1,8 @@
+{
+  "revision": 3,
+  "current": true,
+  "createdAt": "2026-10-05T10:00:00Z",
+  "changeCause": null,
+  "images": ["nginx:1.27"],
+  "template": "metadata:\n  labels:\n    app: web\nspec:\n  containers:\n  - image: nginx:1.27\n    name: web\n"
+}

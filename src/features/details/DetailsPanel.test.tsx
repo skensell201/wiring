@@ -244,4 +244,32 @@ describe("DetailsPanel maximise", () => {
     expect(screen.queryByTitle(/collapse panel/i)).not.toBeInTheDocument();
     expect(screen.queryByText("▾")).not.toBeInTheDocument();
   });
+
+  it("the Actions button opens the menu for the selection", () => {
+    const dep = { ...node, id: "Deployment/p/web", kind: "Deployment" as const, name: "web" };
+    useAppStore.setState((s) => ({ nodes: new Map([...s.nodes, [dep.id, dep]]), selectedId: dep.id, details: { ...s.details!, nodeId: dep.id } }));
+    render(<DetailsPanel />);
+    fireEvent.click(screen.getByRole("button", { name: "Actions" }));
+    expect(useAppStore.getState().actionsMenu).toMatchObject({ nodeId: "Deployment/p/web" });
+  });
+
+  it("has no Actions button when delete is the only action (the trash button covers it)", () => {
+    const cm = { ...node, id: "ConfigMap/p/cfg", kind: "ConfigMap" as const, name: "cfg" };
+    useAppStore.setState((s) => ({ nodes: new Map([...s.nodes, [cm.id, cm]]), selectedId: cm.id, details: { ...s.details!, nodeId: cm.id } }));
+    render(<DetailsPanel />);
+    expect(screen.queryByRole("button", { name: "Actions" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Delete" })).toBeInTheDocument();
+  });
+
+  it("offers a History tab for rollout kinds only, and opens it on request", () => {
+    const historyTab = () => screen.queryByRole("tab", { name: "History" });
+    const { unmount } = render(<DetailsPanel />);
+    expect(historyTab()).not.toBeInTheDocument(); // a Pod
+    unmount();
+    const dep = { ...node, id: "Deployment/p/web", kind: "Deployment" as const, name: "web" };
+    useAppStore.setState((s) => ({ nodes: new Map([...s.nodes, [dep.id, dep]]), selectedId: dep.id, details: { ...s.details!, nodeId: dep.id }, requestedTab: "history" }));
+    render(<DetailsPanel />);
+    expect(historyTab()).toHaveAttribute("aria-selected", "true");
+    expect(useAppStore.getState().requestedTab).toBeNull();
+  });
 });

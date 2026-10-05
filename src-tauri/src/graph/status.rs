@@ -3,19 +3,41 @@
 use std::collections::BTreeMap;
 
 use k8s_openapi::api::apps::v1::{DaemonSet, Deployment, ReplicaSet, StatefulSet};
-use k8s_openapi::api::autoscaling::v2::HorizontalPodAutoscaler;
-use k8s_openapi::api::batch::v1::{CronJob, Job};
-use k8s_openapi::api::core::v1::{PersistentVolume, PersistentVolumeClaim, Pod, Service};
+use k8s_openapi::api::autoscaling::v2::{HorizontalPodAutoscaler, HorizontalPodAutoscalerCondition};
+use k8s_openapi::api::batch::v1::{CronJob, Job, JobCondition};
+use k8s_openapi::api::core::v1::{ContainerStatus, PersistentVolume, PersistentVolumeClaim, Pod, Service};
 use k8s_openapi::api::networking::v1::Ingress;
 
-use super::model::Status;
-use crate::store::{Object, Store};
+use super::model::{Problem, Status};
+use super::relations::ingress_backend_names;
+use crate::metrics::usage::PodIndex;
+use crate::store::{Kind, Object, Store};
 
 pub type Badges = Vec<String>;
 pub type SummaryRows = Vec<(String, String)>;
 
-/// Status + badges shown on the node card.
+/// Status + badges shown on the node card. A pod or workload at >= 80 % of a limit gets its usage
+/// badge last, so badges[0] (ready/desired, a pod's reason, an HPA's min-max) keeps its meaning.
 pub fn describe(obj: &Object, store: &Store) -> (Status, Badges) {
+    // A pod stands for itself; only a workload needs the index, so only it pays to build one.
+    let index = if matches!(obj, Object::Pod(_)) {
+        PodIndex::default()
+    } else {
+        PodIndex::new(store)
+    };
+    describe_with(obj, store, &index)
+}
+
+/// `describe` with a pod index shared by the caller, for loops over many objects.
+pub fn describe_with<'a>(obj: &'a Object, store: &'a Store, index: &PodIndex<'a>) -> (Status, Badges) {
+    let (status, mut badges) = base_describe(obj, store);
+    if let Some(b) = crate::metrics::usage::usage_badge(store, index, obj) {
+        badges.push(b);
+    }
+    (status, badges)
+}
+
+fn base_describe(obj: &Object, store: &Store) -> (Status, Badges) {
     match obj {
         Object::Deployment(d) => deployment(d),
         Object::StatefulSet(s) => statefulset(s),
@@ -25,7 +47,7 @@ pub fn describe(obj: &Object, store: &Store) -> (Status, Badges) {
         Object::CronJob(c) => cronjob(c),
         Object::Pod(p) => pod(p),
         Object::Service(s) => service(s, store),
-        Object::Ingress(i) => ingress(i),
+        Object::Ingress(i) => ingress(i, store),
         Object::ConfigMap(c) => (
             Status::Ok,
             vec![keys_badge(
@@ -71,6 +93,33 @@ fn workload_status(ready: i32, desired: i32, progressing_false: bool) -> Status 
     }
 }
 
+/// `rolling updated/desired` while a rollout runs: the controller has not observed the latest
+/// generation, or fewer than `target` replicas run the new template yet. `target` is `None` when
+/// the strategy never rolls on its own (paused, OnDelete). Missing fields (old servers,
+/// hand-written fixtures) never count as rolling; a missing updated count shows no numbers.
+fn rolling(generation: Option<i64>, observed: Option<i64>, updated: Option<i32>, target: Option<i32>, desired: i32) -> Option<String> {
+    let unseen = matches!((generation, observed), (Some(g), Some(o)) if o < g);
+    let behind = matches!((updated, target), (Some(u), Some(t)) if u < t);
+    if !(unseen || behind) {
+        return None;
+    }
+    Some(match updated {
+        Some(u) => format!("rolling {u}/{desired}"),
+        None => "rolling".to_string(),
+    })
+}
+
+/// Push the rolling badge (if any) and lift an otherwise healthy workload to a warning.
+fn with_rollout(status: Status, rolling: Option<String>, badges: &mut Badges) -> Status {
+    let Some(badge) = rolling else { return status };
+    badges.push(badge);
+    if status == Status::Ok {
+        Status::Warn
+    } else {
+        status
+    }
+}
+
 fn deployment(d: &Deployment) -> (Status, Badges) {
     let desired = d.spec.as_ref().and_then(|s| s.replicas).unwrap_or(1);
     let st = d.status.as_ref();
@@ -80,6 +129,14 @@ fn deployment(d: &Deployment) -> (Status, Badges) {
         .map(|cs| condition_is(cs.iter().map(|c| (c.type_.as_str(), c.status.as_str())), "Progressing", "False"))
         .unwrap_or(false);
     let mut badges = vec![ready_desired(ready, desired)];
+    let rollout = rolling(
+        d.metadata.generation,
+        st.and_then(|s| s.observed_generation),
+        st.and_then(|s| s.updated_replicas),
+        (!d.spec.as_ref().and_then(|s| s.paused).unwrap_or(false)).then_some(desired),
+        desired,
+    );
+    let status = with_rollout(workload_status(ready, desired, progressing_false), rollout, &mut badges);
     if let Some(img) = d
         .spec
         .as_ref()
@@ -88,13 +145,29 @@ fn deployment(d: &Deployment) -> (Status, Badges) {
     {
         badges.push(img);
     }
-    (workload_status(ready, desired, progressing_false), badges)
+    (status, badges)
 }
 
 fn statefulset(s: &StatefulSet) -> (Status, Badges) {
     let desired = s.spec.as_ref().and_then(|s| s.replicas).unwrap_or(1);
-    let ready = s.status.as_ref().and_then(|s| s.ready_replicas).unwrap_or(0);
+    let st = s.status.as_ref();
+    let ready = st.and_then(|s| s.ready_replicas).unwrap_or(0);
     let mut badges = vec![ready_desired(ready, desired)];
+    // OnDelete never rolls on its own; a partition leaves the first `partition` pods on the old revision.
+    let strategy = s.spec.as_ref().and_then(|s| s.update_strategy.as_ref());
+    let partition = strategy
+        .and_then(|u| u.rolling_update.as_ref())
+        .and_then(|r| r.partition)
+        .unwrap_or(0);
+    let target = (strategy.and_then(|u| u.type_.as_deref()) != Some("OnDelete")).then(|| (desired - partition).max(0));
+    let rollout = rolling(
+        s.metadata.generation,
+        st.and_then(|s| s.observed_generation),
+        st.and_then(|s| s.updated_replicas),
+        target,
+        desired,
+    );
+    let status = with_rollout(workload_status(ready, desired, false), rollout, &mut badges);
     if let Some(img) = s
         .spec
         .as_ref()
@@ -103,7 +176,7 @@ fn statefulset(s: &StatefulSet) -> (Status, Badges) {
     {
         badges.push(img);
     }
-    (workload_status(ready, desired, false), badges)
+    (status, badges)
 }
 
 fn daemonset(d: &DaemonSet) -> (Status, Badges) {
@@ -111,6 +184,19 @@ fn daemonset(d: &DaemonSet) -> (Status, Badges) {
     let desired = st.map(|s| s.desired_number_scheduled).unwrap_or(0);
     let ready = st.map(|s| s.number_ready).unwrap_or(0);
     let mut badges = vec![ready_desired(ready, desired)];
+    let rollout = rolling(
+        d.metadata.generation,
+        st.and_then(|s| s.observed_generation),
+        st.and_then(|s| s.updated_number_scheduled),
+        (d.spec
+            .as_ref()
+            .and_then(|s| s.update_strategy.as_ref())
+            .and_then(|u| u.type_.as_deref())
+            != Some("OnDelete"))
+        .then_some(desired),
+        desired,
+    );
+    let status = with_rollout(workload_status(ready, desired, false), rollout, &mut badges);
     if let Some(img) = d
         .spec
         .as_ref()
@@ -119,7 +205,7 @@ fn daemonset(d: &DaemonSet) -> (Status, Badges) {
     {
         badges.push(img);
     }
-    (workload_status(ready, desired, false), badges)
+    (status, badges)
 }
 
 fn replicaset(r: &ReplicaSet) -> (Status, Badges) {
@@ -128,14 +214,21 @@ fn replicaset(r: &ReplicaSet) -> (Status, Badges) {
     (workload_status(ready, desired, false), vec![ready_desired(ready, desired)])
 }
 
+/// The `Failed=True` condition of a Job, if any.
+fn failed_condition(j: &Job) -> Option<&JobCondition> {
+    j.status
+        .as_ref()?
+        .conditions
+        .as_deref()?
+        .iter()
+        .find(|c| c.type_ == "Failed" && c.status == "True")
+}
+
 fn job(j: &Job) -> (Status, Badges) {
     let completions = j.spec.as_ref().and_then(|s| s.completions).unwrap_or(1);
     let st = j.status.as_ref();
     let succeeded = st.and_then(|s| s.succeeded).unwrap_or(0);
-    let failed = st
-        .and_then(|s| s.conditions.as_ref())
-        .map(|cs| condition_is(cs.iter().map(|c| (c.type_.as_str(), c.status.as_str())), "Failed", "True"))
-        .unwrap_or(false);
+    let failed = failed_condition(j).is_some();
     // Spec §5.1: err if condition `Failed=True`. A Job still running toward its
     // completion count (succeeded < completions, not failed) is `Ok`, not a warning.
     let status = if failed { Status::Err } else { Status::Ok };
@@ -148,6 +241,32 @@ fn cronjob(c: &CronJob) -> (Status, Badges) {
     (if suspended { Status::Warn } else { Status::Ok }, vec![schedule])
 }
 
+/// A container that has legitimately finished (e.g. an init-like sidecar) is permanently
+/// `ready: false` but should not count against the pod's readiness.
+fn is_completed(c: &ContainerStatus) -> bool {
+    c.state
+        .as_ref()
+        .and_then(|s| s.terminated.as_ref())
+        .and_then(|t| t.reason.as_deref())
+        == Some("Completed")
+}
+
+/// The first container with a waiting reason or a non-`Completed` terminated reason, the same
+/// one the node badge shows.
+fn container_reason(statuses: &[ContainerStatus]) -> Option<(&ContainerStatus, String)> {
+    statuses.iter().find_map(|c| {
+        let state = c.state.as_ref()?;
+        let reason = state.waiting.as_ref().and_then(|w| w.reason.clone()).or_else(|| {
+            state
+                .terminated
+                .as_ref()
+                .and_then(|t| t.reason.clone())
+                .filter(|r| r != "Completed")
+        })?;
+        Some((c, reason))
+    })
+}
+
 const POD_ERR_REASONS: [&str; 5] = ["CrashLoopBackOff", "ImagePullBackOff", "ErrImagePull", "OOMKilled", "Error"];
 
 fn pod(p: &Pod) -> (Status, Badges) {
@@ -156,28 +275,10 @@ fn pod(p: &Pod) -> (Status, Badges) {
     let statuses = st.and_then(|s| s.container_statuses.as_ref()).cloned().unwrap_or_default();
     let restarts: i32 = statuses.iter().map(|c| c.restart_count).sum();
 
-    // A container that has legitimately finished (e.g. an init-like sidecar) is permanently
-    // `ready: false` but should not count against the pod's readiness.
-    let is_completed = |c: &k8s_openapi::api::core::v1::ContainerStatus| {
-        c.state
-            .as_ref()
-            .and_then(|s| s.terminated.as_ref())
-            .and_then(|t| t.reason.as_deref())
-            == Some("Completed")
-    };
     let all_ready = !statuses.is_empty() && statuses.iter().all(|c| c.ready || is_completed(c));
 
     // A waiting/terminated reason is more informative than the phase.
-    let reason = statuses.iter().find_map(|c| {
-        let state = c.state.as_ref()?;
-        state.waiting.as_ref().and_then(|w| w.reason.clone()).or_else(|| {
-            state
-                .terminated
-                .as_ref()
-                .and_then(|t| t.reason.clone())
-                .filter(|r| r != "Completed")
-        })
-    });
+    let reason = container_reason(&statuses).map(|(_, r)| r);
 
     let is_err = phase == "Failed" || reason.as_deref().is_some_and(|r| POD_ERR_REASONS.contains(&r));
     // A pod being deleted (graceful termination in progress) is a warning, not the plain
@@ -216,6 +317,35 @@ pub fn selector_matches(selector: &BTreeMap<String, String>, labels: Option<&BTr
     selector.iter().all(|(k, v)| labels.get(k) == Some(v))
 }
 
+/// Ready means a `Ready=True` condition, a phase of Running when one is known, and not being deleted;
+/// a pod without a `Ready` condition or a phase counts as ready, so hand-written fixtures stay healthy.
+pub(crate) fn pod_ready(p: &Pod) -> bool {
+    let status = p.status.as_ref();
+    p.metadata.deletion_timestamp.is_none()
+        && status.and_then(|s| s.phase.as_deref()).is_none_or(|ph| ph == "Running")
+        && status
+            .and_then(|s| s.conditions.as_ref())
+            .is_none_or(|cs| cs.iter().all(|c| c.type_ != "Ready" || c.status == "True"))
+}
+
+/// Pods a Service's selector matches and how many of them are ready; `None` without a selector
+/// (headless/ExternalName services are not orphans).
+fn selected_pods(s: &Service, store: &Store) -> Option<(usize, usize)> {
+    let sel = s.spec.as_ref()?.selector.as_ref()?;
+    let ns = s.metadata.namespace.as_deref();
+    let (mut matched, mut ready) = (0, 0);
+    for p in store.iter_kind(Kind::Pod).filter(|p| p.namespace() == ns) {
+        if !selector_matches(sel, p.meta().labels.as_ref()) {
+            continue;
+        }
+        matched += 1;
+        if matches!(p, Object::Pod(pod) if pod_ready(pod)) {
+            ready += 1;
+        }
+    }
+    Some((matched, ready))
+}
+
 fn service(s: &Service, store: &Store) -> (Status, Badges) {
     let spec = s.spec.as_ref();
     let ty = spec.and_then(|s| s.type_.clone()).unwrap_or_else(|| "ClusterIP".into());
@@ -228,26 +358,14 @@ fn service(s: &Service, store: &Store) -> (Status, Badges) {
         };
         badges.push(format!("{}→{}", port.port, target));
     }
-    let status = match spec.and_then(|s| s.selector.as_ref()) {
-        // Headless/ExternalName services without a selector are not "orphans".
-        None => Status::Ok,
-        Some(sel) => {
-            let ns = s.metadata.namespace.as_deref();
-            let any = store
-                .iter_kind(crate::store::Kind::Pod)
-                .filter(|p| p.namespace() == ns)
-                .any(|p| selector_matches(sel, p.meta().labels.as_ref()));
-            if any {
-                Status::Ok
-            } else {
-                Status::Warn
-            }
-        }
+    let status = match selected_pods(s, store) {
+        Some((_, 0)) => Status::Warn,
+        _ => Status::Ok,
     };
     (status, badges)
 }
 
-fn ingress(i: &Ingress) -> (Status, Badges) {
+fn ingress(i: &Ingress, store: &Store) -> (Status, Badges) {
     let hosts: Vec<String> = i
         .spec
         .as_ref()
@@ -259,7 +377,15 @@ fn ingress(i: &Ingress) -> (Status, Badges) {
         1 => Some(hosts[0].clone()),
         n => Some(format!("{} +{}", hosts[0], n - 1)),
     };
-    (Status::Ok, badge.into_iter().collect())
+    let missing = !missing_backends(i, store).is_empty();
+    (if missing { Status::Warn } else { Status::Ok }, badge.into_iter().collect())
+}
+
+fn missing_backends(i: &Ingress, store: &Store) -> Vec<String> {
+    ingress_backend_names(i)
+        .into_iter()
+        .filter(|name| store.find(Kind::Service, i.metadata.namespace.as_deref(), name).is_none())
+        .collect()
 }
 
 fn pvc(p: &PersistentVolumeClaim) -> (Status, Badges) {
@@ -291,20 +417,179 @@ fn pv(p: &PersistentVolume) -> (Status, Badges) {
     (Status::Ok, badges)
 }
 
+/// The condition that makes an HPA yellow, most severe first: it cannot read metrics, cannot
+/// scale, or is pinned at its min/max.
+fn hpa_blocker(h: &HorizontalPodAutoscaler) -> Option<&HorizontalPodAutoscalerCondition> {
+    let conds = h.status.as_ref()?.conditions.as_deref()?;
+    [("ScalingActive", "False"), ("AbleToScale", "False"), ("ScalingLimited", "True")]
+        .iter()
+        .find_map(|(ty, st)| conds.iter().find(|c| c.type_ == *ty && c.status == *st))
+}
+
 fn hpa(h: &HorizontalPodAutoscaler) -> (Status, Badges) {
     let spec = &h.spec;
     let min = spec.min_replicas.unwrap_or(1);
     let max = spec.max_replicas;
     let st = h.status.as_ref();
     let current = st.and_then(|s| s.current_replicas).unwrap_or(0);
-    let limited = st
-        .and_then(|s| s.conditions.as_ref())
-        .map(|cs| condition_is(cs.iter().map(|c| (c.type_.as_str(), c.status.as_str())), "ScalingLimited", "True"))
-        .unwrap_or(false);
+    let limited = hpa_blocker(h).is_some();
     (
         if limited { Status::Warn } else { Status::Ok },
         vec![format!("{min}–{max}"), current.to_string()],
     )
+}
+
+const MESSAGE_LIMIT: usize = 300;
+
+/// A problem with no cause yet (`graph::build` links causes); the message is trimmed.
+fn own(reason: impl Into<String>, message: Option<String>) -> Problem {
+    let message = message.map(|m| {
+        if m.chars().count() <= MESSAGE_LIMIT {
+            m
+        } else {
+            let mut t: String = m.chars().take(MESSAGE_LIMIT - 1).collect();
+            t.push('…');
+            t
+        }
+    });
+    Problem {
+        reason: reason.into(),
+        message,
+        cause: None,
+    }
+}
+
+/// Why `obj` is yellow or red, from its own status fields; `None` for healthy objects.
+pub fn problem(obj: &Object, status: Status, store: &Store) -> Option<Problem> {
+    if status < Status::Warn {
+        return None;
+    }
+    Some(match obj {
+        Object::Pod(p) => pod_problem(p),
+        Object::Deployment(d) => deployment_problem(d),
+        Object::StatefulSet(s) => {
+            let desired = s.spec.as_ref().and_then(|s| s.replicas).unwrap_or(1);
+            not_ready(s.status.as_ref().and_then(|s| s.ready_replicas).unwrap_or(0), desired)
+        }
+        Object::DaemonSet(d) => {
+            let st = d.status.as_ref();
+            not_ready(
+                st.map(|s| s.number_ready).unwrap_or(0),
+                st.map(|s| s.desired_number_scheduled).unwrap_or(0),
+            )
+        }
+        Object::ReplicaSet(r) => {
+            let desired = r.spec.as_ref().and_then(|s| s.replicas).unwrap_or(1);
+            not_ready(r.status.as_ref().and_then(|s| s.ready_replicas).unwrap_or(0), desired)
+        }
+        Object::Job(j) => match failed_condition(j) {
+            Some(c) => own(c.reason.clone().unwrap_or_else(|| "Failed".into()), c.message.clone()),
+            None => own("Failed", None),
+        },
+        Object::CronJob(_) => own("Suspended", None),
+        Object::Service(s) => match selected_pods(s, store) {
+            Some((0, _)) => own("Selects no pods", None),
+            _ => own("No ready endpoints", None),
+        },
+        Object::Ingress(i) => {
+            let missing = missing_backends(i, store);
+            debug_assert!(!missing.is_empty());
+            let message = match missing.as_slice() {
+                [one] => format!("service \"{one}\" does not exist"),
+                many => format!(
+                    "services {} do not exist",
+                    many.iter().map(|n| format!("\"{n}\"")).collect::<Vec<_>>().join(", ")
+                ),
+            };
+            own("Backend not found", Some(message))
+        }
+        Object::PersistentVolumeClaim(_) => own("Pending", None),
+        Object::HorizontalPodAutoscaler(h) => match hpa_blocker(h) {
+            Some(c) => own(c.reason.clone().unwrap_or_else(|| c.type_.clone()), c.message.clone()),
+            None => own("ScalingLimited", None),
+        },
+        _ => return None,
+    })
+}
+
+/// `N of M not ready`, or `Rolling out` for a workload that is yellow only because a rollout runs.
+fn not_ready(ready: i32, desired: i32) -> Problem {
+    if ready < desired {
+        own(format!("{} of {desired} not ready", desired - ready), None)
+    } else {
+        own("Rolling out", None)
+    }
+}
+
+fn deployment_problem(d: &Deployment) -> Problem {
+    let conds = d.status.as_ref().and_then(|s| s.conditions.as_deref()).unwrap_or_default();
+    let failing = conds
+        .iter()
+        .find(|c| c.type_ == "Progressing" && c.status == "False")
+        .or_else(|| conds.iter().find(|c| c.type_ == "ReplicaFailure" && c.status == "True"));
+    if let Some(c) = failing {
+        return own(c.reason.clone().unwrap_or_else(|| c.type_.clone()), c.message.clone());
+    }
+    let desired = d.spec.as_ref().and_then(|s| s.replicas).unwrap_or(1);
+    not_ready(d.status.as_ref().and_then(|s| s.ready_replicas).unwrap_or(0), desired)
+}
+
+fn pod_problem(p: &Pod) -> Problem {
+    let st = p.status.as_ref();
+    let statuses = st.and_then(|s| s.container_statuses.as_deref()).unwrap_or_default();
+    let terminating = p.metadata.deletion_timestamp.is_some();
+    if let Some((c, reason)) = container_reason(statuses) {
+        // Same precedence as the badge: an err reason wins over Terminating.
+        if !terminating || POD_ERR_REASONS.contains(&reason.as_str()) {
+            let message = container_message(c, &reason);
+            return own(reason, message);
+        }
+    }
+    if terminating {
+        return own("Terminating", None);
+    }
+    let conds = st.and_then(|s| s.conditions.as_deref()).unwrap_or_default();
+    if let Some(c) = conds.iter().find(|c| c.type_ == "PodScheduled" && c.status == "False") {
+        return own(c.reason.clone().unwrap_or_else(|| "Unschedulable".into()), c.message.clone());
+    }
+    let phase = st.and_then(|s| s.phase.clone()).unwrap_or_else(|| "Unknown".into());
+    if phase != "Running" {
+        return own(phase, st.and_then(|s| s.message.clone()));
+    }
+    let names: Vec<&str> = statuses
+        .iter()
+        .filter(|c| !c.ready && !is_completed(c))
+        .map(|c| c.name.as_str())
+        .collect();
+    own(
+        "Not ready",
+        (!names.is_empty()).then(|| format!("containers not ready: {}", names.join(", "))),
+    )
+}
+
+/// `container <name>: <text>`: for CrashLoopBackOff the last run's exit code, for a terminated
+/// container its exit code and message, otherwise the waiting message.
+fn container_message(c: &ContainerStatus, reason: &str) -> Option<String> {
+    let state = c.state.as_ref();
+    let waiting = state.and_then(|s| s.waiting.as_ref()).and_then(|w| w.message.clone());
+    let terminated = state
+        .and_then(|s| s.terminated.as_ref())
+        .filter(|t| t.reason.as_deref() == Some(reason));
+    let text = if reason == "CrashLoopBackOff" {
+        c.last_state
+            .as_ref()
+            .and_then(|s| s.terminated.as_ref())
+            .map(|t| format!("last exit code {} ({})", t.exit_code, t.reason.as_deref().unwrap_or("Error")))
+            .or(waiting)
+    } else if let Some(t) = terminated {
+        Some(match &t.message {
+            Some(m) => format!("exit code {}: {m}", t.exit_code),
+            None => format!("exit code {}", t.exit_code),
+        })
+    } else {
+        waiting
+    }?;
+    Some(format!("container {}: {text}", c.name))
 }
 
 fn labels_string(labels: Option<&BTreeMap<String, String>>) -> String {
@@ -376,10 +661,13 @@ pub fn summary(obj: &Object) -> SummaryRows {
             ));
             if let Some(cs) = st.and_then(|s| s.conditions.as_ref()) {
                 rows.extend(cs.iter().map(|c| {
-                    (
-                        format!("Condition {}", c.type_),
-                        format!("{} {}", c.status, c.reason.clone().unwrap_or_default()),
-                    )
+                    let mut text = format!("{} {}", c.status, c.reason.clone().unwrap_or_default());
+                    // The message says why a rollout is stuck (which ReplicaSet, which deadline).
+                    if let Some(m) = c.message.as_deref().filter(|m| !m.is_empty()) {
+                        text.push_str(" — ");
+                        text.push_str(m);
+                    }
+                    (format!("Condition {}", c.type_), text)
                 }));
             }
         }
@@ -451,6 +739,207 @@ pub fn summary(obj: &Object) -> SummaryRows {
 mod tests {
     use super::*;
     use crate::store::{Kind, Store};
+
+    #[test]
+    fn a_usage_badge_is_appended_without_touching_the_status() {
+        let s = crate::metrics::usage::tests::sampled();
+        let plain = Store::from_fixture("metrics").unwrap();
+        let hot = s.find(Kind::Pod, Some("m"), "hot").unwrap();
+        let (status, badges) = describe(hot, &s);
+        let (plain_status, plain_badges) = describe(plain.find(Kind::Pod, Some("m"), "hot").unwrap(), &plain);
+        assert_eq!(status, plain_status, "usage never changes the status");
+        assert_eq!(badges.last().map(String::as_str), Some("mem 92%"));
+        assert_eq!(badges[..badges.len() - 1], plain_badges[..]);
+        let api = s.find(Kind::Deployment, Some("m"), "api").unwrap();
+        assert_eq!(
+            describe(api, &s).1,
+            describe(plain.find(Kind::Deployment, Some("m"), "api").unwrap(), &plain).1,
+            "20%/39%: no badge"
+        );
+    }
+
+    fn problem_of(store: &Store, kind: Kind, name: &str) -> Option<Problem> {
+        let obj = store.find(kind, Some("p"), name).unwrap();
+        let (status, _) = describe(obj, store);
+        problem(obj, status, store)
+    }
+
+    fn own(reason: &str, message: Option<&str>) -> Option<Problem> {
+        Some(Problem {
+            reason: reason.into(),
+            message: message.map(str::to_owned),
+            cause: None,
+        })
+    }
+
+    #[test]
+    fn pod_problems_name_the_container_and_kubelet_message() {
+        let s = Store::from_fixture("problems").unwrap();
+        assert_eq!(
+            problem_of(&s, Kind::Pod, "pull"),
+            own("ImagePullBackOff", Some("container web: Back-off pulling image \"nginx:nope\""))
+        );
+        assert_eq!(
+            problem_of(&s, Kind::Pod, "crash"),
+            own("CrashLoopBackOff", Some("container api: last exit code 1 (Error)"))
+        );
+        assert_eq!(
+            problem_of(&s, Kind::Pod, "unsched"),
+            own("Unschedulable", Some("0/3 nodes are available: 3 Insufficient cpu."))
+        );
+        assert_eq!(
+            problem_of(&s, Kind::Pod, "halfready"),
+            own("Not ready", Some("containers not ready: b"))
+        );
+    }
+
+    #[test]
+    fn long_messages_are_trimmed_to_300_characters() {
+        let s = Store::from_fixture("problems").unwrap();
+        let p = problem_of(&s, Kind::Pod, "chatty").unwrap();
+        assert_eq!(p.reason, "CreateContainerConfigError");
+        let m = p.message.unwrap();
+        assert_eq!(m.chars().count(), 300);
+        assert!(m.starts_with("container c: xxx") && m.ends_with('…'), "{m}");
+    }
+
+    #[test]
+    fn workload_problems_prefer_the_controller_condition() {
+        let s = Store::from_fixture("problems").unwrap();
+        assert_eq!(
+            problem_of(&s, Kind::Deployment, "deadline"),
+            own(
+                "ProgressDeadlineExceeded",
+                Some("ReplicaSet \"deadline-1\" has timed out progressing.")
+            )
+        );
+        assert_eq!(
+            problem_of(&s, Kind::Deployment, "quota"),
+            own("FailedCreate", Some("pods \"quota-1\" is forbidden: exceeded quota: compute"))
+        );
+        assert_eq!(problem_of(&s, Kind::Deployment, "slow"), own("2 of 3 not ready", None));
+        assert_eq!(problem_of(&s, Kind::Deployment, "healthy"), None);
+        assert_eq!(
+            problem_of(&s, Kind::Job, "failed"),
+            own("BackoffLimitExceeded", Some("Job has reached the specified backoff limit"))
+        );
+        assert_eq!(problem_of(&s, Kind::CronJob, "paused"), own("Suspended", None));
+    }
+
+    #[test]
+    fn network_storage_and_scaling_problems() {
+        let s = Store::from_fixture("problems").unwrap();
+        assert_eq!(problem_of(&s, Kind::Service, "nopods"), own("Selects no pods", None));
+        assert_eq!(problem_of(&s, Kind::Service, "down"), own("No ready endpoints", None));
+        assert_eq!(
+            problem_of(&s, Kind::Ingress, "ing"),
+            own("Backend not found", Some("service \"missing\" does not exist"))
+        );
+        assert_eq!(problem_of(&s, Kind::PersistentVolumeClaim, "claim"), own("Pending", None));
+        assert_eq!(
+            problem_of(&s, Kind::HorizontalPodAutoscaler, "nometrics"),
+            own("FailedGetResourceMetric", Some("unable to get metrics for resource cpu"))
+        );
+    }
+
+    #[test]
+    fn services_ingresses_and_hpas_turn_yellow_when_they_cannot_work() {
+        let s = Store::from_fixture("problems").unwrap();
+        let status = |kind, name| describe(s.find(kind, Some("p"), name).unwrap(), &s).0;
+        assert_eq!(status(Kind::Service, "down"), Status::Warn);
+        assert_eq!(status(Kind::Ingress, "ing"), Status::Warn);
+        assert_eq!(status(Kind::HorizontalPodAutoscaler, "nometrics"), Status::Warn);
+        // The existing healthy cases stay green.
+        let st = Store::from_fixture("statuses").unwrap();
+        assert_eq!(describe(st.find(Kind::Service, Some("s"), "matched").unwrap(), &st).0, Status::Ok);
+        assert_eq!(describe(st.find(Kind::Ingress, Some("s"), "multi").unwrap(), &st).0, Status::Ok);
+    }
+
+    #[test]
+    fn every_other_row_of_the_reason_table() {
+        let s = Store::from_fixture("problems").unwrap();
+        assert_eq!(problem_of(&s, Kind::StatefulSet, "db"), own("2 of 3 not ready", None));
+        assert_eq!(problem_of(&s, Kind::DaemonSet, "agent"), own("1 of 3 not ready", None));
+        assert_eq!(problem_of(&s, Kind::ReplicaSet, "rs"), own("2 of 2 not ready", None));
+        assert_eq!(problem_of(&s, Kind::Deployment, "rolling"), own("Rolling out", None));
+        assert_eq!(
+            problem_of(&s, Kind::Pod, "failedpod"),
+            own("Failed", Some("The node was low on resource: memory."))
+        );
+        assert_eq!(
+            problem_of(&s, Kind::Pod, "pendingmsg"),
+            own("Pending", Some("waiting for something"))
+        );
+        assert_eq!(problem_of(&s, Kind::Pod, "going"), own("Terminating", None));
+        assert_eq!(
+            problem_of(&s, Kind::Pod, "oom"),
+            own("OOMKilled", Some("container c: exit code 137"))
+        );
+        assert_eq!(
+            problem_of(&s, Kind::Pod, "errored"),
+            own("Error", Some("container c: exit code 2: boom"))
+        );
+        assert_eq!(
+            problem_of(&s, Kind::Ingress, "many"),
+            own("Backend not found", Some("services \"gone-a\", \"gone-b\" do not exist"))
+        );
+        assert_eq!(
+            problem_of(&s, Kind::HorizontalPodAutoscaler, "cantscale"),
+            own("FailedGetScale", Some("no such target"))
+        );
+        assert_eq!(describe(s.find(Kind::Service, Some("p"), "headless").unwrap(), &s).0, Status::Ok);
+        assert_eq!(problem_of(&s, Kind::Service, "headless"), None);
+    }
+
+    #[test]
+    fn unknown_ready_and_terminating_pods_do_not_back_a_service() {
+        let s = Store::from_fixture("problems").unwrap();
+        assert_eq!(problem_of(&s, Kind::Service, "unk"), own("No ready endpoints", None));
+        assert_eq!(problem_of(&s, Kind::Service, "goingsvc"), own("No ready endpoints", None));
+    }
+
+    #[test]
+    fn only_running_pods_are_ready_and_a_pod_without_status_still_is() {
+        let pod = |status: serde_json::Value| -> Pod {
+            serde_json::from_value(serde_json::json!({ "metadata": { "name": "p" }, "status": status })).unwrap()
+        };
+        for phase in ["Pending", "Failed", "Succeeded"] {
+            assert!(!pod_ready(&pod(serde_json::json!({ "phase": phase }))), "{phase}");
+        }
+        assert!(pod_ready(&pod(serde_json::json!({ "phase": "Running" }))));
+        assert!(!pod_ready(&pod(
+            serde_json::json!({ "phase": "Running", "conditions": [{ "type": "Ready", "status": "False" }] })
+        )));
+        assert!(pod_ready(&pod(serde_json::json!({}))));
+        let bare: Pod = serde_json::from_value(serde_json::json!({ "metadata": { "name": "p" } })).unwrap();
+        assert!(pod_ready(&bare));
+    }
+
+    #[test]
+    fn a_problem_exists_exactly_when_the_status_is_warn_or_err() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+        let mut checked = 0;
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().and_then(|e| e.to_str()) != Some("yaml") {
+                continue;
+            }
+            let name = path.file_stem().unwrap().to_str().unwrap().to_owned();
+            let Ok(store) = Store::from_fixture(&name) else { continue };
+            for obj in store.iter() {
+                let (status, _) = describe(obj, &store);
+                assert_eq!(
+                    problem(obj, status, &store).is_some(),
+                    status >= Status::Warn,
+                    "{name}: {:?}/{} is {status:?}",
+                    obj.kind(),
+                    obj.name()
+                );
+                checked += 1;
+            }
+        }
+        assert!(checked > 50, "only {checked} objects checked");
+    }
 
     fn describe_named(store: &Store, kind: Kind, name: &str) -> (Status, Vec<String>) {
         let obj = store.find(kind, Some("s"), name).or_else(|| store.find(kind, None, name)).unwrap();
@@ -558,5 +1047,70 @@ mod tests {
         let svc = s.find(Kind::Service, Some("s"), "matched").unwrap();
         let rows = summary(svc);
         assert!(rows.iter().any(|(k, v)| k == "Selector" && v == "app=running"));
+    }
+
+    fn describe_rolling(kind: Kind, name: &str) -> (Status, Vec<String>) {
+        let s = Store::from_fixture("rolling").unwrap();
+        describe(s.find(kind, Some("r"), name).unwrap(), &s)
+    }
+
+    #[test]
+    fn rollouts_in_progress_get_a_rolling_badge() {
+        let strs = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(describe_rolling(Kind::Deployment, "settled"), (Status::Ok, strs(&["3/3", "web:2"])));
+        assert_eq!(
+            describe_rolling(Kind::Deployment, "updating"),
+            (Status::Warn, strs(&["3/3", "rolling 1/3", "web:3"]))
+        );
+        // The controller has not seen the latest spec yet.
+        assert_eq!(
+            describe_rolling(Kind::Deployment, "unseen"),
+            (Status::Warn, strs(&["3/3", "rolling 3/3", "web:4"]))
+        );
+        // A stuck rollout stays an error.
+        assert_eq!(
+            describe_rolling(Kind::Deployment, "deadline"),
+            (Status::Err, strs(&["0/3", "rolling 1/3", "web:bad"]))
+        );
+        assert_eq!(
+            describe_rolling(Kind::StatefulSet, "db"),
+            (Status::Warn, strs(&["3/3", "rolling 1/3", "postgres:17"]))
+        );
+        assert_eq!(
+            describe_rolling(Kind::DaemonSet, "agent"),
+            (Status::Warn, strs(&["4/4", "rolling 2/4", "agent:3"]))
+        );
+        // Not rolling although updated < desired: paused, OnDelete, partition already reached.
+        assert_eq!(describe_rolling(Kind::Deployment, "paused"), (Status::Ok, strs(&["3/3", "web:5"])));
+        assert_eq!(
+            describe_rolling(Kind::StatefulSet, "ondelete"),
+            (Status::Ok, strs(&["3/3", "postgres:18"]))
+        );
+        assert_eq!(
+            describe_rolling(Kind::StatefulSet, "canary-done"),
+            (Status::Ok, strs(&["5/5", "postgres:18"]))
+        );
+        assert_eq!(describe_rolling(Kind::DaemonSet, "manual"), (Status::Ok, strs(&["4/4", "agent:4"])));
+        // Partitioned rollout that is still behind: 1 updated < 5 - 3.
+        assert_eq!(
+            describe_rolling(Kind::StatefulSet, "canary-behind"),
+            (Status::Warn, strs(&["5/5", "rolling 1/5", "postgres:18"]))
+        );
+        // Unobserved generation and no updated count: no invented number.
+        assert_eq!(
+            describe_rolling(Kind::Deployment, "nocount"),
+            (Status::Warn, strs(&["3/3", "rolling", "web:6"]))
+        );
+    }
+
+    #[test]
+    fn deployment_overview_carries_the_condition_message() {
+        let s = Store::from_fixture("rolling").unwrap();
+        let rows = summary(s.find(Kind::Deployment, Some("r"), "deadline").unwrap());
+        assert!(
+            rows.iter().any(|(k, v)| k == "Condition Progressing"
+                && v == "False ProgressDeadlineExceeded — ReplicaSet \"deadline-2\" has timed out progressing."),
+            "{rows:?}"
+        );
     }
 }

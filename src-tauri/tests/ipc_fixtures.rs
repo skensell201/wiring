@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use serde::Serialize;
 use wiring_lib::error::{AppError, ErrorKind};
-use wiring_lib::graph::{Edge, Graph, GraphDelta, GroupInfo, Node, Relation, Status};
+use wiring_lib::graph::{Edge, Graph, GraphDelta, GroupInfo, Node, Problem, Relation, Status};
 use wiring_lib::kubeconfig::ContextInfo;
 use wiring_lib::logs::{LogLine, LogMessage};
 use wiring_lib::session::emitter::{ConnectionState, K8sEvent, ObjectEvents};
@@ -34,6 +34,7 @@ fn node(id: &str, kind: Kind, name: &str, status: Status, badges: &[&str], group
         status,
         badges: badges.iter().map(|s| s.to_string()).collect(),
         group,
+        problem: None,
     }
 }
 
@@ -75,19 +76,26 @@ fn graph() {
                 &["3/3", "nginx:1.27"],
                 None,
             ),
-            node(
-                "PodGroup/payments/Deployment/web",
-                Kind::PodGroup,
-                "web",
-                Status::Err,
-                &["×7", "6 ok · 1 err"],
-                Some(GroupInfo {
-                    count: 7,
-                    ok: 6,
-                    warn: 0,
-                    err: 1,
+            Node {
+                problem: Some(Problem {
+                    reason: "1 of 7 pods: CrashLoopBackOff".into(),
+                    message: Some("web-7f9c-x2k: container web: last exit code 1 (Error)".into()),
+                    cause: None,
                 }),
-            ),
+                ..node(
+                    "PodGroup/payments/Deployment/web",
+                    Kind::PodGroup,
+                    "web",
+                    Status::Err,
+                    &["×7", "6 ok · 1 err"],
+                    Some(GroupInfo {
+                        count: 7,
+                        ok: 6,
+                        warn: 0,
+                        err: 1,
+                    }),
+                )
+            },
         ],
         edges: vec![Edge::new(
             "Deployment/payments/web",
@@ -219,4 +227,89 @@ fn log_message_variants_are_tagged() {
     .unwrap();
     assert_eq!(v["type"], "error");
     assert_eq!(v["sessionId"], 1);
+}
+
+#[test]
+fn revision() {
+    use wiring_lib::session::rollout::Revision;
+    assert_matches(
+        "revision",
+        &Revision {
+            revision: 3,
+            current: true,
+            created_at: Some("2026-10-05T10:00:00Z".into()),
+            change_cause: None,
+            images: vec!["nginx:1.27".into()],
+            template: "metadata:\n  labels:\n    app: web\nspec:\n  containers:\n  - image: nginx:1.27\n    name: web\n".into(),
+        },
+    );
+}
+
+#[test]
+fn forward_and_port_option() {
+    use wiring_lib::forward::{Forward, ForwardStatus, PortOption};
+    assert_matches(
+        "forward",
+        &Forward {
+            id: 1,
+            node_id: "Service/shop/web".into(),
+            target_label: "Service web".into(),
+            remote_port: 80,
+            local_port: 8080,
+            pod: Some("web-6f8d6c8667-2m5mh".into()),
+            status: ForwardStatus::Active,
+            message: None,
+        },
+    );
+    assert_matches(
+        "port_option",
+        &PortOption {
+            port: 8080,
+            label: "8080 → http (web)".into(),
+        },
+    );
+}
+
+#[test]
+fn metrics_updated() {
+    use wiring_lib::metrics::{MetricsState, MetricsUpdate};
+    assert_matches(
+        "metrics_updated",
+        &MetricsUpdate {
+            state: MetricsState::Available,
+        },
+    );
+    for (state, json) in [
+        (MetricsState::Pending, "pending"),
+        (MetricsState::Unavailable, "unavailable"),
+        (MetricsState::Forbidden, "forbidden"),
+    ] {
+        assert_eq!(
+            serde_json::to_value(MetricsUpdate { state }).unwrap(),
+            serde_json::json!({ "state": json })
+        );
+    }
+}
+
+#[test]
+fn update_check_and_progress() {
+    use wiring_lib::updates::{UpdateCheck, UpdateInfo, UpdateProgress};
+    assert_matches(
+        "update_check",
+        &UpdateCheck {
+            current: "0.2.0".into(),
+            update: Some(UpdateInfo {
+                version: "0.3.0".into(),
+                date: Some("2026-10-05".into()),
+                notes: Some("Workload actions, problem explanations, port-forward and metrics.".into()),
+            }),
+        },
+    );
+    assert_matches(
+        "update_progress",
+        &UpdateProgress {
+            downloaded: 4194304,
+            total: Some(47185920),
+        },
+    );
 }

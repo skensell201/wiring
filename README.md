@@ -49,6 +49,7 @@ Wiring reads your kubeconfig from `~/.kube/config`, or from `KUBECONFIG` when it
 - Filter it by kind with the chips under the title, or search it with <kbd>⌘K</kbd> / <kbd>Ctrl+K</kbd>.
 - Pods that belong to the same owner collapse into one group. Double-click a group to expand it.
 - Status dots and badges show what is healthy, degraded or failing.
+- Select a yellow or red object to see why. Overview starts with the reason and the Kubernetes message behind it, followed by the chain of objects that leads to the root cause (for example Deployment → Pod → `ImagePullBackOff`). The same chain is highlighted on the graph.
 
 **Navigator.** The left sidebar lists every kubeconfig context and the resources of the selected namespace by category: Workloads, Config, Network, Storage and Access Control. Each kind shows a live count and the worst status among its objects. Kinds your RBAC role cannot read are struck through instead of failing. The sidebar collapses to an icon rail.
 
@@ -70,6 +71,15 @@ If the object changed on the server while you were editing, you can **Reload** (
 
 **+ Create** in the header starts from a template for any watched kind. The trash icon in the details panel deletes an object after confirmation. On a pod group it deletes every member pod, and the controller recreates them.
 
+**Rollout actions.** **Actions ▾** in the details panel, or a right-click on a graph node or a table row, opens the actions for the object:
+- **Scale…** (Deployments, StatefulSets) sets the replica count. When a HorizontalPodAutoscaler manages the workload, the dialog warns that it will override the value.
+- **Restart** (Deployments, StatefulSets, DaemonSets) replaces the pods the way `kubectl rollout restart` does.
+- **Rollback…** opens the **History** tab. Pick a revision to see its pod template diff, then roll back to it.
+
+While a rollout runs, the node shows `rolling updated/desired`. A Deployment that misses its progress deadline turns red, and Overview shows why.
+
+**Port-forward.** **Port-forward…** in the Actions menu (Pods, Services, Deployments, StatefulSets, DaemonSets) forwards a local port on `127.0.0.1` to the object. Pick one of its ports. The local port defaults to the same number when it is free. A Service or workload forward follows ready pods, so it keeps working through restarts and rollouts. The **⇄** button in the header lists the running forwards, with **Open** (in the browser), **Copy** and **Stop**. Forwards stop when you switch cluster or disconnect.
+
 **Logs.** Pods and workloads (Deployment, StatefulSet, DaemonSet, Job, CronJob and pod groups) get a **Logs** tab:
 - It shows the last 500 lines of each container and then follows live output.
 - A workload's pods are merged into one view, each line prefixed with a coloured `[pod/container]` tag.
@@ -88,7 +98,10 @@ If the object changed on the server while you were editing, you can **Reload** (
 ```bash
 examples/demo/setup.sh                 # uses the docker-desktop context
 examples/demo/setup.sh kind-kind       # or name another context
+examples/demo/setup.sh --with-metrics  # also install metrics-server (flag and context can be combined, in any order)
 ```
+
+`--with-metrics` applies the official metrics-server manifest and adds `--kubelet-insecure-tls` (once; re-running is safe), which local clusters need. It makes the CPU and Memory columns and the Overview usage rows show data; without metrics-server they stay empty.
 
 The manifests are in [`examples/demo/`](examples/demo/): [`shop.yaml`](examples/demo/shop.yaml), [`blog.yaml`](examples/demo/blog.yaml) and [`rbac.yaml`](examples/demo/rbac.yaml).
 
@@ -150,6 +163,7 @@ docs/                    design specs, plans, IPC contract
 | [YAML editing design](docs/superpowers/specs/2026-09-18-yaml-editing-design.md) | Edit, diff, apply, conflicts, Create and Delete |
 | [Pod logs design](docs/superpowers/specs/2026-09-21-pod-logs-design.md) | Log sessions, merging, previous runs and the log view |
 | [Code signing](docs/code-signing.md) | Signing and notarizing the macOS and Windows installers in CI |
+| [Automatic updates](docs/updates.md) | The updater key and secrets, the update feed, checking a release |
 
 These are the implementation plans behind each feature:
 - [backend](docs/superpowers/plans/2026-09-17-wiring-backend.md)
@@ -170,6 +184,8 @@ git push origin v0.2.0
 The [release workflow](.github/workflows/release.yml) builds a universal macOS `.dmg` and the Windows `.msi` and `.exe` installers, then attaches them to a **draft** GitHub release. Review the draft and publish it. Bump the version in `package.json`, `src-tauri/tauri.conf.json` and `src-tauri/Cargo.toml` before tagging.
 
 The workflow signs and notarizes the macOS app and signs the Windows installers once the signing secrets are configured. Until then it builds unsigned. [Code signing](docs/code-signing.md) explains what to buy and which secrets to set. It also shows how to check a setup with a manual run (`gh workflow run release.yml`), which builds the installers as workflow artifacts without creating a release.
+
+Installed copies update themselves from the latest published release; updates are signed with a separate updater key. [Automatic updates](docs/updates.md) explains the key, the secrets and how to check a release.
 
 ## License
 

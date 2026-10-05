@@ -28,7 +28,7 @@ function CanvasInner() {
       nodes: s.nodes, edges: s.edges, graphReady: s.graphReady, hiddenKinds: s.hiddenKinds,
       search: s.search, hoveredId: s.hoveredId, selectedId: s.selectedId, expandedGroups: s.expandedGroups,
       namespace: s.connection.namespace, context: s.connection.context, focusRequest: s.focusRequest,
-      select: s.select, setHovered: s.setHovered, toggleGroup: s.toggleGroup,
+      select: s.select, openActionsMenu: s.openActionsMenu, setHovered: s.setHovered, toggleGroup: s.toggleGroup,
       clearFocusRequest: s.clearFocusRequest,
     })),
   );
@@ -77,6 +77,10 @@ function CanvasInner() {
   const onNodeDoubleClick = useCallback<NodeMouseHandler<ResourceFlowNode>>((_, node) => {
     if (node.data.node.kind === "PodGroup") void s.toggleGroup(node.id);
   }, [s.toggleGroup]);
+  const onNodeContextMenu = useCallback<NodeMouseHandler<ResourceFlowNode>>((e, node) => {
+    e.preventDefault();
+    s.openActionsMenu(node.id, e.clientX, e.clientY);
+  }, [s.openActionsMenu]);
   const onNodeMouseEnter = useCallback<NodeMouseHandler<ResourceFlowNode>>((_, node) => s.setHovered(node.id), [s.setHovered]);
   const onNodeMouseLeave = useCallback(() => s.setHovered(null), [s.setHovered]);
   const onPaneClick = useCallback(() => { if (s.selectedId !== null) void s.select(null); }, [s.selectedId, s.select]);
@@ -106,6 +110,7 @@ function CanvasInner() {
         minZoom={0.1}
         onNodeClick={onNodeClick}
         onNodeDoubleClick={onNodeDoubleClick}
+        onNodeContextMenu={onNodeContextMenu}
         onNodeMouseEnter={onNodeMouseEnter}
         onNodeMouseLeave={onNodeMouseLeave}
         onPaneClick={onPaneClick}

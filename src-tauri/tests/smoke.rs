@@ -1,6 +1,6 @@
 //! End-to-end: apply a fixture namespace, run a headless Session, assert the graph, then
-//! exercise the write path (update / conflict / create / delete / PodGroup delete) and
-//! log streaming (start / lines / stop / invalid kind).
+//! exercise the write path (update / conflict / create / delete / PodGroup delete), the rollout
+//! actions (scale / restart / history / rollback) and log streaming (start / lines / stop / invalid kind).
 //! Run: WIRING_SMOKE_CONTEXT=docker-desktop cargo test --test smoke -- --ignored --nocapture
 
 use std::collections::HashSet;
@@ -8,13 +8,16 @@ use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
 
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc::{self, UnboundedReceiver};
 use wiring_lib::error::ErrorKind;
-use wiring_lib::graph::{Graph, GraphDelta, Relation};
+use wiring_lib::forward::resolve::suggest_local_port;
+use wiring_lib::graph::{Graph, GraphDelta, Problem, Relation};
 use wiring_lib::kubeconfig;
 use wiring_lib::logs::session::LogRequest;
 use wiring_lib::logs::LogMessage;
 use wiring_lib::session::emitter::{ChannelEmitter, ConnectionState, OutEvent};
+use wiring_lib::session::rollout::Revision;
 use wiring_lib::session::Session;
 use wiring_lib::store::Kind;
 
@@ -96,6 +99,16 @@ fn has_node(g: &Graph, id: &str) -> bool {
     g.node(id).is_some()
 }
 
+/// The problem at the end of `id`'s cause chain (at most 8 hops), as the frontend resolves it.
+fn root_problem<'a>(g: &'a Graph, id: &str) -> Option<&'a Problem> {
+    let mut problem = g.node(id)?.problem.as_ref()?;
+    for _ in 0..8 {
+        let Some(next) = problem.cause.as_deref() else { break };
+        problem = g.node(next)?.problem.as_ref()?;
+    }
+    Some(problem)
+}
+
 const CONFIGMAP_ID: &str = "ConfigMap/wiring-smoke/web-cfg";
 const CREATED_ID: &str = "ConfigMap/wiring-smoke/smoke-created";
 const GROUP_ID: &str = "PodGroup/wiring-smoke/Deployment/web";
@@ -110,6 +123,63 @@ fn pod_names(session: &Session) -> Vec<String> {
         .map(|r| r.node_id.trim_start_matches("Pod/wiring-smoke/").to_owned())
         .filter(|n| n.starts_with("web-"))
         .collect()
+}
+
+/// Whether the cluster serves the Metrics API (metrics-server installed).
+fn metrics_api_served(context: &str) -> bool {
+    Command::new("kubectl")
+        .args(["--context", context, "get", "apiservice", "v1beta1.metrics.k8s.io"])
+        .output()
+        .is_ok_and(|o| o.status.success())
+}
+
+/// With metrics-server: the talker pod gets CPU/Memory cells and Overview usage rows. Without it:
+/// the cells stay `—` and Overview says the Metrics API is missing.
+async fn exercise_metrics(session: &Session, context: &str) {
+    let served = metrics_api_served(context);
+    // metrics-server needs a scrape or two (15 s each) before a new pod shows up.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(150);
+    loop {
+        let table = session.list_rows(Kind::Pod);
+        let cpu = table
+            .columns
+            .iter()
+            .position(|c| c.key == "cpu")
+            .expect("the Pod table has a CPU column");
+        let mem = table
+            .columns
+            .iter()
+            .position(|c| c.key == "memory")
+            .expect("the Pod table has a Memory column");
+        let talker = table
+            .rows
+            .iter()
+            .find(|r| r.node_id.starts_with(&format!("Pod/{NAMESPACE}/talker-")))
+            .expect("a talker pod row");
+        let details = session.get_object(&talker.node_id).unwrap();
+        let done = if served {
+            talker.cells[cpu].text.ends_with('m')
+                && talker.cells[mem].text.ends_with("Mi")
+                && details.summary.iter().any(|(k, _)| k == "CPU usage")
+                && details.summary.iter().any(|(k, _)| k == "Memory usage")
+        } else {
+            talker.cells[cpu].text == "—"
+                && details
+                    .summary
+                    .iter()
+                    .any(|(k, v)| k == "Usage" && v == "Metrics API not available (install metrics-server)")
+        };
+        if done {
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "metrics never showed up (served: {served}); last cells {:?}, summary {:?}",
+            talker.cells,
+            details.summary
+        );
+        tokio::time::sleep(Duration::from_secs(3)).await;
+    }
 }
 
 /// Update / conflict / create / delete / invalid on ConfigMaps, then delete a PodGroup.
@@ -216,6 +286,149 @@ async fn exercise_writes(session: &Session, rx: &mut UnboundedReceiver<OutEvent>
     assert_eq!(err.kind, ErrorKind::NotFound, "{err:?}");
 }
 
+const WEB_ID: &str = "Deployment/wiring-smoke/web";
+const DB_ID: &str = "StatefulSet/wiring-smoke/db";
+
+/// Poll `rollout_history` until `ok` holds or two minutes pass; returns the last answer.
+async fn history_until(session: &Session, node_id: &str, ok: impl Fn(&[Revision]) -> bool) -> Vec<Revision> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(120);
+    loop {
+        let revisions = session.rollout_history(node_id).await.unwrap();
+        if ok(&revisions) || tokio::time::Instant::now() > deadline {
+            return revisions;
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+}
+
+/// Scale, restart and roll back the `web` Deployment and the `db` StatefulSet.
+async fn exercise_rollout(session: &Session, rx: &mut UnboundedReceiver<OutEvent>, graph: &mut Graph, context: &str) {
+    // (1) Scale through /scale; the returned details already carry the new spec.
+    let details = session.scale_object(WEB_ID, 2).await.unwrap();
+    assert!(details.yaml.contains("replicas: 2"), "{}", details.yaml);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(120);
+    let ok = graph_until(rx, graph, deadline, |g| {
+        g.node(WEB_ID).is_some_and(|n| n.badges.first().map(String::as_str) == Some("2/2"))
+    })
+    .await;
+    assert!(ok, "web never settled at 2/2; last graph: {graph:#?}");
+    for (id, n) in [(WEB_ID, -1), (WEB_ID, 10_001), (CONFIGMAP_ID, 1)] {
+        let err = session.scale_object(id, n).await.unwrap_err();
+        assert_eq!(err.kind, ErrorKind::Invalid, "{id} {n}: {err:?}");
+    }
+
+    // (2) Restart: a new current revision whose template carries the restartedAt stamp.
+    let before = session.rollout_history(WEB_ID).await.unwrap();
+    let top = before.iter().map(|r| r.revision).max().expect("web has a revision");
+    session.restart_object(WEB_ID).await.unwrap();
+    let after = history_until(session, WEB_ID, |r| r.iter().any(|r| r.current && r.revision > top)).await;
+    let current = after.iter().find(|r| r.current).unwrap_or_else(|| panic!("{after:#?}"));
+    assert!(current.revision > top, "{after:#?}");
+    assert!(
+        current.template.contains("kubectl.kubernetes.io/restartedAt"),
+        "{}",
+        current.template
+    );
+    kubectl(context, &["-n", NAMESPACE, "rollout", "status", "deployment/web", "--timeout=180s"]);
+
+    // (3) Roll back to the pre-restart revision: the stamp is gone from the live template.
+    let err = session.rollback_object(WEB_ID, current.revision).await.unwrap_err();
+    assert_eq!(err.kind, ErrorKind::Invalid, "{err:?}");
+    let err = session.rollback_object(WEB_ID, 999).await.unwrap_err();
+    assert_eq!(err.kind, ErrorKind::NotFound, "{err:?}");
+    let details = session.rollback_object(WEB_ID, top).await.unwrap();
+    assert!(!details.yaml.contains("restartedAt"), "{}", details.yaml);
+    kubectl(context, &["-n", NAMESPACE, "rollout", "status", "deployment/web", "--timeout=180s"]);
+
+    // (4) The same through ControllerRevisions for a StatefulSet.
+    let before = history_until(session, DB_ID, |r| !r.is_empty()).await;
+    assert_eq!(before.len(), 1, "{before:#?}");
+    session.restart_object(DB_ID).await.unwrap();
+    let after = history_until(session, DB_ID, |r| r.len() == 2 && r[0].current).await;
+    assert!(after.len() == 2 && after[0].current, "{after:#?}");
+    kubectl(context, &["-n", NAMESPACE, "rollout", "status", "statefulset/db", "--timeout=180s"]);
+    let details = session.rollback_object(DB_ID, after[1].revision).await.unwrap();
+    assert!(!details.yaml.contains("restartedAt"), "{}", details.yaml);
+    kubectl(context, &["-n", NAMESPACE, "rollout", "status", "statefulset/db", "--timeout=180s"]);
+
+    // (5) Kinds without a rollout are refused before any request.
+    for err in [
+        session.restart_object(CONFIGMAP_ID).await.unwrap_err(),
+        session.rollout_history(CONFIGMAP_ID).await.unwrap_err(),
+        session.rollback_object(GROUP_ID, 1).await.unwrap_err(),
+    ] {
+        assert_eq!(err.kind, ErrorKind::Invalid, "{err:?}");
+    }
+}
+
+const WHOAMI_SVC: &str = "Service/wiring-smoke/whoami";
+
+/// One HTTP/1.0 request through the forward; the whole response.
+async fn http_get(port: u16) -> std::io::Result<String> {
+    let mut s = tokio::net::TcpStream::connect(("127.0.0.1", port)).await?;
+    s.write_all(b"GET / HTTP/1.0\r\nHost: localhost\r\n\r\n").await?;
+    let mut out = String::new();
+    tokio::time::timeout(Duration::from_secs(10), s.read_to_string(&mut out))
+        .await
+        .map_err(|_| std::io::Error::other("timeout"))??;
+    Ok(out)
+}
+
+/// The pod whoami says served the request.
+fn served_by(body: &str) -> Option<String> {
+    body.lines().find_map(|l| l.strip_prefix("Hostname: ")).map(str::to_owned)
+}
+
+async fn exercise_forward(session: &mut Session, context: &str) {
+    kubectl(
+        context,
+        &["-n", NAMESPACE, "rollout", "status", "deployment/whoami", "--timeout=180s"],
+    );
+    let ports = session.forward_ports(WHOAMI_SVC).unwrap();
+    assert_eq!(ports.iter().map(|p| p.port).collect::<Vec<_>>(), vec![8080], "{ports:?}");
+    assert_eq!(
+        session.start_forward(CONFIGMAP_ID, 80, 18080).await.unwrap_err().kind,
+        ErrorKind::Invalid
+    );
+
+    let local = suggest_local_port(18080);
+    let fwd = session.start_forward(WHOAMI_SVC, 8080, local).await.unwrap();
+    assert_eq!(
+        session.start_forward(WHOAMI_SVC, 8080, local).await.unwrap_err().kind,
+        ErrorKind::Conflict
+    );
+
+    // start returns before the first pod is resolved: poll until a request goes through.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    let first = loop {
+        if let Some(h) = http_get(local).await.ok().and_then(|b| served_by(&b)) {
+            break h;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "no response through the forward");
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    };
+
+    // The serving pod goes away: new connections must reach the other one.
+    kubectl(context, &["-n", NAMESPACE, "delete", "pod", &first, "--wait=false"]);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(120);
+    loop {
+        if let Some(h) = http_get(local).await.ok().and_then(|b| served_by(&b)) {
+            if h != first {
+                break;
+            }
+        }
+        assert!(tokio::time::Instant::now() < deadline, "the forward never moved off {first}");
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+
+    session.stop_forward(fwd.id).await;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while tokio::net::TcpStream::connect(("127.0.0.1", local)).await.is_ok() {
+        assert!(tokio::time::Instant::now() < deadline, "port {local} still open after stop");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
 /// Stream the talker's logs: a `started`, then lines containing "tick"; stopping ends the flow.
 async fn exercise_logs(session: &mut Session, context: &str) {
     kubectl(
@@ -291,6 +504,10 @@ async fn graph_snapshot_reflects_applied_fixture() {
         &context,
         &["-n", NAMESPACE, "rollout", "status", "deployment/web", "--timeout=180s"],
     );
+    kubectl(
+        &context,
+        &["-n", NAMESPACE, "rollout", "status", "statefulset/db", "--timeout=180s"],
+    );
 
     let merged = kubeconfig::load_merged(&kubeconfig::default_paths()).unwrap();
     let (emitter, mut rx) = ChannelEmitter::new();
@@ -312,6 +529,16 @@ async fn graph_snapshot_reflects_applied_fixture() {
     let ok = graph_until(&mut rx, &mut graph, deadline, fixture_is_live).await;
     assert!(ok, "fixture never fully appeared in the graph; last graph: {graph:#?}");
 
+    // A pod that cannot pull its image explains its Deployment.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
+    let ok = graph_until(&mut rx, &mut graph, deadline, |g| {
+        root_problem(g, "Deployment/wiring-smoke/broken").is_some_and(|p| p.reason == "ImagePullBackOff" || p.reason == "ErrImagePull")
+    })
+    .await;
+    assert!(ok, "the broken image never explained its Deployment; last graph: {graph:#?}");
+
+    exercise_metrics(&session, &context).await;
+
     // Details for the deployment must render YAML + summary.
     let details = session.get_object("Deployment/wiring-smoke/web").unwrap();
     assert!(details.yaml.contains("kind: Deployment"));
@@ -324,8 +551,10 @@ async fn graph_snapshot_reflects_applied_fixture() {
     assert!(ok, "scale-down never reached the graph; last graph: {graph:#?}");
 
     exercise_writes(&session, &mut rx, &mut graph, &context).await;
+    exercise_rollout(&session, &mut rx, &mut graph, &context).await;
+    exercise_forward(&mut session, &context).await;
     exercise_logs(&mut session, &context).await;
 
-    session.shutdown();
+    session.shutdown().await;
     kubectl(&context, &["delete", "namespace", NAMESPACE, "--wait=false"]);
 }

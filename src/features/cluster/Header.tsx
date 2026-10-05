@@ -6,6 +6,8 @@ import { useAppStore } from "../../app/store";
 import { isMac } from "../../shared/platform";
 import { Button } from "../../shared/ui/Button";
 import { Dot } from "../../shared/ui/Dot";
+import { UpdatePill } from "../update/UpdatePill";
+import { ForwardsIndicator } from "../forward/ForwardsIndicator";
 import { NamespacePicker } from "./NamespacePicker";
 
 export function Header() {
@@ -55,6 +57,8 @@ export function Header() {
         <input ref={searchRef} value={search} onChange={(e) => setSearch(e.target.value)} placeholder={`Search  ${isMac ? "⌘" : "Ctrl+"}K`}
           className="h-9 w-64 rounded-xl border border-border-strong bg-surface pl-9 pr-3 text-sm text-text-hi outline-none placeholder:text-text-muted focus:border-accent" />
       </div>
+      <UpdatePill />
+      <ForwardsIndicator />
       <Dot status={connection.state} className="mx-1 size-2.5" />
       {connection.context && (
         <Button disabled={connection.busy} onClick={() => void reconnect()}>Reconnect</Button>

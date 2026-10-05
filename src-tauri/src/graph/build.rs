@@ -2,9 +2,10 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use super::model::{node_id, Edge, Graph, GroupInfo, Node, NodeId, Relation, Status};
+use super::model::{node_id, Edge, Graph, GroupInfo, Node, NodeId, Problem, Relation, Status};
 use super::relations::all_edges;
-use super::status::describe;
+use super::status::{describe_with, problem as own_problem};
+use crate::metrics::usage::PodIndex;
 use crate::store::{Kind, Object, ObjectKey, Store};
 
 #[derive(Debug, Clone)]
@@ -25,13 +26,15 @@ impl Default for BuildOptions {
 
 pub fn build(store: &Store, opts: &BuildOptions) -> Graph {
     let mut nodes: HashMap<NodeId, Node> = HashMap::new();
+    let pods = PodIndex::new(store);
     for obj in store.iter() {
         // Must run before `hide_single_replicasets`, which counts a Deployment's *remaining*
         // ReplicaSet children: a stale RS has to be excluded from that count, not hidden by it.
         if is_stale_replicaset(obj) {
             continue;
         }
-        let (status, badges) = describe(obj, store);
+        let (status, badges) = describe_with(obj, store, &pods);
+        let problem = own_problem(obj, status, store);
         let id = node_id(obj.kind(), obj.namespace(), obj.name());
         nodes.insert(
             id.clone(),
@@ -43,6 +46,7 @@ pub fn build(store: &Store, opts: &BuildOptions) -> Graph {
                 status,
                 badges,
                 group: None,
+                problem,
             },
         );
     }
@@ -56,6 +60,8 @@ pub fn build(store: &Store, opts: &BuildOptions) -> Graph {
 
     hide_single_replicasets(&mut nodes, &mut edges);
     collapse_pod_groups(&mut nodes, &mut edges, opts);
+    // On the final nodes and edges, so every cause names a visible node.
+    link_causes(&mut nodes, &edges);
 
     // Re-pointing in `hide_single_replicasets`/`collapse_pod_groups` can leave duplicate edge ids
     // (e.g. two re-pointed edges now sharing source/target/relation); `normalize()`'s dedup is
@@ -226,6 +232,7 @@ fn collapse_pod_groups(nodes: &mut HashMap<NodeId, Node>, edges: &mut Vec<Edge>,
             err: 0,
         };
         let mut worst = Status::Unknown;
+        let mut collapsed: Vec<Node> = vec![];
         for pod_id in &pods {
             // A pod can carry more than one ownerReference (owner_edges walks all of them), so
             // the same pod id may appear under two different owners' member lists. Once it has
@@ -241,11 +248,13 @@ fn collapse_pod_groups(nodes: &mut HashMap<NodeId, Node>, edges: &mut Vec<Edge>,
             }
             worst = worst.max(pod.status);
             remap.insert(pod_id.clone(), group_id.clone());
+            collapsed.push(pod);
         }
         if info.count == 0 {
             continue;
         }
         let badges = group_badges(&info);
+        let problem = group_problem(&collapsed, worst, info.count);
         nodes.insert(
             group_id.clone(),
             Node {
@@ -256,6 +265,7 @@ fn collapse_pod_groups(nodes: &mut HashMap<NodeId, Node>, edges: &mut Vec<Edge>,
                 status: worst,
                 badges,
                 group: Some(info),
+                problem,
             },
         );
     }
@@ -273,10 +283,78 @@ fn collapse_pod_groups(nodes: &mut HashMap<NodeId, Node>, edges: &mut Vec<Edge>,
         .collect();
 }
 
+/// `K of N pods: <reason>` for the most common reason among the worst-status members (ties go to
+/// the alphabetically first reason), with the message of the first such member by name.
+fn group_problem(members: &[Node], worst: Status, count: usize) -> Option<Problem> {
+    if worst < Status::Warn {
+        return None;
+    }
+    let mut by_reason: BTreeMap<&str, Vec<&Node>> = BTreeMap::new();
+    for m in members.iter().filter(|m| m.status == worst) {
+        if let Some(p) = &m.problem {
+            by_reason.entry(p.reason.as_str()).or_default().push(m);
+        }
+    }
+    let (reason, mut pods) = by_reason
+        .into_iter()
+        .fold(None, |best: Option<(&str, Vec<&Node>)>, (r, v)| match &best {
+            Some((_, b)) if b.len() >= v.len() => best,
+            _ => Some((r, v)),
+        })?;
+    pods.sort_by(|a, b| a.name.cmp(&b.name));
+    let first = pods[0];
+    let message = match first.problem.as_ref().and_then(|p| p.message.as_deref()) {
+        Some(m) => format!("{}: {m}", first.name),
+        None => first.name.clone(),
+    };
+    Some(Problem {
+        reason: format!("{} of {count} pods: {reason}", pods.len()),
+        message: Some(message),
+        cause: None,
+    })
+}
+
+/// Point each delegating problem at the neighbour to blame: the worst-status (Warn/Err) target of
+/// a workload's `owns` edges or a Service's `selects` edges; ties go to the smallest id.
+fn link_causes(nodes: &mut HashMap<NodeId, Node>, edges: &[Edge]) {
+    let mut outgoing: HashMap<(&str, Relation), Vec<&str>> = HashMap::new();
+    for e in edges {
+        outgoing.entry((e.source.as_str(), e.relation)).or_default().push(e.target.as_str());
+    }
+    let links: Vec<(NodeId, NodeId)> = nodes
+        .values()
+        // A suspended CronJob is paused on purpose: its own problem, not its Jobs', is what to show.
+        .filter(|n| {
+            n.problem
+                .as_ref()
+                .is_some_and(|p| !(n.kind == Kind::CronJob && p.reason == "Suspended"))
+        })
+        .filter_map(|n| {
+            let relation = match n.kind {
+                Kind::Deployment | Kind::StatefulSet | Kind::DaemonSet | Kind::ReplicaSet | Kind::Job | Kind::CronJob => Relation::Owns,
+                Kind::Service => Relation::Selects,
+                _ => return None,
+            };
+            outgoing
+                .get(&(n.id.as_str(), relation))?
+                .iter()
+                .filter_map(|t| nodes.get(*t))
+                .filter(|t| t.status >= Status::Warn)
+                .max_by(|a, b| a.status.cmp(&b.status).then_with(|| b.id.cmp(&a.id)))
+                .map(|t| (n.id.clone(), t.id.clone()))
+        })
+        .collect();
+    for (id, cause) in links {
+        if let Some(p) = nodes.get_mut(&id).and_then(|n| n.problem.as_mut()) {
+            p.cause = Some(cause);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::graph::model::Status;
+    use crate::graph::model::{Problem, Status};
     use crate::store::{Kind, Store};
 
     fn edge_ids(g: &Graph) -> Vec<&str> {
@@ -481,5 +559,306 @@ mod tests {
                 assert!(g.node(&e.target).is_some(), "{fixture}: edge {} has dangling target", e.id);
             }
         }
+    }
+
+    fn problem<'a>(g: &'a Graph, id: &str) -> Option<&'a Problem> {
+        g.node(id).and_then(|n| n.problem.as_ref())
+    }
+
+    #[test]
+    fn a_workload_points_at_its_failing_pod_group() {
+        let s = Store::from_fixture("podgroup").unwrap();
+        let g = build(&s, &BuildOptions::default());
+        assert_eq!(
+            problem(&g, "Deployment/g/api"),
+            Some(&Problem {
+                reason: "1 of 7 not ready".into(),
+                message: None,
+                cause: Some("PodGroup/g/Deployment/api".into()),
+            })
+        );
+        assert_eq!(
+            problem(&g, "PodGroup/g/Deployment/api"),
+            Some(&Problem {
+                reason: "1 of 7 pods: CrashLoopBackOff".into(),
+                message: Some("api-new-7".into()),
+                cause: None,
+            })
+        );
+        // Six ready pods behind it: the Service is fine.
+        assert_eq!(problem(&g, "Service/g/api"), None);
+    }
+
+    #[test]
+    fn an_expanded_group_lets_the_cause_name_the_pod() {
+        let s = Store::from_fixture("podgroup").unwrap();
+        let opts = BuildOptions {
+            expanded_groups: ["PodGroup/g/Deployment/api".to_string()].into_iter().collect(),
+            ..Default::default()
+        };
+        let g = build(&s, &opts);
+        assert_eq!(
+            problem(&g, "Deployment/g/api").and_then(|p| p.cause.as_deref()),
+            Some("Pod/g/api-new-7")
+        );
+        assert_eq!(problem(&g, "Pod/g/api-new-7").map(|p| p.reason.as_str()), Some("CrashLoopBackOff"));
+    }
+
+    #[test]
+    fn healthy_graphs_carry_no_problems() {
+        let s = Store::from_fixture("deployment-basic").unwrap();
+        let g = build(&s, &BuildOptions::default());
+        assert!(g.nodes.iter().all(|n| n.problem.is_none()), "{:#?}", g.nodes);
+    }
+
+    #[test]
+    fn equal_culprits_resolve_to_the_smallest_id() {
+        let s = Store::from_yaml_docs(
+            r#"
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: tie, namespace: t, uid: dep-tie }
+spec:
+  replicas: 2
+  selector: { matchLabels: { app: tie } }
+  template: { metadata: { labels: { app: tie } }, spec: { containers: [ { name: c, image: x } ] } }
+status: { replicas: 2, readyReplicas: 0 }
+---
+apiVersion: apps/v1
+kind: ReplicaSet
+metadata: { name: tie-1, namespace: t, uid: rs-tie, ownerReferences: [ { apiVersion: apps/v1, kind: Deployment, name: tie, uid: dep-tie, controller: true } ] }
+spec:
+  replicas: 2
+  selector: { matchLabels: { app: tie } }
+  template: { metadata: { labels: { app: tie } }, spec: { containers: [ { name: c, image: x } ] } }
+status: { replicas: 2, readyReplicas: 0 }
+---
+apiVersion: v1
+kind: Pod
+metadata: { name: tie-1-b, namespace: t, labels: { app: tie }, ownerReferences: [ { apiVersion: apps/v1, kind: ReplicaSet, name: tie-1, uid: rs-tie, controller: true } ] }
+spec: { containers: [ { name: c, image: x } ] }
+status: { phase: Pending, containerStatuses: [ { name: c, ready: false, restartCount: 0, image: x, imageID: "", state: { waiting: { reason: ErrImagePull } } } ] }
+---
+apiVersion: v1
+kind: Pod
+metadata: { name: tie-1-a, namespace: t, labels: { app: tie }, ownerReferences: [ { apiVersion: apps/v1, kind: ReplicaSet, name: tie-1, uid: rs-tie, controller: true } ] }
+spec: { containers: [ { name: c, image: x } ] }
+status: { phase: Pending, containerStatuses: [ { name: c, ready: false, restartCount: 0, image: x, imageID: "", state: { waiting: { reason: ErrImagePull } } } ] }
+"#,
+        )
+        .unwrap();
+        let g = build(&s, &BuildOptions::default());
+        assert_eq!(
+            problem(&g, "Deployment/t/tie").and_then(|p| p.cause.as_deref()),
+            Some("Pod/t/tie-1-a")
+        );
+    }
+
+    #[test]
+    fn group_reason_is_the_most_common_one_among_the_worst_pods() {
+        let pod = |name: &str, status: Status, reason: &str, message: Option<&str>| Node {
+            id: format!("Pod/g/{name}"),
+            kind: Kind::Pod,
+            namespace: Some("g".into()),
+            name: name.into(),
+            status,
+            badges: vec![],
+            group: None,
+            problem: Some(Problem {
+                reason: reason.into(),
+                message: message.map(str::to_owned),
+                cause: None,
+            }),
+        };
+        let members = vec![
+            pod("c", Status::Err, "OOMKilled", None),
+            pod(
+                "b",
+                Status::Err,
+                "CrashLoopBackOff",
+                Some("container api: last exit code 1 (Error)"),
+            ),
+            pod("a", Status::Err, "CrashLoopBackOff", None),
+            pod("d", Status::Warn, "Not ready", None),
+        ];
+        assert_eq!(
+            group_problem(&members, Status::Err, 6),
+            Some(Problem {
+                reason: "2 of 6 pods: CrashLoopBackOff".into(),
+                message: Some("a".into()),
+                cause: None,
+            })
+        );
+        // Ties go to the alphabetically first reason.
+        let tie = vec![
+            pod("x", Status::Err, "OOMKilled", None),
+            pod("y", Status::Err, "Error", Some("container c: exit code 2")),
+        ];
+        assert_eq!(
+            group_problem(&tie, Status::Err, 2).map(|p| (p.reason, p.message)),
+            Some(("1 of 2 pods: Error".into(), Some("y: container c: exit code 2".into())))
+        );
+        assert_eq!(group_problem(&members, Status::Ok, 6), None);
+    }
+
+    #[test]
+    fn a_suspended_cronjob_has_no_cause_even_with_a_failing_job() {
+        let node = |id: &str, kind: Kind, status: Status, reason: &str| Node {
+            id: id.into(),
+            kind,
+            namespace: Some("c".into()),
+            name: id.rsplit('/').next().unwrap().into(),
+            status,
+            badges: vec![],
+            group: None,
+            problem: Some(Problem {
+                reason: reason.into(),
+                message: None,
+                cause: None,
+            }),
+        };
+        let mut nodes: HashMap<NodeId, Node> = [
+            node("CronJob/c/nightly", Kind::CronJob, Status::Warn, "Suspended"),
+            node("Job/c/nightly-1", Kind::Job, Status::Err, "BackoffLimitExceeded"),
+            node("CronJob/c/live", Kind::CronJob, Status::Warn, "Failing"),
+        ]
+        .into_iter()
+        .map(|n| (n.id.clone(), n))
+        .collect();
+        let edge = |s: &str| Edge {
+            id: format!("{s}->Job/c/nightly-1:owns"),
+            source: s.into(),
+            target: "Job/c/nightly-1".into(),
+            relation: Relation::Owns,
+        };
+        link_causes(&mut nodes, &[edge("CronJob/c/nightly"), edge("CronJob/c/live")]);
+        assert_eq!(nodes["CronJob/c/nightly"].problem.as_ref().unwrap().cause, None);
+        assert_eq!(
+            nodes["CronJob/c/live"].problem.as_ref().unwrap().cause.as_deref(),
+            Some("Job/c/nightly-1")
+        );
+    }
+
+    fn failing_pods(n: usize, ns: &str, owner_kind: &str, owner: &str, uid: &str, label: &str) -> String {
+        (0..n)
+            .map(|i| {
+                format!(
+                    r#"---
+apiVersion: v1
+kind: Pod
+metadata: {{ name: {owner}-p{i}, namespace: {ns}, labels: {{ app: {label} }}, ownerReferences: [ {{ apiVersion: apps/v1, kind: {owner_kind}, name: {owner}, uid: {uid}, controller: true }} ] }}
+spec: {{ containers: [ {{ name: c, image: x }} ] }}
+status: {{ phase: Pending, conditions: [ {{ type: Ready, status: "False" }} ], containerStatuses: [ {{ name: c, ready: false, restartCount: 0, image: x, imageID: "", state: {{ waiting: {{ reason: ErrImagePull }} }} }} ] }}
+"#
+                )
+            })
+            .collect()
+    }
+
+    fn deployment_yaml(name: &str, ns: &str, uid: &str, status: &str) -> String {
+        format!(
+            r#"---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {{ name: {name}, namespace: {ns}, uid: {uid} }}
+spec:
+  replicas: 2
+  selector: {{ matchLabels: {{ app: {name} }} }}
+  template: {{ metadata: {{ labels: {{ app: {name} }} }}, spec: {{ containers: [ {{ name: c, image: x }} ] }} }}
+status: {status}
+"#
+        )
+    }
+
+    fn replicaset_yaml(name: &str, ns: &str, uid: &str, dep: &str, dep_uid: &str, ready: u32) -> String {
+        format!(
+            r#"---
+apiVersion: apps/v1
+kind: ReplicaSet
+metadata: {{ name: {name}, namespace: {ns}, uid: {uid}, ownerReferences: [ {{ apiVersion: apps/v1, kind: Deployment, name: {dep}, uid: {dep_uid}, controller: true }} ] }}
+spec:
+  replicas: 2
+  selector: {{ matchLabels: {{ app: {dep} }} }}
+  template: {{ metadata: {{ labels: {{ app: {dep} }} }}, spec: {{ containers: [ {{ name: c, image: x }} ] }} }}
+status: {{ replicas: 2, readyReplicas: {ready} }}
+"#
+        )
+    }
+
+    fn service_yaml(name: &str, ns: &str, label: &str) -> String {
+        format!(
+            "---\napiVersion: v1\nkind: Service\nmetadata: {{ name: {name}, namespace: {ns} }}\nspec: {{ selector: {{ app: {label} }}, ports: [ {{ port: 80 }} ] }}\n"
+        )
+    }
+
+    #[test]
+    fn a_service_points_at_its_worst_unready_pod() {
+        let yaml = format!(
+            "{}{}",
+            service_yaml("svc", "s", "web"),
+            failing_pods(2, "s", "ReplicaSet", "orphan", "u", "web")
+        );
+        let g = build(&Store::from_yaml_docs(&yaml).unwrap(), &BuildOptions::default());
+        let p = problem(&g, "Service/s/svc").expect("service has a problem");
+        assert_eq!(p.cause.as_deref(), Some("Pod/s/orphan-p0"), "ties go to the smallest id");
+    }
+
+    #[test]
+    fn a_service_points_at_the_pod_group_when_pods_collapse() {
+        let yaml = format!(
+            "{}{}{}",
+            service_yaml("svc", "s", "web"),
+            replicaset_yaml("orphan", "s", "u", "nodep", "x", 0),
+            failing_pods(7, "s", "ReplicaSet", "orphan", "u", "web")
+        );
+        let g = build(&Store::from_yaml_docs(&yaml).unwrap(), &BuildOptions::default());
+        let cause = problem(&g, "Service/s/svc").and_then(|p| p.cause.as_deref());
+        assert_eq!(cause, Some("PodGroup/s/ReplicaSet/orphan"));
+        assert!(g.node(cause.unwrap()).is_some());
+    }
+
+    #[test]
+    fn progress_deadline_exceeded_still_points_at_the_failing_pods() {
+        let status = r#"{ replicas: 2, readyReplicas: 0, conditions: [ { type: Progressing, status: "False", reason: ProgressDeadlineExceeded, message: "timed out" } ] }"#;
+        let yaml = format!(
+            "{}{}{}",
+            deployment_yaml("dl", "d", "dep-dl", status),
+            replicaset_yaml("dl-1", "d", "rs-dl", "dl", "dep-dl", 0),
+            failing_pods(2, "d", "ReplicaSet", "dl-1", "rs-dl", "dl")
+        );
+        let g = build(&Store::from_yaml_docs(&yaml).unwrap(), &BuildOptions::default());
+        let p = problem(&g, "Deployment/d/dl").expect("deployment has a problem");
+        assert_eq!(p.reason, "ProgressDeadlineExceeded");
+        assert_eq!(p.cause.as_deref(), Some("Pod/d/dl-1-p0"));
+
+        let yaml = format!(
+            "{}{}{}",
+            deployment_yaml("dl", "d", "dep-dl", status),
+            replicaset_yaml("dl-1", "d", "rs-dl", "dl", "dep-dl", 0),
+            failing_pods(7, "d", "ReplicaSet", "dl-1", "rs-dl", "dl")
+        );
+        let g = build(&Store::from_yaml_docs(&yaml).unwrap(), &BuildOptions::default());
+        let cause = problem(&g, "Deployment/d/dl").and_then(|p| p.cause.as_deref());
+        assert_eq!(cause, Some("PodGroup/d/Deployment/dl"));
+        assert!(g.node(cause.unwrap()).is_some());
+    }
+
+    #[test]
+    fn a_rollout_points_at_the_worse_visible_replicaset() {
+        let yaml = format!(
+            "{}{}{}{}",
+            deployment_yaml("ro", "r", "dep-ro", "{ replicas: 2, readyReplicas: 1 }"),
+            replicaset_yaml("ro-a", "r", "rs-a", "ro", "dep-ro", 2),
+            replicaset_yaml("ro-b", "r", "rs-b", "ro", "dep-ro", 0),
+            failing_pods(2, "r", "ReplicaSet", "ro-b", "rs-b", "ro")
+        );
+        let g = build(&Store::from_yaml_docs(&yaml).unwrap(), &BuildOptions::default());
+        assert!(g.node("ReplicaSet/r/ro-a").is_some() && g.node("ReplicaSet/r/ro-b").is_some());
+        assert!(g.node("ReplicaSet/r/ro-b").unwrap().status >= Status::Warn);
+        assert_eq!(g.node("ReplicaSet/r/ro-a").unwrap().status, Status::Ok);
+        assert_eq!(
+            problem(&g, "Deployment/r/ro").and_then(|p| p.cause.as_deref()),
+            Some("ReplicaSet/r/ro-b")
+        );
     }
 }

@@ -34,6 +34,17 @@ describe("RelationEdge", () => {
     expect(stroke(true)).toBe("var(--color-accent)");
   });
 
+  it("draws a problem path edge in the status colour, never dimmed", () => {
+    const { container } = render(
+      <svg>
+        <RelationEdge {...props} data={{ edge, highlighted: false, dimmed: true, pathTone: "err" }} />
+      </svg>,
+    );
+    const path = container.querySelector("path") as SVGPathElement;
+    expect(path.style.stroke).toBe("var(--color-status-err)");
+    expect(path.style.opacity).toBe("1");
+  });
+
   it("routes through the waypoints when the layout provides them", () => {
     const long: GraphEdge = { id: "Service/p/s->Pod/p/a:selects", source: "Service/p/s", target: "Pod/p/a", relation: "selects" };
     const { container } = render(

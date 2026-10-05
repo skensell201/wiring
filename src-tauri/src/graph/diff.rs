@@ -52,6 +52,7 @@ mod tests {
             status,
             badges: vec![],
             group: None,
+            problem: None,
         }
     }
 

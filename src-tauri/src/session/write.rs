@@ -50,7 +50,7 @@ fn api_resource(kind: Kind) -> Option<ApiResource> {
     }
 }
 
-fn resource_for(kind: Kind) -> AppResult<ApiResource> {
+pub(super) fn resource_for(kind: Kind) -> AppResult<ApiResource> {
     api_resource(kind).ok_or_else(|| AppError::new(ErrorKind::Invalid, format!("{} is not an API resource", kind.as_str())))
 }
 
@@ -106,7 +106,7 @@ fn ensure_resource_version(body: &Value) -> AppResult<()> {
 
 /// Cache the saved object only if this namespace session already watched it; a write that
 /// targets another namespace must not leak into the graph. Returns whether it was stored.
-fn store_saved(store: &mut Store, obj: Object) -> bool {
+pub(super) fn store_saved(store: &mut Store, obj: Object) -> bool {
     if store.get(&obj.key()).is_none() {
         return false;
     }
@@ -127,7 +127,7 @@ fn target_namespace(m: &Manifest, fallback: Option<&str>) -> AppResult<Option<St
         .ok_or_else(|| AppError::new(ErrorKind::Invalid, "metadata.namespace is missing and no namespace is selected"))
 }
 
-fn kube_err(e: kube::Error) -> AppError {
+pub(super) fn kube_err(e: kube::Error) -> AppError {
     AppError::from(&e)
 }
 
@@ -143,7 +143,7 @@ async fn delete_one(api: &Api<DynamicObject>, name: &str) -> AppResult<()> {
 }
 
 impl Session {
-    fn dynamic_api(&self, ar: &ApiResource, namespace: Option<&str>) -> Api<DynamicObject> {
+    pub(super) fn dynamic_api(&self, ar: &ApiResource, namespace: Option<&str>) -> Api<DynamicObject> {
         match namespace {
             Some(ns) => Api::namespaced_with(self.client.clone(), ns, ar),
             None => Api::all_with(self.client.clone(), ar),

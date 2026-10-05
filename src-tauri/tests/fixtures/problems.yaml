@@ -1,0 +1,262 @@
+apiVersion: v1
+kind: Pod
+metadata: { name: pull, namespace: p }
+spec: { containers: [ { name: web, image: "nginx:nope" } ] }
+status:
+  phase: Pending
+  containerStatuses:
+    - { name: web, ready: false, restartCount: 0, image: "nginx:nope", imageID: "", state: { waiting: { reason: ImagePullBackOff, message: "Back-off pulling image \"nginx:nope\"" } } }
+---
+apiVersion: v1
+kind: Pod
+metadata: { name: crash, namespace: p, labels: { app: crash } }
+spec: { containers: [ { name: api, image: api:1 } ] }
+status:
+  phase: Running
+  conditions: [ { type: Ready, status: "False" } ]
+  containerStatuses:
+    - name: api
+      ready: false
+      restartCount: 5
+      image: api:1
+      imageID: ""
+      state: { waiting: { reason: CrashLoopBackOff, message: "back-off 5m0s restarting failed container" } }
+      lastState: { terminated: { exitCode: 1, reason: Error } }
+---
+apiVersion: v1
+kind: Pod
+metadata: { name: unsched, namespace: p }
+spec: { containers: [ { name: c, image: nginx } ] }
+status:
+  phase: Pending
+  conditions: [ { type: PodScheduled, status: "False", reason: Unschedulable, message: "0/3 nodes are available: 3 Insufficient cpu." } ]
+---
+apiVersion: v1
+kind: Pod
+metadata: { name: halfready, namespace: p }
+spec: { containers: [ { name: a, image: nginx }, { name: b, image: nginx } ] }
+status:
+  phase: Running
+  containerStatuses:
+    - { name: a, ready: true, restartCount: 0, image: nginx, imageID: "", state: { running: {} } }
+    - { name: b, ready: false, restartCount: 0, image: nginx, imageID: "", state: { running: {} } }
+---
+apiVersion: v1
+kind: Pod
+metadata: { name: chatty, namespace: p }
+spec: { containers: [ { name: c, image: nginx } ] }
+status:
+  phase: Pending
+  containerStatuses:
+    - { name: c, ready: false, restartCount: 0, image: nginx, imageID: "", state: { waiting: { reason: CreateContainerConfigError, message: "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" } } }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: deadline, namespace: p }
+spec:
+  replicas: 2
+  selector: { matchLabels: { app: deadline } }
+  template: { metadata: { labels: { app: deadline } }, spec: { containers: [ { name: c, image: nginx } ] } }
+status:
+  replicas: 2
+  readyReplicas: 0
+  conditions: [ { type: Progressing, status: "False", reason: ProgressDeadlineExceeded, message: "ReplicaSet \"deadline-1\" has timed out progressing." } ]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: quota, namespace: p }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: quota } }
+  template: { metadata: { labels: { app: quota } }, spec: { containers: [ { name: c, image: nginx } ] } }
+status:
+  readyReplicas: 0
+  conditions:
+    - { type: Progressing, status: "True" }
+    - { type: ReplicaFailure, status: "True", reason: FailedCreate, message: "pods \"quota-1\" is forbidden: exceeded quota: compute" }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: slow, namespace: p }
+spec:
+  replicas: 3
+  selector: { matchLabels: { app: slow } }
+  template: { metadata: { labels: { app: slow } }, spec: { containers: [ { name: c, image: nginx } ] } }
+status: { replicas: 3, readyReplicas: 1, conditions: [ { type: Progressing, status: "True" } ] }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: healthy, namespace: p }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: healthy } }
+  template: { metadata: { labels: { app: healthy } }, spec: { containers: [ { name: c, image: nginx } ] } }
+status: { replicas: 1, readyReplicas: 1, conditions: [ { type: Progressing, status: "True" } ] }
+---
+apiVersion: batch/v1
+kind: Job
+metadata: { name: failed, namespace: p }
+spec: { template: { spec: { containers: [ { name: c, image: busybox } ], restartPolicy: Never } } }
+status: { failed: 4, conditions: [ { type: Failed, status: "True", reason: BackoffLimitExceeded, message: "Job has reached the specified backoff limit" } ] }
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata: { name: paused, namespace: p }
+spec: { schedule: "0 2 * * *", suspend: true, jobTemplate: { spec: { template: { spec: { containers: [ { name: c, image: busybox } ], restartPolicy: Never } } } } }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: nopods, namespace: p }
+spec: { selector: { app: nothing }, ports: [ { port: 80 } ] }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: down, namespace: p }
+spec: { selector: { app: crash }, ports: [ { port: 80 } ] }
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata: { name: ing, namespace: p }
+spec:
+  rules:
+    - host: shop.example.com
+      http:
+        paths:
+          - { path: /, pathType: Prefix, backend: { service: { name: down, port: { number: 80 } } } }
+          - { path: /api, pathType: Prefix, backend: { service: { name: missing, port: { number: 80 } } } }
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: { name: claim, namespace: p }
+spec: { accessModes: [ ReadWriteOnce ], resources: { requests: { storage: 1Gi } } }
+status: { phase: Pending }
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata: { name: nometrics, namespace: p }
+spec: { minReplicas: 1, maxReplicas: 4, scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: healthy } }
+status:
+  currentReplicas: 1
+  desiredReplicas: 1
+  conditions:
+    - { type: AbleToScale, status: "True" }
+    - { type: ScalingActive, status: "False", reason: FailedGetResourceMetric, message: "unable to get metrics for resource cpu" }
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata: { name: db, namespace: p }
+spec:
+  replicas: 3
+  serviceName: db
+  selector: { matchLabels: { app: db } }
+  template: { metadata: { labels: { app: db } }, spec: { containers: [ { name: c, image: nginx } ] } }
+status: { replicas: 3, readyReplicas: 1 }
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata: { name: agent, namespace: p }
+spec:
+  selector: { matchLabels: { app: agent } }
+  template: { metadata: { labels: { app: agent } }, spec: { containers: [ { name: c, image: nginx } ] } }
+status: { desiredNumberScheduled: 3, numberReady: 2, currentNumberScheduled: 3, numberMisscheduled: 0 }
+---
+apiVersion: apps/v1
+kind: ReplicaSet
+metadata: { name: rs, namespace: p }
+spec:
+  replicas: 2
+  selector: { matchLabels: { app: rs } }
+  template: { metadata: { labels: { app: rs } }, spec: { containers: [ { name: c, image: nginx } ] } }
+status: { replicas: 2, readyReplicas: 0 }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: rolling, namespace: p, generation: 2 }
+spec:
+  replicas: 2
+  selector: { matchLabels: { app: rolling } }
+  template: { metadata: { labels: { app: rolling } }, spec: { containers: [ { name: c, image: nginx } ] } }
+status: { replicas: 2, readyReplicas: 2, observedGeneration: 1, updatedReplicas: 2 }
+---
+apiVersion: v1
+kind: Pod
+metadata: { name: failedpod, namespace: p }
+spec: { containers: [ { name: c, image: nginx } ] }
+status: { phase: Failed, message: "The node was low on resource: memory." }
+---
+apiVersion: v1
+kind: Pod
+metadata: { name: pendingmsg, namespace: p }
+spec: { containers: [ { name: c, image: nginx } ] }
+status: { phase: Pending, message: "waiting for something" }
+---
+apiVersion: v1
+kind: Pod
+metadata: { name: going, namespace: p, labels: { app: going }, deletionTimestamp: "2026-10-05T10:00:00Z" }
+spec: { containers: [ { name: c, image: nginx } ] }
+status:
+  phase: Running
+  conditions: [ { type: Ready, status: "True" } ]
+  containerStatuses:
+    - { name: c, ready: true, restartCount: 0, image: nginx, imageID: "", state: { running: {} } }
+---
+apiVersion: v1
+kind: Pod
+metadata: { name: oom, namespace: p }
+spec: { containers: [ { name: c, image: nginx } ] }
+status:
+  phase: Running
+  containerStatuses:
+    - { name: c, ready: false, restartCount: 1, image: nginx, imageID: "", state: { terminated: { exitCode: 137, reason: OOMKilled } } }
+---
+apiVersion: v1
+kind: Pod
+metadata: { name: errored, namespace: p }
+spec: { containers: [ { name: c, image: nginx } ] }
+status:
+  phase: Running
+  containerStatuses:
+    - { name: c, ready: false, restartCount: 0, image: nginx, imageID: "", state: { terminated: { exitCode: 2, reason: Error, message: boom } } }
+---
+apiVersion: v1
+kind: Pod
+metadata: { name: unknownready, namespace: p, labels: { app: unk } }
+spec: { containers: [ { name: c, image: nginx } ] }
+status:
+  phase: Running
+  conditions: [ { type: Ready, status: Unknown } ]
+  containerStatuses:
+    - { name: c, ready: true, restartCount: 0, image: nginx, imageID: "", state: { running: {} } }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: unk, namespace: p }
+spec: { selector: { app: unk }, ports: [ { port: 80 } ] }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: goingsvc, namespace: p }
+spec: { selector: { app: going }, ports: [ { port: 80 } ] }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: headless, namespace: p }
+spec: { clusterIP: None, ports: [ { port: 80 } ] }
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata: { name: many, namespace: p }
+spec:
+  rules:
+    - http:
+        paths:
+          - { path: /a, pathType: Prefix, backend: { service: { name: gone-a, port: { number: 80 } } } }
+          - { path: /b, pathType: Prefix, backend: { service: { name: gone-b, port: { number: 80 } } } }
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata: { name: cantscale, namespace: p }
+spec: { minReplicas: 1, maxReplicas: 4, scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: healthy } }
+status:
+  conditions:
+    - { type: AbleToScale, status: "False", reason: FailedGetScale, message: "no such target" }

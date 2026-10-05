@@ -1,5 +1,5 @@
 import { ArrowDown, ArrowUp } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { useAppStore } from "../../app/store";
 import type { Kind, Status, TableColumn, TableRow } from "../../shared/ipc/types";
@@ -10,13 +10,13 @@ const STATUS_TEXT: Record<Status, string> = { ok: "text-status-ok", warn: "text-
 
 /** The per-kind table: sortable, filtered by the header search, keyboard-navigable. */
 export function TableView() {
-  const { kind, table, search, selectedId, denied, namespace, graphReady, select, focusInGraph } = useAppStore(
+  const { kind, table, search, selectedId, denied, namespace, graphReady, select, focusInGraph, openActionsMenu } = useAppStore(
     useShallow((s) => {
       const kind = s.view.name === "table" ? s.view.kind : null;
       return {
         kind, table: kind ? s.tables.get(kind) : undefined, search: s.search, selectedId: s.selectedId,
         denied: kind ? s.deniedKinds.has(kind) : false, namespace: s.connection.namespace, graphReady: s.graphReady,
-        select: s.select, focusInGraph: s.focusInGraph,
+        select: s.select, focusInGraph: s.focusInGraph, openActionsMenu: s.openActionsMenu,
       };
     }),
   );
@@ -75,7 +75,8 @@ export function TableView() {
           <tbody>
             {rows.map((r) => (
               <Row key={r.nodeId} row={r} columns={table.columns} selected={r.nodeId === selectedId}
-                onClick={() => void select(r.nodeId)} onDoubleClick={() => void focusInGraph(r.nodeId)} />
+                onClick={() => void select(r.nodeId)} onDoubleClick={() => void focusInGraph(r.nodeId)}
+                onContextMenu={(e) => { e.preventDefault(); openActionsMenu(r.nodeId, e.clientX, e.clientY); }} />
             ))}
           </tbody>
         </table>
@@ -99,9 +100,11 @@ function HeaderCell({ column, sort, onClick }: { column: TableColumn; sort: Sort
   );
 }
 
-function Row({ row, columns, selected, onClick, onDoubleClick }: { row: TableRow; columns: TableColumn[]; selected: boolean; onClick: () => void; onDoubleClick: () => void }) {
+function Row({ row, columns, selected, onClick, onDoubleClick, onContextMenu }: {
+  row: TableRow; columns: TableColumn[]; selected: boolean; onClick: () => void; onDoubleClick: () => void; onContextMenu: (e: MouseEvent) => void;
+}) {
   return (
-    <tr aria-selected={selected} onClick={onClick} onDoubleClick={onDoubleClick} title="Double-click to show in graph"
+    <tr aria-selected={selected} onClick={onClick} onDoubleClick={onDoubleClick} onContextMenu={onContextMenu} title="Double-click to show in graph"
       className={`group h-12 cursor-default ${selected ? "bg-muted/50" : "hover:bg-muted/25"}`}>
       {row.cells.map((cell, i) => {
         const numeric = columns[i]?.numeric ?? false;

@@ -194,4 +194,45 @@ describe("editing keys", () => {
     window.dispatchEvent(ev);
     expect(cancelEdit).not.toHaveBeenCalled();
   });
+
+  it("Escape closes the actions menu, then an action dialog, before touching the selection", () => {
+    const select = vi.fn(async () => {});
+    useAppStore.setState({
+      connection: { ...initialState().connection, context: "prod", state: "connected" }, selectedId: "Deployment/p/web", select,
+      actionsMenu: { nodeId: "Deployment/p/web", x: 0, y: 0 },
+    });
+    render(<App />);
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(useAppStore.getState().actionsMenu).toBeNull();
+    useAppStore.setState({ actionDialog: { type: "restart", nodeId: "Deployment/p/web" } });
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(useAppStore.getState().actionDialog).toBeNull();
+    expect(select).not.toHaveBeenCalled();
+  });
+
+  it("Escape closes the port-forward popover before touching the selection", () => {
+    const select = vi.fn(async () => {});
+    useAppStore.setState({ connection: { ...initialState().connection, context: "prod", state: "connected" }, selectedId: "Pod/p/a", select, forwardsOpen: true });
+    render(<App />);
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(useAppStore.getState().forwardsOpen).toBe(false);
+    expect(select).not.toHaveBeenCalled();
+  });
+
+  it("Escape closes the forward dialog", () => {
+    useAppStore.setState({ connection: { ...initialState().connection, context: "prod", state: "connected" }, actionDialog: { type: "forward", nodeId: "Service/p/web" } });
+    render(<App />);
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(useAppStore.getState().actionDialog).toBeNull();
+  });
+
+  it("Escape does not close the action dialog while the action is in flight", () => {
+    useAppStore.setState({
+      connection: { ...initialState().connection, context: "prod", state: "connected" },
+      actionDialog: { type: "restart", nodeId: "Deployment/p/web" }, actionBusy: true,
+    });
+    render(<App />);
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(useAppStore.getState().actionDialog).not.toBeNull();
+  });
 });

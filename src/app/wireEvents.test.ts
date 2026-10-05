@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { EventHandlers } from "../shared/ipc/events";
 import { initialState, useAppStore, viewEditor } from "./store";
 
@@ -10,6 +10,9 @@ vi.mock("../shared/ipc/events", () => ({
 vi.mock("../shared/ipc/tauri", () => ({ invoke: vi.fn(async () => null), listen: vi.fn(async () => () => {}), Channel: class { onmessage: (m: unknown) => void = () => {}; } }));
 
 import type { GraphDelta } from "../shared/ipc/types";
+import { invoke } from "../shared/ipc/tauri";
+import { cancelDetailsRefresh } from "./store";
+import { TABLE_REFRESH_DEBOUNCE_MS } from "./tableRefresh";
 import { deltaTouches, wireEvents } from "./wireEvents";
 
 const node = { id: "Pod/p/a", kind: "Pod" as const, namespace: "p", name: "a", status: "ok" as const, badges: [], group: null };
@@ -33,6 +36,9 @@ describe("wireEvents", () => {
     expect(useAppStore.getState().details?.events).toHaveLength(1);
     hoisted.handlers!.object_events({ nodeId: "Pod/p/zzz", events: [] });
     expect(useAppStore.getState().details?.events).toHaveLength(1); // ignored: not the selection
+    const fwd = { id: 1, nodeId: "Service/p/web", targetLabel: "Service web", remotePort: 80, localPort: 8080, pod: null, status: "noReadyPod" as const, message: null };
+    hoisted.handlers!.forwards_changed([fwd]);
+    expect(useAppStore.getState().forwards).toEqual([fwd]);
     hoisted.handlers!.connection_error({ kind: "forbidden", message: "Secret: forbidden" });
     expect(useAppStore.getState().toasts.at(-1)).toMatchObject({ kind: "forbidden" });
     stop();
@@ -213,5 +219,66 @@ describe("table refresh", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("metrics_updated", () => {
+  beforeEach(() => { vi.useFakeTimers(); cancelDetailsRefresh(); vi.mocked(invoke).mockClear(); });
+  afterEach(() => vi.useRealTimers());
+
+  it("refetches an open pod or workload table, not other tables", async () => {
+    await wireEvents();
+    const refreshTable = vi.fn(async () => {});
+    useAppStore.setState({ refreshTable, view: { name: "table", kind: "Deployment" } });
+    hoisted.handlers!.metrics_updated({ state: "available" });
+    vi.advanceTimersByTime(TABLE_REFRESH_DEBOUNCE_MS);
+    expect(refreshTable).toHaveBeenCalledWith("Deployment");
+    refreshTable.mockClear();
+    useAppStore.setState({ view: { name: "table", kind: "Service" } });
+    hoisted.handlers!.metrics_updated({ state: "available" });
+    vi.advanceTimersByTime(TABLE_REFRESH_DEBOUNCE_MS);
+    expect(refreshTable).not.toHaveBeenCalled();
+  });
+
+  it("does not refetch a table the user left before the debounce fired", async () => {
+    await wireEvents();
+    const refreshTable = vi.fn(async () => {});
+    useAppStore.setState({ refreshTable, view: { name: "table", kind: "Pod" } });
+    hoisted.handlers!.metrics_updated({ state: "available" });
+    useAppStore.setState({ view: { name: "graph" } });
+    vi.advanceTimersByTime(TABLE_REFRESH_DEBOUNCE_MS);
+    expect(refreshTable).not.toHaveBeenCalled();
+  });
+
+  it("reloads the selected details", async () => {
+    await wireEvents();
+    const data = { yaml: "kind: Pod", summary: [], related: [] };
+    useAppStore.setState({ selectedId: "Pod/p/a", details: { nodeId: "Pod/p/a", data, events: [], loading: false, editor: viewEditor(data.yaml) } });
+    hoisted.handlers!.metrics_updated({ state: "available" });
+    await vi.runAllTimersAsync();
+    expect(vi.mocked(invoke).mock.calls.filter(([c]) => c === "get_object")).toEqual([["get_object", { nodeId: "Pod/p/a" }]]);
+  });
+
+  it("leaves the details of a kind without usage alone", async () => {
+    await wireEvents();
+    const data = { yaml: "kind: Service", summary: [], related: [] };
+    useAppStore.setState({ selectedId: "Service/p/s", details: { nodeId: "Service/p/s", data, events: [], loading: false, editor: viewEditor(data.yaml) } });
+    hoisted.handlers!.metrics_updated({ state: "available" });
+    await vi.runAllTimersAsync();
+    expect(vi.mocked(invoke).mock.calls.filter(([c]) => c === "get_object")).toEqual([]);
+  });
+});
+
+describe("update events", () => {
+  it("routes download progress into the update store and the menu item into a manual check", async () => {
+    const { initialUpdateState, useUpdateStore } = await import("../features/update/updateStore");
+    useUpdateStore.setState(initialUpdateState());
+    const stop = await wireEvents();
+    hoisted.handlers!.update_progress({ downloaded: 10, total: 100 });
+    expect(useUpdateStore.getState().progress).toEqual({ downloaded: 10, total: 100 });
+    vi.mocked(invoke).mockResolvedValueOnce({ current: "0.2.0", update: null });
+    hoisted.handlers!.menu_check_updates(null);
+    await vi.waitFor(() => expect(useAppStore.getState().toasts.at(-1)?.message).toBe("Wiring 0.2.0 is up to date"));
+    stop();
   });
 });

@@ -1,17 +1,19 @@
-import { Maximize2, Minimize2, Trash2 } from "lucide-react";
+import { ChevronDown, Maximize2, Minimize2, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
-import { useAppStore } from "../../app/store";
+import { useAppStore, type DetailsTab } from "../../app/store";
 import { KINDS, type GraphNode, type Kind, type NodeId } from "../../shared/ipc/types";
 import { settings } from "../../shared/settings";
 import { ConfirmDialog } from "../../shared/ui/ConfirmDialog";
+import { actionsFor, kindOf, ROLLOUT_KINDS } from "../actions/actionKinds";
 import { KIND_META } from "../graph/kindMeta";
 import { LogsTab } from "../logs/LogsTab";
 import { EventsTab } from "./EventsTab";
+import { HistoryTab } from "./HistoryTab";
 import { OverviewTab } from "./OverviewTab";
 import { YamlTab } from "./YamlTab";
 
-type Tab = "overview" | "yaml" | "events" | "logs";
+type Tab = DetailsTab;
 /** Panel height bounds in px: never shorter than `MIN`, always leaving 200 px to the view above. */
 const MIN = 200, DEFAULT = 320;
 const maxHeight = () => Math.max(MIN, window.innerHeight - 200);
@@ -46,9 +48,10 @@ function deleteWording(id: NodeId, node: GraphNode | undefined): { title: string
 }
 
 export function DetailsPanel() {
-  const { details, selectedId, node, requestDelete, maximized, toggleMaximized } = useAppStore(useShallow((s) => ({
-    details: s.details, selectedId: s.selectedId, node: s.selectedId ? s.nodes.get(s.selectedId) : undefined, requestDelete: s.requestDelete,
+  const { details, selectedId, node, requestDelete, openActionsMenu, menuOpen, maximized, toggleMaximized, requestedTab, consumeRequestedTab } = useAppStore(useShallow((s) => ({
+    details: s.details, selectedId: s.selectedId, node: s.selectedId ? s.nodes.get(s.selectedId) : undefined, requestDelete: s.requestDelete, openActionsMenu: s.openActionsMenu, menuOpen: s.actionsMenu !== null,
     maximized: s.detailsMaximized, toggleMaximized: s.toggleDetailsMaximized,
+    requestedTab: s.requestedTab, consumeRequestedTab: s.consumeRequestedTab,
   })));
   const [tab, setTab] = useState<Tab>("overview");
   const [height, setHeight] = useState(DEFAULT);
@@ -101,14 +104,21 @@ export function DetailsPanel() {
   }, [commit]);
 
   useEffect(() => { setTab("overview"); }, [details?.nodeId]);
+  // A requested tab (Rollback… → History) wins over the reset above, which runs first in the same commit.
+  useEffect(() => {
+    if (!requestedTab || !details || details.nodeId !== selectedId) return;
+    setTab(requestedTab);
+    consumeRequestedTab();
+  }, [requestedTab, details?.nodeId, selectedId, consumeRequestedTab]);
 
   const heading = node ? { name: node.name, kind: node.kind, namespace: node.namespace } : selectedId ? headingFromId(selectedId) : null;
   const tabs: { id: Tab; label: string }[] = [{ id: "overview", label: "Overview" }, { id: "yaml", label: "YAML" }, { id: "events", label: "Events" }];
   if (heading?.kind && LOG_KINDS.has(heading.kind)) tabs.push({ id: "logs", label: "Logs" });
+  if (heading?.kind && ROLLOUT_KINDS.has(heading.kind)) tabs.push({ id: "history", label: "History" });
 
   return (
     // Maximised, the panel fills whatever the column has left under the app header (the view is unmounted by `App`).
-    <section className={`border-t border-border bg-panel ${maximized ? "min-h-0 flex-1" : "shrink-0"}`} style={maximized ? undefined : { height }}>
+    <section data-details-panel className={`border-t border-border bg-panel ${maximized ? "min-h-0 flex-1" : "shrink-0"}`} style={maximized ? undefined : { height }}>
       {maximized ? (
         <div className="h-1.5" />
       ) : (
@@ -131,6 +141,13 @@ export function DetailsPanel() {
             {heading.kind && <span className="text-xs text-text-muted">{KIND_META[heading.kind].label}{heading.namespace ? ` · ${heading.namespace}` : ""}</span>}
           </div>
         )}
+        {selectedId && actionsFor(kindOf(selectedId)).some((a) => a !== "delete") && (
+          <button type="button" aria-label="Actions" aria-haspopup="menu" aria-expanded={menuOpen}
+            onClick={(e) => { const r = e.currentTarget.getBoundingClientRect(); openActionsMenu(selectedId, r.left, r.bottom + 4, r.top - 4); }}
+            className="flex h-8 items-center gap-1 rounded-lg px-2 text-sm text-text-muted hover:bg-surface hover:text-text-hi">
+            Actions <ChevronDown className="size-4" />
+          </button>
+        )}
         {selectedId && (
           <button type="button" title="Delete" aria-label="Delete" onClick={() => requestDelete(selectedId)}
             className="-mr-3 grid size-8 place-items-center rounded-lg text-text-muted hover:bg-surface hover:text-status-err">
@@ -148,11 +165,13 @@ export function DetailsPanel() {
         ) : details.loading || !details.data ? (
           <div className="grid h-full place-items-center text-sm text-text-muted">{details.loading ? "Loading…" : "Details unavailable"}</div>
         ) : tab === "overview" ? (
-          <OverviewTab data={details.data} />
+          <OverviewTab nodeId={details.nodeId} data={details.data} />
         ) : tab === "yaml" ? (
           <YamlTab />
         ) : tab === "logs" ? (
           <LogsTab />
+        ) : tab === "history" ? (
+          <HistoryTab key={details.nodeId} nodeId={details.nodeId} />
         ) : (
           <EventsTab events={details.events} />
         )}

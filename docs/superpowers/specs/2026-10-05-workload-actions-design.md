@@ -19,7 +19,7 @@ Pause/resume, `kubectl rollout status --watch`-style blocking, editing HPA min/m
 - **Restart.** A confirmation: *Restart Deployment web? Its pods are replaced according to the rollout strategy.*
 - **Rollback… / History tab.** Deployment, StatefulSet and DaemonSet get a **History** tab after Logs. It lists revisions newest first: number, `current` marker, age, images, change-cause. Selecting a revision shows a `DiffView` of the current pod template against it and a **Rollback to N** button. **Rollback…** in the menu opens the History tab. Rollback asks for confirmation: *Roll web back to revision 3?* The current revision has no Rollback button.
 - **Feedback.** Success: an info toast (*Scaled web to 5*, *Restarted web*, *Rolled web back to revision 3*). Failure: an error toast with the server's message. While a rollout runs the node shows a `rolling N/M` badge and a warning status; a Deployment whose rollout exceeded its progress deadline turns red, and Overview shows the condition's reason and message.
-- **No permission to read history.** The History tab says *No permission to read revision history (controllerrevisions).* Scale and Restart are unaffected.
+- **No permission to read history.** The History tab says *No permission to read revision history (replicasets)* for a Deployment and *(controllerrevisions)* for a StatefulSet or DaemonSet. Scale and Restart are unaffected.
 
 ## 4. Backend
 
@@ -51,7 +51,7 @@ Pause/resume, `kubectl rollout status --watch`-style blocking, editing HPA min/m
 
 ### History (`session/rollout.rs`)
 
-- **Deployment:** ReplicaSets from the cached store whose ownerReference uid is the Deployment's uid. The revision number is the `deployment.kubernetes.io/revision` annotation; ReplicaSets without it are skipped. `current` is the highest revision. No API call.
+- **Deployment:** ReplicaSets from the cached store whose ownerReference uid is the Deployment's uid. The revision number is the `deployment.kubernetes.io/revision` annotation; ReplicaSets without it are skipped. `current` is the revision named by the Deployment's own `deployment.kubernetes.io/revision` annotation (the highest when that is missing), so right after a rollout no entry may be current until the new ReplicaSet is cached. No API call; when the ReplicaSet watch is denied, `forbidden`.
 - **StatefulSet / DaemonSet:** `list` ControllerRevisions in the namespace with the workload's `spec.selector.matchLabels` as label selector, kept only when an ownerReference uid matches the workload. The number is `.revision`. `current` is `status.updateRevision` for a StatefulSet and the highest revision for a DaemonSet. A 403 rejects with `forbidden`.
 - `changeCause` is the `kubernetes.io/change-cause` annotation; `images` are the containers' images in order.
 - Revision parsing and patch building are pure functions over typed objects, so they are unit-tested without a cluster.
@@ -69,7 +69,7 @@ Pause/resume, `kubectl rollout status --watch`-style blocking, editing HPA min/m
 
 ## 5. Frontend
 
-- `src/features/actions/`: `ActionsMenu` (items per kind, keyboard handling, rendered as a popover from the header button or at the pointer from a context menu), `ScaleDialog`, `RestartDialog`, `RollbackDialog` (confirmation plus `DiffView`).
+- `src/features/actions/`: `ActionsMenu` (items per kind, keyboard handling, rendered as a popover from the header button or at the pointer from a context menu), `ScaleDialog`, `RestartDialog`, `RollbackDialog` (a plain confirmation; the diff is already on screen in the History tab where a rollback starts).
 - Right-click: `ResourceNode` / `Canvas` and `TableView` call a store action that selects the object and opens the menu at the pointer. The native context menu is suppressed only on nodes and rows.
 - `src/features/details/HistoryTab.tsx`: calls `rollout_history` when shown, and again when a `graph_delta` updates the selected workload, at most once per second. Diff uses the existing `features/editor/DiffView`.
 - Store (`src/app/store`): `scaleObject`, `restartObject`, `rollbackObject` and the open-dialog/menu state, following the `requestDelete` / `confirmDelete` pattern. Toasts use the existing `Toasts` component.

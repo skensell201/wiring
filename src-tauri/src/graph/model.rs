@@ -26,6 +26,15 @@ pub struct GroupInfo {
     pub err: usize,
 }
 
+/// Why a node is yellow or red. `cause` names the neighbour to blame (a workload's failing pod,
+/// a Service's unready pods); the frontend follows it to the root.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Problem {
+    pub reason: String,
+    pub message: Option<String>,
+    pub cause: Option<NodeId>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Node {
@@ -36,6 +45,9 @@ pub struct Node {
     pub status: Status,
     pub badges: Vec<String>,
     pub group: Option<GroupInfo>,
+    /// Set only when `status` is Warn or Err.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub problem: Option<Problem>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -171,6 +183,7 @@ mod tests {
             status: Status::Err,
             badges: vec!["CrashLoopBackOff".into()],
             group: None,
+            problem: None,
         };
         let json = serde_json::to_value(&n).unwrap();
         assert_eq!(json["status"], "err");
@@ -196,6 +209,7 @@ mod tests {
             status: Status::Ok,
             badges: vec![],
             group: None,
+            problem: None,
         }
     }
 
@@ -220,5 +234,25 @@ mod tests {
         assert_eq!(a, b);
         assert_eq!(a.nodes.iter().map(|n| n.id.as_str()).collect::<Vec<_>>(), vec!["a", "b", "c"]);
         assert_eq!(a.edges.len(), 2);
+    }
+
+    #[test]
+    fn problem_is_omitted_when_absent_and_camel_case_when_present() {
+        let mut n = test_node("Pod/p/a");
+        let json = serde_json::to_value(&n).unwrap();
+        assert!(json.get("problem").is_none(), "a healthy node carries no problem key: {json}");
+
+        n.problem = Some(Problem {
+            reason: "ImagePullBackOff".into(),
+            message: Some("container web: Back-off pulling image".into()),
+            cause: None,
+        });
+        let json = serde_json::to_value(&n).unwrap();
+        assert_eq!(
+            json["problem"],
+            serde_json::json!({ "reason": "ImagePullBackOff", "message": "container web: Back-off pulling image", "cause": null })
+        );
+        let back: Node = serde_json::from_value(json).unwrap();
+        assert_eq!(back, n);
     }
 }
