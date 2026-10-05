@@ -11,6 +11,8 @@ use tauri_plugin_store::StoreExt;
 use tokio::sync::Mutex;
 
 use crate::error::{AppError, AppResult, ErrorKind};
+use crate::exec::session::ExecRequest;
+use crate::exec::{clamp_size, decode_input, ExecMessage, ExecPod};
 use crate::forward::{Forward, PortOption};
 use crate::graph::rows::Table;
 use crate::graph::NodeId;
@@ -239,6 +241,69 @@ pub async fn stop_logs(state: State<'_, AppState>, session_id: u32) -> AppResult
 }
 
 #[tauri::command]
+pub async fn exec_pods(state: State<'_, AppState>, node_id: String) -> AppResult<Vec<ExecPod>> {
+    let mut guard = state.session.lock().await;
+    let session = session_mut(&mut guard)?;
+    session.exec_pods(&node_id)
+}
+
+/// Open a terminal in `pod`/`container` of `node_id`; output and the end arrive on `on_message`.
+#[tauri::command]
+pub async fn start_exec(
+    state: State<'_, AppState>,
+    node_id: String,
+    pod: String,
+    container: String,
+    cols: u16,
+    rows: u16,
+    on_message: tauri::ipc::Channel<ExecMessage>,
+) -> AppResult<u32> {
+    let (cols, rows) = clamp_size(cols, rows);
+    let mut guard = state.session.lock().await;
+    let session = session_mut(&mut guard)?;
+    session.start_exec(
+        ExecRequest {
+            node_id,
+            pod,
+            container,
+            cols,
+            rows,
+        },
+        Arc::new(on_message),
+    )
+}
+
+/// Keystrokes (base64). Unknown sessions and a missing connection are no-ops.
+#[tauri::command]
+pub async fn exec_input(state: State<'_, AppState>, session_id: u32, data: String) -> AppResult<()> {
+    let bytes = decode_input(&data)?;
+    let guard = state.session.lock().await;
+    if let Some(session) = guard.as_ref() {
+        session.exec_input(session_id, bytes);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn exec_resize(state: State<'_, AppState>, session_id: u32, cols: u16, rows: u16) -> AppResult<()> {
+    let (cols, rows) = clamp_size(cols, rows);
+    let guard = state.session.lock().await;
+    if let Some(session) = guard.as_ref() {
+        session.exec_resize(session_id, cols, rows);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn stop_exec(state: State<'_, AppState>, session_id: u32) -> AppResult<()> {
+    let mut guard = state.session.lock().await;
+    if let Some(session) = guard.as_mut() {
+        session.stop_exec(session_id).await;
+    }
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn forward_ports(state: State<'_, AppState>, node_id: String) -> AppResult<Vec<PortOption>> {
     let mut guard = state.session.lock().await;
     let session = session_mut(&mut guard)?;
@@ -313,6 +378,11 @@ pub fn register(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wr
             rollback_object,
             start_logs,
             stop_logs,
+            exec_pods,
+            start_exec,
+            exec_input,
+            exec_resize,
+            stop_exec,
             forward_ports,
             suggest_local_port,
             start_forward,

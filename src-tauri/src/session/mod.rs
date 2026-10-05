@@ -23,6 +23,9 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use crate::error::{AppError, AppResult, ErrorKind};
+use crate::exec::remote::KubeExec;
+use crate::exec::session::{ExecRequest, ExecSessions};
+use crate::exec::{ExecPod, ExecSink};
 use crate::forward::kube::KubeConnector;
 use crate::forward::manager::ForwardManager;
 use crate::forward::{self, Forward, PortOption};
@@ -116,6 +119,8 @@ pub struct Session {
     next_log_id: u32,
     /// Port-forwards outlive namespace switches; they end with the connection.
     forwards: ForwardManager,
+    /// Live terminals; they end with the namespace session, like log sessions.
+    execs: ExecSessions,
 }
 
 impl Session {
@@ -156,6 +161,7 @@ impl Session {
     }
 
     fn new(client: Client, emitter: Arc<dyn Emitter>) -> Session {
+        let execs = ExecSessions::new(Arc::new(KubeExec::new(client.clone())));
         let forwards = ForwardManager::new(Arc::new(KubeConnector::new(client.clone())), emitter.clone());
         Session {
             client,
@@ -168,6 +174,7 @@ impl Session {
             logs: HashMap::new(),
             next_log_id: 1,
             forwards,
+            execs,
         }
     }
 
@@ -186,6 +193,7 @@ impl Session {
 
     /// Tear down any previous watchers and start watching `namespace`.
     pub async fn select_namespace(&mut self, namespace: &str, expanded_groups: HashSet<NodeId>) -> AppResult<()> {
+        self.execs.stop_all().await;
         self.stop_watchers();
         self.shared = Shared::default();
         *self.shared.expanded_groups() = expanded_groups;
@@ -296,6 +304,29 @@ impl Session {
         }
     }
 
+    /// The running pods and containers the Terminal tab offers for `node_id`.
+    pub fn exec_pods(&self, node_id: &str) -> AppResult<Vec<ExecPod>> {
+        crate::exec::targets::exec_pods(&self.shared.store(), node_id)
+    }
+
+    /// Validate against the store and start a terminal; connect errors arrive as messages.
+    pub fn start_exec(&mut self, req: ExecRequest, sink: Arc<dyn ExecSink>) -> AppResult<u32> {
+        let namespace = crate::exec::targets::check_target(&self.shared.store(), &req.node_id, &req.pod, &req.container)?;
+        Ok(self.execs.start(namespace, req, sink))
+    }
+
+    pub fn exec_input(&self, id: u32, data: Vec<u8>) {
+        self.execs.input(id, data);
+    }
+
+    pub fn exec_resize(&self, id: u32, cols: u16, rows: u16) {
+        self.execs.resize(id, cols, rows);
+    }
+
+    pub async fn stop_exec(&mut self, id: u32) {
+        self.execs.stop(id).await;
+    }
+
     /// The remote ports the Port-forward dialog offers for `node_id`.
     pub fn forward_ports(&self, node_id: &str) -> AppResult<Vec<PortOption>> {
         let target = forward::resolve::target(node_id)?;
@@ -337,6 +368,7 @@ impl Session {
 
     /// Ends watchers, logs and forwards (awaited, so the ports are free), then announces the disconnect.
     pub async fn shutdown(&mut self) {
+        self.execs.stop_all().await;
         self.stop_watchers();
         self.forwards.stop_all().await;
         self.emitter.emit(OutEvent::ConnectionState(emitter::ConnectionState::Disconnected));
