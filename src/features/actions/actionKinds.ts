@@ -7,6 +7,9 @@ export const SCALE_KINDS: ReadonlySet<Kind> = new Set<Kind>(["Deployment", "Stat
 export const ROLLOUT_KINDS: ReadonlySet<Kind> = new Set<Kind>(["Deployment", "StatefulSet", "DaemonSet"]);
 export const FORWARD_KINDS: ReadonlySet<Kind> = new Set<Kind>(["Pod", "Service", "Deployment", "StatefulSet", "DaemonSet"]);
 
+/** Kinds with CPU / Memory usage (table columns, Overview rows); metrics samples refetch them. */
+export const USAGE_KINDS: ReadonlySet<Kind> = new Set<Kind>(["Pod", "Deployment", "StatefulSet", "DaemonSet"]);
+
 export type ActionId = "scale" | "restart" | "rollback" | "forward" | "delete";
 
 /** The Actions menu items for a kind, in menu order; everything can be deleted. */

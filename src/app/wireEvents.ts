@@ -1,11 +1,9 @@
 import { commands } from "../shared/ipc/commands";
 import { listenAll } from "../shared/ipc/events";
 import type { GraphDelta, Kind } from "../shared/ipc/types";
+import { kindOf, USAGE_KINDS } from "../features/actions/actionKinds";
 import { disconnectedState, requestDetailsRefresh, useAppStore } from "./store";
 import { cancelTableRefresh, scheduleTableRefresh } from "./tableRefresh";
-
-/** Kinds whose tables show CPU / Memory, refetched on every metrics sample. */
-const USAGE_KINDS: ReadonlySet<Kind> = new Set<Kind>(["Pod", "Deployment", "StatefulSet", "DaemonSet"]);
 
 /** Whether a delta changes rows that a `kind` table would show. `PodGroup` nodes collapse pods,
  *  so any PodGroup touched by the delta also counts as touching `Pod`. Single ReplicaSets are
@@ -48,7 +46,10 @@ export function wireEvents(): Promise<() => void> {
           if (now.name === "table" && now.kind === kind) void useAppStore.getState().refreshTable(kind);
         });
       }
-      requestDetailsRefresh();
+      // Only a Pod or workload has usage rows; the details of anything else would not change.
+      const selected = s().selectedId;
+      const selectedKind = selected === null ? null : kindOf(selected);
+      if (selectedKind && USAGE_KINDS.has(selectedKind)) requestDetailsRefresh();
     },
     connection_state: (state) => {
       s().setConnectionState(state);

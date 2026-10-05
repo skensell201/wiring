@@ -258,4 +258,13 @@ describe("metrics_updated", () => {
     await vi.runAllTimersAsync();
     expect(vi.mocked(invoke).mock.calls.filter(([c]) => c === "get_object")).toEqual([["get_object", { nodeId: "Pod/p/a" }]]);
   });
+
+  it("leaves the details of a kind without usage alone", async () => {
+    await wireEvents();
+    const data = { yaml: "kind: Service", summary: [], related: [] };
+    useAppStore.setState({ selectedId: "Service/p/s", details: { nodeId: "Service/p/s", data, events: [], loading: false, editor: viewEditor(data.yaml) } });
+    hoisted.handlers!.metrics_updated({ state: "available" });
+    await vi.runAllTimersAsync();
+    expect(vi.mocked(invoke).mock.calls.filter(([c]) => c === "get_object")).toEqual([]);
+  });
 });
