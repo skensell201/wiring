@@ -261,5 +261,11 @@ fn forward_and_port_option() {
             message: None,
         },
     );
-    assert_matches("port_option", &PortOption { port: 8080, label: "8080 → http (web)".into() });
+    assert_matches(
+        "port_option",
+        &PortOption {
+            port: 8080,
+            label: "8080 → http (web)".into(),
+        },
+    );
 }
