@@ -132,11 +132,19 @@ fn replicaset_entry(rs: &ReplicaSet) -> Option<HistoryEntry> {
             images: images_of(&template),
             template: to_yaml(&template),
         },
-        rollback: json!({ "spec": { "template": replace } }),
+        // kubectl also copies the ReplicaSet's annotations; the change cause is the one that shows
+        // in history, so it follows the template (null deletes it when the revision had none).
+        rollback: json!({
+            "metadata": { "annotations": { CHANGE_CAUSE_ANNOTATION: change_cause(&rs.metadata) } },
+            "spec": { "template": replace }
+        }),
     })
 }
 
-/// A Deployment's revisions, newest (= current) first, from the ReplicaSets it owns.
+/// A Deployment's revisions, newest first, from the ReplicaSets it owns. The current one is the
+/// revision the Deployment itself is annotated with (right after a restart or rollback its new
+/// ReplicaSet may not be cached yet, and then none is current); without a usable annotation the
+/// newest is.
 pub fn deployment_history(store: &Store, deployment: &Deployment) -> Vec<HistoryEntry> {
     let Some(uid) = deployment.metadata.uid.as_deref() else {
         return Vec::new();
@@ -152,8 +160,22 @@ pub fn deployment_history(store: &Store, deployment: &Deployment) -> Vec<History
         .filter_map(replicaset_entry)
         .collect();
     entries.sort_by_key(|e| std::cmp::Reverse(e.revision.revision));
-    if let Some(first) = entries.first_mut() {
-        first.revision.current = true;
+    let annotated = deployment
+        .metadata
+        .annotations
+        .as_ref()
+        .and_then(|a| a.get(REVISION_ANNOTATION))
+        .and_then(|v| v.parse::<i64>().ok());
+    match annotated {
+        Some(rev) => entries
+            .iter_mut()
+            .filter(|e| e.revision.revision == rev)
+            .for_each(|e| e.revision.current = true),
+        None => {
+            if let Some(first) = entries.first_mut() {
+                first.revision.current = true;
+            }
+        }
     }
     entries
 }
@@ -268,7 +290,15 @@ impl Session {
         check_rollout_kind(kind)?;
         let obj = self.cached(kind, ns.as_deref(), &name, node_id)?;
         let (uid, selector, update_revision) = match &obj {
-            Object::Deployment(d) => return Ok(deployment_history(&self.shared.store(), d)),
+            Object::Deployment(d) => {
+                if self.shared.denied_kinds().contains(&Kind::ReplicaSet) {
+                    return Err(AppError::new(
+                        ErrorKind::Forbidden,
+                        "cannot read ReplicaSets to build the revision history",
+                    ));
+                }
+                return Ok(deployment_history(&self.shared.store(), d));
+            }
             Object::StatefulSet(s) => (
                 s.metadata.uid.clone(),
                 s.spec.as_ref().map(|sp| selector_string(&sp.selector)),
@@ -420,6 +450,42 @@ mod tests {
         assert_eq!(patch["spec"]["template"]["$patch"], "replace");
         assert_eq!(patch["spec"]["template"]["spec"]["containers"][0]["image"], "web:1");
         assert_eq!(patch["spec"]["template"]["metadata"]["labels"], json!({ "app": "web" }));
+        assert_eq!(patch["metadata"]["annotations"]["kubernetes.io/change-cause"], "first release");
+        // A revision without a change cause clears the Deployment's (null deletes in a merge patch).
+        let none = &entries[0].rollback["metadata"]["annotations"];
+        assert_eq!(none, &json!({ "kubernetes.io/change-cause": null }));
+    }
+
+    fn annotated(store: &Store, revision: Option<&str>) -> Deployment {
+        let mut d = deployment(store, "web");
+        let ann = d.metadata.annotations.get_or_insert_with(Default::default);
+        ann.remove("deployment.kubernetes.io/revision");
+        if let Some(r) = revision {
+            ann.insert("deployment.kubernetes.io/revision".into(), r.into());
+        }
+        d
+    }
+
+    #[test]
+    fn deployment_current_follows_its_own_revision_annotation() {
+        let store = Store::from_fixture("history").unwrap();
+        // The annotation names a lower revision than the highest cached ReplicaSet.
+        let entries = deployment_history(&store, &annotated(&store, Some("1")));
+        assert_eq!(numbers(&entries), vec![(2, false), (1, true)]);
+        assert_eq!(pick_rollback(&entries, 1).unwrap_err().message, "already at revision 1");
+        assert!(pick_rollback(&entries, 2).is_ok());
+        // Its ReplicaSet is not cached yet: nothing is current, every revision can be rolled back to.
+        let entries = deployment_history(&store, &annotated(&store, Some("3")));
+        assert_eq!(numbers(&entries), vec![(2, false), (1, false)]);
+        // Missing or unparseable: the highest.
+        assert_eq!(
+            numbers(&deployment_history(&store, &annotated(&store, None))),
+            vec![(2, true), (1, false)]
+        );
+        assert_eq!(
+            numbers(&deployment_history(&store, &annotated(&store, Some("x")))),
+            vec![(2, true), (1, false)]
+        );
     }
 
     #[test]
