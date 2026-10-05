@@ -24,6 +24,8 @@
     "@tauri-apps/plugin-store": "^2",
     "@uiw/codemirror-themes": "^4.25",
     "@uiw/react-codemirror": "^4.25",
+    "@xterm/addon-fit": "^0.10.0",
+    "@xterm/xterm": "^5.5.0",
     "@xyflow/react": "^12.11",
     "anser": "^2.3.5",
     "diff": "^9",

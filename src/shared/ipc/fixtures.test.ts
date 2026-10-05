@@ -3,6 +3,8 @@ import appError from "./fixtures/app_error.json";
 import connectInfo from "./fixtures/connect_info.json";
 import connectionState from "./fixtures/connection_state.json";
 import contextInfo from "./fixtures/context_info.json";
+import execMessage from "./fixtures/exec_message.json";
+import execPod from "./fixtures/exec_pod.json";
 import forward from "./fixtures/forward.json";
 import graph from "./fixtures/graph.json";
 import graphDelta from "./fixtures/graph_delta.json";
@@ -17,7 +19,7 @@ import updateCheck from "./fixtures/update_check.json";
 import updateProgress from "./fixtures/update_progress.json";
 import {
   CONNECTION_STATES, ERROR_KINDS, KINDS, RELATIONS, STATUSES,
-  isAppError, isConnectInfo, isConnectionState, isContextInfo, isForward, isGraph, isGraphDelta, isGraphNode, isLogMessage, isMetricsUpdate, isObjectDetails, isObjectEvents, isPortOption, isRevision, isTable, isUpdateCheck, isUpdateProgress,
+  isAppError, isConnectInfo, isConnectionState, isContextInfo, isExecMessage, isExecPod, isForward, isGraph, isGraphDelta, isGraphNode, isLogMessage, isMetricsUpdate, isObjectDetails, isObjectEvents, isPortOption, isRevision, isTable, isUpdateCheck, isUpdateProgress,
 } from "./types";
 
 // The JSON files are the contract shared with the Rust side (guarded there by
@@ -87,5 +89,14 @@ describe("IPC fixtures match the TypeScript types", () => {
     expect(isGraphNode(graph.nodes[0])).toBe(true); // no problem key at all
     expect(isGraphNode({ ...group, problem: { reason: 3, message: null, cause: null } })).toBe(false);
     expect(isGraphNode({ ...group, problem: { reason: "x", message: null } })).toBe(false);
+  });
+  it("exec_message", () => expect(isExecMessage(execMessage)).toBe(true));
+  it("exec_pod", () => expect(isExecPod(execPod)).toBe(true));
+  it("exec message variants", () => {
+    expect(isExecMessage({ type: "ended", sessionId: 1, code: 3, message: null })).toBe(true);
+    expect(isExecMessage({ type: "ended", sessionId: 1, code: null, message: "x" })).toBe(true);
+    expect(isExecMessage({ type: "error", sessionId: 1, message: "x" })).toBe(true);
+    expect(isExecMessage({ type: "output", sessionId: 1 })).toBe(false);
+    expect(isExecPod({ name: "p", containers: [1] })).toBe(false);
   });
 });

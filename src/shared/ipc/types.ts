@@ -75,6 +75,13 @@ export type LogMessage =
   | { type: "error"; sessionId: number; pod: string; container: string; message: string }
   | { type: "truncated"; sessionId: number; limit: number };
 
+export interface ExecPod { name: string; containers: string[] }
+export type ExecMessage =
+  | { type: "output"; sessionId: number; data: string }
+  | { type: "ended"; sessionId: number; code: number | null; message: string | null }
+  | { type: "error"; sessionId: number; message: string };
+export interface ExecRequest { nodeId: NodeId; pod: string; container: string; cols: number; rows: number }
+
 export interface LogRequest { nodeId: NodeId; container: string | null; previous: boolean; timestamps: boolean }
 
 export interface Revision {
@@ -183,6 +190,16 @@ export function isLogMessage(v: unknown): v is LogMessage {
     case "started": case "ended": return isStr(v.pod) && isStr(v.container);
     case "error": return isStr(v.pod) && isStr(v.container) && isStr(v.message);
     case "truncated": return typeof v.limit === "number";
+    default: return false;
+  }
+}
+export function isExecPod(v: unknown): v is ExecPod { return isObj(v) && isStr(v.name) && arrayOf(v.containers, isStr); }
+export function isExecMessage(v: unknown): v is ExecMessage {
+  if (!isObj(v) || typeof v.sessionId !== "number") return false;
+  switch (v.type) {
+    case "output": return isStr(v.data);
+    case "ended": return (v.code === null || typeof v.code === "number") && isStrOrNull(v.message);
+    case "error": return isStr(v.message);
     default: return false;
   }
 }
