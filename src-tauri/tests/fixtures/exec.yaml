@@ -1,0 +1,83 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: web, namespace: shop, uid: dep-web }
+spec:
+  replicas: 4
+  selector: { matchLabels: { app: web } }
+  template:
+    metadata: { labels: { app: web } }
+    spec: { containers: [ { name: app, image: nginx } ] }
+---
+apiVersion: apps/v1
+kind: ReplicaSet
+metadata:
+  name: web-7f9c
+  namespace: shop
+  uid: rs-web
+  ownerReferences: [ { apiVersion: apps/v1, kind: Deployment, name: web, uid: dep-web, controller: true } ]
+spec:
+  replicas: 4
+  selector: { matchLabels: { app: web } }
+  template:
+    metadata: { labels: { app: web } }
+    spec: { containers: [ { name: app, image: nginx } ] }
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: web-7f9c-b
+  namespace: shop
+  uid: pod-web-b
+  labels: { app: web }
+  ownerReferences: [ { apiVersion: apps/v1, kind: ReplicaSet, name: web-7f9c, uid: rs-web, controller: true } ]
+spec:
+  initContainers: [ { name: migrate, image: busybox } ]
+  containers: [ { name: app, image: nginx }, { name: sidecar, image: envoy } ]
+status: { phase: Running }
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: web-7f9c-a
+  namespace: shop
+  uid: pod-web-a
+  labels: { app: web }
+  ownerReferences: [ { apiVersion: apps/v1, kind: ReplicaSet, name: web-7f9c, uid: rs-web, controller: true } ]
+spec:
+  initContainers: [ { name: migrate, image: busybox } ]
+  containers: [ { name: app, image: nginx }, { name: sidecar, image: envoy } ]
+status: { phase: Running }
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: web-7f9c-c
+  namespace: shop
+  uid: pod-web-c
+  labels: { app: web }
+  ownerReferences: [ { apiVersion: apps/v1, kind: ReplicaSet, name: web-7f9c, uid: rs-web, controller: true } ]
+spec: { containers: [ { name: app, image: nginx } ] }
+status: { phase: Pending }
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: web-7f9c-d
+  namespace: shop
+  uid: pod-web-d
+  labels: { app: web }
+  deletionTimestamp: "2026-10-06T10:00:00Z"
+  ownerReferences: [ { apiVersion: apps/v1, kind: ReplicaSet, name: web-7f9c, uid: rs-web, controller: true } ]
+spec: { containers: [ { name: app, image: nginx } ] }
+status: { phase: Running }
+---
+apiVersion: v1
+kind: Pod
+metadata: { name: solo, namespace: shop, uid: pod-solo }
+spec: { containers: [ { name: main, image: busybox } ] }
+status: { phase: Running }
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: cfg, namespace: shop }
+data: { k: v }
