@@ -71,6 +71,26 @@ fn workload_status(ready: i32, desired: i32, progressing_false: bool) -> Status 
     }
 }
 
+/// `rolling updated/desired` while a rollout runs: the controller has not observed the latest
+/// generation, or not every replica runs the new template yet. Missing fields (old servers,
+/// hand-written fixtures) never count as rolling.
+fn rolling(generation: Option<i64>, observed: Option<i64>, updated: Option<i32>, desired: i32) -> Option<String> {
+    let unseen = matches!((generation, observed), (Some(g), Some(o)) if o < g);
+    let behind = updated.is_some_and(|u| u < desired);
+    (unseen || behind).then(|| format!("rolling {}/{desired}", updated.unwrap_or(0)))
+}
+
+/// Push the rolling badge (if any) and lift an otherwise healthy workload to a warning.
+fn with_rollout(status: Status, rolling: Option<String>, badges: &mut Badges) -> Status {
+    let Some(badge) = rolling else { return status };
+    badges.push(badge);
+    if status == Status::Ok {
+        Status::Warn
+    } else {
+        status
+    }
+}
+
 fn deployment(d: &Deployment) -> (Status, Badges) {
     let desired = d.spec.as_ref().and_then(|s| s.replicas).unwrap_or(1);
     let st = d.status.as_ref();
@@ -80,6 +100,13 @@ fn deployment(d: &Deployment) -> (Status, Badges) {
         .map(|cs| condition_is(cs.iter().map(|c| (c.type_.as_str(), c.status.as_str())), "Progressing", "False"))
         .unwrap_or(false);
     let mut badges = vec![ready_desired(ready, desired)];
+    let rollout = rolling(
+        d.metadata.generation,
+        st.and_then(|s| s.observed_generation),
+        st.and_then(|s| s.updated_replicas),
+        desired,
+    );
+    let status = with_rollout(workload_status(ready, desired, progressing_false), rollout, &mut badges);
     if let Some(img) = d
         .spec
         .as_ref()
@@ -88,13 +115,21 @@ fn deployment(d: &Deployment) -> (Status, Badges) {
     {
         badges.push(img);
     }
-    (workload_status(ready, desired, progressing_false), badges)
+    (status, badges)
 }
 
 fn statefulset(s: &StatefulSet) -> (Status, Badges) {
     let desired = s.spec.as_ref().and_then(|s| s.replicas).unwrap_or(1);
-    let ready = s.status.as_ref().and_then(|s| s.ready_replicas).unwrap_or(0);
+    let st = s.status.as_ref();
+    let ready = st.and_then(|s| s.ready_replicas).unwrap_or(0);
     let mut badges = vec![ready_desired(ready, desired)];
+    let rollout = rolling(
+        s.metadata.generation,
+        st.and_then(|s| s.observed_generation),
+        st.and_then(|s| s.updated_replicas),
+        desired,
+    );
+    let status = with_rollout(workload_status(ready, desired, false), rollout, &mut badges);
     if let Some(img) = s
         .spec
         .as_ref()
@@ -103,7 +138,7 @@ fn statefulset(s: &StatefulSet) -> (Status, Badges) {
     {
         badges.push(img);
     }
-    (workload_status(ready, desired, false), badges)
+    (status, badges)
 }
 
 fn daemonset(d: &DaemonSet) -> (Status, Badges) {
@@ -111,6 +146,13 @@ fn daemonset(d: &DaemonSet) -> (Status, Badges) {
     let desired = st.map(|s| s.desired_number_scheduled).unwrap_or(0);
     let ready = st.map(|s| s.number_ready).unwrap_or(0);
     let mut badges = vec![ready_desired(ready, desired)];
+    let rollout = rolling(
+        d.metadata.generation,
+        st.and_then(|s| s.observed_generation),
+        st.and_then(|s| s.updated_number_scheduled),
+        desired,
+    );
+    let status = with_rollout(workload_status(ready, desired, false), rollout, &mut badges);
     if let Some(img) = d
         .spec
         .as_ref()
@@ -119,7 +161,7 @@ fn daemonset(d: &DaemonSet) -> (Status, Badges) {
     {
         badges.push(img);
     }
-    (workload_status(ready, desired, false), badges)
+    (status, badges)
 }
 
 fn replicaset(r: &ReplicaSet) -> (Status, Badges) {
@@ -376,10 +418,13 @@ pub fn summary(obj: &Object) -> SummaryRows {
             ));
             if let Some(cs) = st.and_then(|s| s.conditions.as_ref()) {
                 rows.extend(cs.iter().map(|c| {
-                    (
-                        format!("Condition {}", c.type_),
-                        format!("{} {}", c.status, c.reason.clone().unwrap_or_default()),
-                    )
+                    let mut text = format!("{} {}", c.status, c.reason.clone().unwrap_or_default());
+                    // The message says why a rollout is stuck (which ReplicaSet, which deadline).
+                    if let Some(m) = c.message.as_deref().filter(|m| !m.is_empty()) {
+                        text.push_str(" — ");
+                        text.push_str(m);
+                    }
+                    (format!("Condition {}", c.type_), text)
                 }));
             }
         }
@@ -425,20 +470,26 @@ pub fn summary(obj: &Object) -> SummaryRows {
         Object::HorizontalPodAutoscaler(h) => {
             if let Some(cs) = h.status.as_ref().and_then(|s| s.conditions.as_ref()) {
                 rows.extend(cs.iter().map(|c| {
-                    (
-                        format!("Condition {}", c.type_),
-                        format!("{} {}", c.status, c.reason.clone().unwrap_or_default()),
-                    )
+                    let mut text = format!("{} {}", c.status, c.reason.clone().unwrap_or_default());
+                    // The message says why a rollout is stuck (which ReplicaSet, which deadline).
+                    if let Some(m) = c.message.as_deref().filter(|m| !m.is_empty()) {
+                        text.push_str(" — ");
+                        text.push_str(m);
+                    }
+                    (format!("Condition {}", c.type_), text)
                 }));
             }
         }
         Object::Job(j) => {
             if let Some(cs) = j.status.as_ref().and_then(|s| s.conditions.as_ref()) {
                 rows.extend(cs.iter().map(|c| {
-                    (
-                        format!("Condition {}", c.type_),
-                        format!("{} {}", c.status, c.reason.clone().unwrap_or_default()),
-                    )
+                    let mut text = format!("{} {}", c.status, c.reason.clone().unwrap_or_default());
+                    // The message says why a rollout is stuck (which ReplicaSet, which deadline).
+                    if let Some(m) = c.message.as_deref().filter(|m| !m.is_empty()) {
+                        text.push_str(" — ");
+                        text.push_str(m);
+                    }
+                    (format!("Condition {}", c.type_), text)
                 }));
             }
         }
@@ -558,5 +609,49 @@ mod tests {
         let svc = s.find(Kind::Service, Some("s"), "matched").unwrap();
         let rows = summary(svc);
         assert!(rows.iter().any(|(k, v)| k == "Selector" && v == "app=running"));
+    }
+
+    fn describe_rolling(kind: Kind, name: &str) -> (Status, Vec<String>) {
+        let s = Store::from_fixture("rolling").unwrap();
+        describe(s.find(kind, Some("r"), name).unwrap(), &s)
+    }
+
+    #[test]
+    fn rollouts_in_progress_get_a_rolling_badge() {
+        let strs = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(describe_rolling(Kind::Deployment, "settled"), (Status::Ok, strs(&["3/3", "web:2"])));
+        assert_eq!(
+            describe_rolling(Kind::Deployment, "updating"),
+            (Status::Warn, strs(&["3/3", "rolling 1/3", "web:3"]))
+        );
+        // The controller has not seen the latest spec yet.
+        assert_eq!(
+            describe_rolling(Kind::Deployment, "unseen"),
+            (Status::Warn, strs(&["3/3", "rolling 3/3", "web:4"]))
+        );
+        // A stuck rollout stays an error.
+        assert_eq!(
+            describe_rolling(Kind::Deployment, "deadline"),
+            (Status::Err, strs(&["0/3", "rolling 1/3", "web:bad"]))
+        );
+        assert_eq!(
+            describe_rolling(Kind::StatefulSet, "db"),
+            (Status::Warn, strs(&["3/3", "rolling 1/3", "postgres:17"]))
+        );
+        assert_eq!(
+            describe_rolling(Kind::DaemonSet, "agent"),
+            (Status::Warn, strs(&["4/4", "rolling 2/4", "agent:3"]))
+        );
+    }
+
+    #[test]
+    fn deployment_overview_carries_the_condition_message() {
+        let s = Store::from_fixture("rolling").unwrap();
+        let rows = summary(s.find(Kind::Deployment, Some("r"), "deadline").unwrap());
+        assert!(
+            rows.iter().any(|(k, v)| k == "Condition Progressing"
+                && v == "False ProgressDeadlineExceeded — ReplicaSet \"deadline-2\" has timed out progressing."),
+            "{rows:?}"
+        );
     }
 }

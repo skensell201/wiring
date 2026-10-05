@@ -1,0 +1,68 @@
+kind: Deployment
+metadata: { name: settled, namespace: r, generation: 2 }
+spec:
+  replicas: 3
+  selector: { matchLabels: { app: settled } }
+  template:
+    metadata: { labels: { app: settled } }
+    spec: { containers: [ { name: c, image: "web:2" } ] }
+status: { observedGeneration: 2, replicas: 3, updatedReplicas: 3, readyReplicas: 3 }
+---
+kind: Deployment
+metadata: { name: updating, namespace: r, generation: 3 }
+spec:
+  replicas: 3
+  selector: { matchLabels: { app: updating } }
+  template:
+    metadata: { labels: { app: updating } }
+    spec: { containers: [ { name: c, image: "web:3" } ] }
+status: { observedGeneration: 3, replicas: 4, updatedReplicas: 1, readyReplicas: 3 }
+---
+kind: Deployment
+metadata: { name: unseen, namespace: r, generation: 4 }
+spec:
+  replicas: 3
+  selector: { matchLabels: { app: unseen } }
+  template:
+    metadata: { labels: { app: unseen } }
+    spec: { containers: [ { name: c, image: "web:4" } ] }
+status: { observedGeneration: 3, replicas: 3, updatedReplicas: 3, readyReplicas: 3 }
+---
+kind: Deployment
+metadata: { name: deadline, namespace: r, generation: 2 }
+spec:
+  replicas: 3
+  selector: { matchLabels: { app: deadline } }
+  template:
+    metadata: { labels: { app: deadline } }
+    spec: { containers: [ { name: c, image: "web:bad" } ] }
+status:
+  observedGeneration: 2
+  replicas: 3
+  updatedReplicas: 1
+  readyReplicas: 0
+  conditions:
+    - type: Progressing
+      status: "False"
+      reason: ProgressDeadlineExceeded
+      message: ReplicaSet "deadline-2" has timed out progressing.
+---
+kind: StatefulSet
+metadata: { name: db, namespace: r, generation: 2 }
+spec:
+  replicas: 3
+  serviceName: db
+  selector: { matchLabels: { app: db } }
+  template:
+    metadata: { labels: { app: db } }
+    spec: { containers: [ { name: c, image: "postgres:17" } ] }
+status: { observedGeneration: 2, replicas: 3, readyReplicas: 3, updatedReplicas: 1 }
+---
+kind: DaemonSet
+metadata: { name: agent, namespace: r, generation: 5 }
+spec:
+  selector: { matchLabels: { app: agent } }
+  template:
+    metadata: { labels: { app: agent } }
+    spec: { containers: [ { name: c, image: "agent:3" } ] }
+status: { observedGeneration: 5, desiredNumberScheduled: 4, numberReady: 4, currentNumberScheduled: 4, numberMisscheduled: 0, updatedNumberScheduled: 2 }
