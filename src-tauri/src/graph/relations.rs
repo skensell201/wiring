@@ -2,6 +2,7 @@
 //! when both endpoints exist in the store.
 
 use k8s_openapi::api::core::v1::PodSpec;
+use k8s_openapi::api::networking::v1::Ingress;
 
 use super::model::{node_id, Edge, Relation};
 use super::status::selector_matches;
@@ -51,31 +52,36 @@ pub fn service_edges(store: &Store) -> Vec<Edge> {
     edges
 }
 
+/// Every Service an Ingress routes to (default backend and rule paths), sorted and deduplicated.
+pub fn ingress_backend_names(i: &Ingress) -> Vec<String> {
+    let Some(spec) = i.spec.as_ref() else { return vec![] };
+    let mut names: Vec<String> = vec![];
+    if let Some(name) = spec
+        .default_backend
+        .as_ref()
+        .and_then(|b| b.service.as_ref())
+        .map(|s| s.name.clone())
+    {
+        names.push(name);
+    }
+    for rule in spec.rules.as_deref().unwrap_or_default() {
+        for path in rule.http.as_ref().map(|h| h.paths.as_slice()).unwrap_or_default() {
+            if let Some(svc) = path.backend.service.as_ref() {
+                names.push(svc.name.clone());
+            }
+        }
+    }
+    names.sort();
+    names.dedup();
+    names
+}
+
 /// Ingress -> Service via rules[].http.paths[].backend.service and defaultBackend.
 pub fn ingress_edges(store: &Store) -> Vec<Edge> {
     let mut edges = vec![];
     for ing in store.iter_kind(Kind::Ingress) {
         let Object::Ingress(i) = ing else { continue };
-        let Some(spec) = i.spec.as_ref() else { continue };
-        let mut names: Vec<String> = vec![];
-        if let Some(name) = spec
-            .default_backend
-            .as_ref()
-            .and_then(|b| b.service.as_ref())
-            .map(|s| s.name.clone())
-        {
-            names.push(name);
-        }
-        for rule in spec.rules.as_deref().unwrap_or_default() {
-            for path in rule.http.as_ref().map(|h| h.paths.as_slice()).unwrap_or_default() {
-                if let Some(svc) = path.backend.service.as_ref() {
-                    names.push(svc.name.clone());
-                }
-            }
-        }
-        names.sort();
-        names.dedup();
-        for name in names {
+        for name in ingress_backend_names(i) {
             if let Some(svc) = store.find(Kind::Service, ing.namespace(), &name) {
                 edges.push(Edge::new(id_of(ing), id_of(svc), Relation::Routes));
             }

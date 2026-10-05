@@ -5,11 +5,12 @@ use std::collections::BTreeMap;
 use k8s_openapi::api::apps::v1::{DaemonSet, Deployment, ReplicaSet, StatefulSet};
 use k8s_openapi::api::autoscaling::v2::HorizontalPodAutoscaler;
 use k8s_openapi::api::batch::v1::{CronJob, Job};
-use k8s_openapi::api::core::v1::{PersistentVolume, PersistentVolumeClaim, Pod, Service};
+use k8s_openapi::api::core::v1::{ContainerStatus, PersistentVolume, PersistentVolumeClaim, Pod, Service};
 use k8s_openapi::api::networking::v1::Ingress;
 
-use super::model::Status;
-use crate::store::{Object, Store};
+use super::model::{Problem, Status};
+use super::relations::ingress_backend_names;
+use crate::store::{Kind, Object, Store};
 
 pub type Badges = Vec<String>;
 pub type SummaryRows = Vec<(String, String)>;
@@ -25,7 +26,7 @@ pub fn describe(obj: &Object, store: &Store) -> (Status, Badges) {
         Object::CronJob(c) => cronjob(c),
         Object::Pod(p) => pod(p),
         Object::Service(s) => service(s, store),
-        Object::Ingress(i) => ingress(i),
+        Object::Ingress(i) => ingress(i, store),
         Object::ConfigMap(c) => (
             Status::Ok,
             vec![keys_badge(
@@ -212,6 +213,32 @@ fn cronjob(c: &CronJob) -> (Status, Badges) {
     (if suspended { Status::Warn } else { Status::Ok }, vec![schedule])
 }
 
+/// A container that has legitimately finished (e.g. an init-like sidecar) is permanently
+/// `ready: false` but should not count against the pod's readiness.
+fn is_completed(c: &ContainerStatus) -> bool {
+    c.state
+        .as_ref()
+        .and_then(|s| s.terminated.as_ref())
+        .and_then(|t| t.reason.as_deref())
+        == Some("Completed")
+}
+
+/// The first container with a waiting reason or a non-`Completed` terminated reason, the same
+/// one the node badge shows.
+fn container_reason(statuses: &[ContainerStatus]) -> Option<(&ContainerStatus, String)> {
+    statuses.iter().find_map(|c| {
+        let state = c.state.as_ref()?;
+        let reason = state.waiting.as_ref().and_then(|w| w.reason.clone()).or_else(|| {
+            state
+                .terminated
+                .as_ref()
+                .and_then(|t| t.reason.clone())
+                .filter(|r| r != "Completed")
+        })?;
+        Some((c, reason))
+    })
+}
+
 const POD_ERR_REASONS: [&str; 5] = ["CrashLoopBackOff", "ImagePullBackOff", "ErrImagePull", "OOMKilled", "Error"];
 
 fn pod(p: &Pod) -> (Status, Badges) {
@@ -220,28 +247,10 @@ fn pod(p: &Pod) -> (Status, Badges) {
     let statuses = st.and_then(|s| s.container_statuses.as_ref()).cloned().unwrap_or_default();
     let restarts: i32 = statuses.iter().map(|c| c.restart_count).sum();
 
-    // A container that has legitimately finished (e.g. an init-like sidecar) is permanently
-    // `ready: false` but should not count against the pod's readiness.
-    let is_completed = |c: &k8s_openapi::api::core::v1::ContainerStatus| {
-        c.state
-            .as_ref()
-            .and_then(|s| s.terminated.as_ref())
-            .and_then(|t| t.reason.as_deref())
-            == Some("Completed")
-    };
     let all_ready = !statuses.is_empty() && statuses.iter().all(|c| c.ready || is_completed(c));
 
     // A waiting/terminated reason is more informative than the phase.
-    let reason = statuses.iter().find_map(|c| {
-        let state = c.state.as_ref()?;
-        state.waiting.as_ref().and_then(|w| w.reason.clone()).or_else(|| {
-            state
-                .terminated
-                .as_ref()
-                .and_then(|t| t.reason.clone())
-                .filter(|r| r != "Completed")
-        })
-    });
+    let reason = container_reason(&statuses).map(|(_, r)| r);
 
     let is_err = phase == "Failed" || reason.as_deref().is_some_and(|r| POD_ERR_REASONS.contains(&r));
     // A pod being deleted (graceful termination in progress) is a warning, not the plain
@@ -280,6 +289,32 @@ pub fn selector_matches(selector: &BTreeMap<String, String>, labels: Option<&BTr
     selector.iter().all(|(k, v)| labels.get(k) == Some(v))
 }
 
+/// A pod without a `Ready` condition counts as ready, so hand-written fixtures stay healthy.
+fn pod_ready(p: &Pod) -> bool {
+    p.status
+        .as_ref()
+        .and_then(|s| s.conditions.as_ref())
+        .is_none_or(|cs| !cs.iter().any(|c| c.type_ == "Ready" && c.status == "False"))
+}
+
+/// Pods a Service's selector matches and how many of them are ready; `None` without a selector
+/// (headless/ExternalName services are not orphans).
+fn selected_pods(s: &Service, store: &Store) -> Option<(usize, usize)> {
+    let sel = s.spec.as_ref()?.selector.as_ref()?;
+    let ns = s.metadata.namespace.as_deref();
+    let (mut matched, mut ready) = (0, 0);
+    for p in store.iter_kind(Kind::Pod).filter(|p| p.namespace() == ns) {
+        if !selector_matches(sel, p.meta().labels.as_ref()) {
+            continue;
+        }
+        matched += 1;
+        if matches!(p, Object::Pod(pod) if pod_ready(pod)) {
+            ready += 1;
+        }
+    }
+    Some((matched, ready))
+}
+
 fn service(s: &Service, store: &Store) -> (Status, Badges) {
     let spec = s.spec.as_ref();
     let ty = spec.and_then(|s| s.type_.clone()).unwrap_or_else(|| "ClusterIP".into());
@@ -292,26 +327,14 @@ fn service(s: &Service, store: &Store) -> (Status, Badges) {
         };
         badges.push(format!("{}→{}", port.port, target));
     }
-    let status = match spec.and_then(|s| s.selector.as_ref()) {
-        // Headless/ExternalName services without a selector are not "orphans".
-        None => Status::Ok,
-        Some(sel) => {
-            let ns = s.metadata.namespace.as_deref();
-            let any = store
-                .iter_kind(crate::store::Kind::Pod)
-                .filter(|p| p.namespace() == ns)
-                .any(|p| selector_matches(sel, p.meta().labels.as_ref()));
-            if any {
-                Status::Ok
-            } else {
-                Status::Warn
-            }
-        }
+    let status = match selected_pods(s, store) {
+        Some((_, 0)) => Status::Warn,
+        _ => Status::Ok,
     };
     (status, badges)
 }
 
-fn ingress(i: &Ingress) -> (Status, Badges) {
+fn ingress(i: &Ingress, store: &Store) -> (Status, Badges) {
     let hosts: Vec<String> = i
         .spec
         .as_ref()
@@ -323,7 +346,15 @@ fn ingress(i: &Ingress) -> (Status, Badges) {
         1 => Some(hosts[0].clone()),
         n => Some(format!("{} +{}", hosts[0], n - 1)),
     };
-    (Status::Ok, badge.into_iter().collect())
+    let missing = !missing_backends(i, store).is_empty();
+    (if missing { Status::Warn } else { Status::Ok }, badge.into_iter().collect())
+}
+
+fn missing_backends(i: &Ingress, store: &Store) -> Vec<String> {
+    ingress_backend_names(i)
+        .into_iter()
+        .filter(|name| store.find(Kind::Service, i.metadata.namespace.as_deref(), name).is_none())
+        .collect()
 }
 
 fn pvc(p: &PersistentVolumeClaim) -> (Status, Badges) {
@@ -361,14 +392,180 @@ fn hpa(h: &HorizontalPodAutoscaler) -> (Status, Badges) {
     let max = spec.max_replicas;
     let st = h.status.as_ref();
     let current = st.and_then(|s| s.current_replicas).unwrap_or(0);
-    let limited = st
-        .and_then(|s| s.conditions.as_ref())
-        .map(|cs| condition_is(cs.iter().map(|c| (c.type_.as_str(), c.status.as_str())), "ScalingLimited", "True"))
-        .unwrap_or(false);
+    let conds = st.and_then(|s| s.conditions.as_deref()).unwrap_or_default();
+    let has = |ty: &str, status: &str| conds.iter().any(|c| c.type_ == ty && c.status == status);
+    let limited = has("ScalingLimited", "True") || has("ScalingActive", "False") || has("AbleToScale", "False");
     (
         if limited { Status::Warn } else { Status::Ok },
         vec![format!("{min}–{max}"), current.to_string()],
     )
+}
+
+const MESSAGE_LIMIT: usize = 300;
+
+/// A problem with no cause yet (`graph::build` links causes); the message is trimmed.
+fn own(reason: impl Into<String>, message: Option<String>) -> Problem {
+    let message = message.map(|m| {
+        if m.chars().count() <= MESSAGE_LIMIT {
+            m
+        } else {
+            let mut t: String = m.chars().take(MESSAGE_LIMIT - 1).collect();
+            t.push('…');
+            t
+        }
+    });
+    Problem {
+        reason: reason.into(),
+        message,
+        cause: None,
+    }
+}
+
+/// Why `obj` is yellow or red, from its own status fields; `None` for healthy objects.
+pub fn problem(obj: &Object, status: Status, store: &Store) -> Option<Problem> {
+    if status < Status::Warn {
+        return None;
+    }
+    Some(match obj {
+        Object::Pod(p) => pod_problem(p),
+        Object::Deployment(d) => deployment_problem(d),
+        Object::StatefulSet(s) => {
+            let desired = s.spec.as_ref().and_then(|s| s.replicas).unwrap_or(1);
+            not_ready(s.status.as_ref().and_then(|s| s.ready_replicas).unwrap_or(0), desired)
+        }
+        Object::DaemonSet(d) => {
+            let st = d.status.as_ref();
+            not_ready(
+                st.map(|s| s.number_ready).unwrap_or(0),
+                st.map(|s| s.desired_number_scheduled).unwrap_or(0),
+            )
+        }
+        Object::ReplicaSet(r) => {
+            let desired = r.spec.as_ref().and_then(|s| s.replicas).unwrap_or(1);
+            not_ready(r.status.as_ref().and_then(|s| s.ready_replicas).unwrap_or(0), desired)
+        }
+        Object::Job(j) => {
+            let failed = j
+                .status
+                .as_ref()
+                .and_then(|s| s.conditions.as_deref())
+                .unwrap_or_default()
+                .iter()
+                .find(|c| c.type_ == "Failed" && c.status == "True");
+            match failed {
+                Some(c) => own(c.reason.clone().unwrap_or_else(|| "Failed".into()), c.message.clone()),
+                None => own("Failed", None),
+            }
+        }
+        Object::CronJob(_) => own("Suspended", None),
+        Object::Service(s) => match selected_pods(s, store) {
+            Some((0, _)) => own("Selects no pods", None),
+            _ => own("No ready endpoints", None),
+        },
+        Object::Ingress(i) => {
+            let missing = missing_backends(i, store);
+            let message = match missing.as_slice() {
+                [one] => format!("service \"{one}\" does not exist"),
+                many => format!(
+                    "services {} do not exist",
+                    many.iter().map(|n| format!("\"{n}\"")).collect::<Vec<_>>().join(", ")
+                ),
+            };
+            own("Backend not found", Some(message))
+        }
+        Object::PersistentVolumeClaim(_) => own("Pending", None),
+        Object::HorizontalPodAutoscaler(h) => {
+            let conds = h.status.as_ref().and_then(|s| s.conditions.as_deref()).unwrap_or_default();
+            let pick = [("ScalingActive", "False"), ("AbleToScale", "False"), ("ScalingLimited", "True")]
+                .iter()
+                .find_map(|(ty, st)| conds.iter().find(|c| c.type_ == *ty && c.status == *st));
+            match pick {
+                Some(c) => own(c.reason.clone().unwrap_or_else(|| c.type_.clone()), c.message.clone()),
+                None => own("ScalingLimited", None),
+            }
+        }
+        _ => return None,
+    })
+}
+
+/// `N of M not ready`, or `Rolling out` for a workload that is yellow only because a rollout runs.
+fn not_ready(ready: i32, desired: i32) -> Problem {
+    if ready < desired {
+        own(format!("{} of {desired} not ready", desired - ready), None)
+    } else {
+        own("Rolling out", None)
+    }
+}
+
+fn deployment_problem(d: &Deployment) -> Problem {
+    let conds = d.status.as_ref().and_then(|s| s.conditions.as_deref()).unwrap_or_default();
+    let failing = conds
+        .iter()
+        .find(|c| c.type_ == "Progressing" && c.status == "False")
+        .or_else(|| conds.iter().find(|c| c.type_ == "ReplicaFailure" && c.status == "True"));
+    if let Some(c) = failing {
+        return own(c.reason.clone().unwrap_or_else(|| c.type_.clone()), c.message.clone());
+    }
+    let desired = d.spec.as_ref().and_then(|s| s.replicas).unwrap_or(1);
+    not_ready(d.status.as_ref().and_then(|s| s.ready_replicas).unwrap_or(0), desired)
+}
+
+fn pod_problem(p: &Pod) -> Problem {
+    let st = p.status.as_ref();
+    let statuses = st.and_then(|s| s.container_statuses.as_deref()).unwrap_or_default();
+    let terminating = p.metadata.deletion_timestamp.is_some();
+    if let Some((c, reason)) = container_reason(statuses) {
+        // Same precedence as the badge: an err reason wins over Terminating.
+        if !terminating || POD_ERR_REASONS.contains(&reason.as_str()) {
+            let message = container_message(c, &reason);
+            return own(reason, message);
+        }
+    }
+    if terminating {
+        return own("Terminating", None);
+    }
+    let conds = st.and_then(|s| s.conditions.as_deref()).unwrap_or_default();
+    if let Some(c) = conds.iter().find(|c| c.type_ == "PodScheduled" && c.status == "False") {
+        return own(c.reason.clone().unwrap_or_else(|| "Unschedulable".into()), c.message.clone());
+    }
+    let phase = st.and_then(|s| s.phase.clone()).unwrap_or_else(|| "Unknown".into());
+    if phase != "Running" {
+        return own(phase, st.and_then(|s| s.message.clone()));
+    }
+    let names: Vec<&str> = statuses
+        .iter()
+        .filter(|c| !c.ready && !is_completed(c))
+        .map(|c| c.name.as_str())
+        .collect();
+    own(
+        "Not ready",
+        (!names.is_empty()).then(|| format!("containers not ready: {}", names.join(", "))),
+    )
+}
+
+/// `container <name>: <text>`: for CrashLoopBackOff the last run's exit code, for a terminated
+/// container its exit code and message, otherwise the waiting message.
+fn container_message(c: &ContainerStatus, reason: &str) -> Option<String> {
+    let state = c.state.as_ref();
+    let waiting = state.and_then(|s| s.waiting.as_ref()).and_then(|w| w.message.clone());
+    let terminated = state
+        .and_then(|s| s.terminated.as_ref())
+        .filter(|t| t.reason.as_deref() == Some(reason));
+    let text = if reason == "CrashLoopBackOff" {
+        c.last_state
+            .as_ref()
+            .and_then(|s| s.terminated.as_ref())
+            .map(|t| format!("last exit code {} ({})", t.exit_code, t.reason.as_deref().unwrap_or("Error")))
+            .or(waiting)
+    } else if let Some(t) = terminated {
+        Some(match &t.message {
+            Some(m) => format!("exit code {}: {m}", t.exit_code),
+            None => format!("exit code {}", t.exit_code),
+        })
+    } else {
+        waiting
+    }?;
+    Some(format!("container {}: {text}", c.name))
 }
 
 fn labels_string(labels: Option<&BTreeMap<String, String>>) -> String {
@@ -518,6 +715,103 @@ pub fn summary(obj: &Object) -> SummaryRows {
 mod tests {
     use super::*;
     use crate::store::{Kind, Store};
+
+    fn problem_of(store: &Store, kind: Kind, name: &str) -> Option<Problem> {
+        let obj = store.find(kind, Some("p"), name).unwrap();
+        let (status, _) = describe(obj, store);
+        problem(obj, status, store)
+    }
+
+    fn own(reason: &str, message: Option<&str>) -> Option<Problem> {
+        Some(Problem {
+            reason: reason.into(),
+            message: message.map(str::to_owned),
+            cause: None,
+        })
+    }
+
+    #[test]
+    fn pod_problems_name_the_container_and_kubelet_message() {
+        let s = Store::from_fixture("problems").unwrap();
+        assert_eq!(
+            problem_of(&s, Kind::Pod, "pull"),
+            own("ImagePullBackOff", Some("container web: Back-off pulling image \"nginx:nope\""))
+        );
+        assert_eq!(
+            problem_of(&s, Kind::Pod, "crash"),
+            own("CrashLoopBackOff", Some("container api: last exit code 1 (Error)"))
+        );
+        assert_eq!(
+            problem_of(&s, Kind::Pod, "unsched"),
+            own("Unschedulable", Some("0/3 nodes are available: 3 Insufficient cpu."))
+        );
+        assert_eq!(
+            problem_of(&s, Kind::Pod, "halfready"),
+            own("Not ready", Some("containers not ready: b"))
+        );
+    }
+
+    #[test]
+    fn long_messages_are_trimmed_to_300_characters() {
+        let s = Store::from_fixture("problems").unwrap();
+        let p = problem_of(&s, Kind::Pod, "chatty").unwrap();
+        assert_eq!(p.reason, "CreateContainerConfigError");
+        let m = p.message.unwrap();
+        assert_eq!(m.chars().count(), 300);
+        assert!(m.starts_with("container c: xxx") && m.ends_with('…'), "{m}");
+    }
+
+    #[test]
+    fn workload_problems_prefer_the_controller_condition() {
+        let s = Store::from_fixture("problems").unwrap();
+        assert_eq!(
+            problem_of(&s, Kind::Deployment, "deadline"),
+            own(
+                "ProgressDeadlineExceeded",
+                Some("ReplicaSet \"deadline-1\" has timed out progressing.")
+            )
+        );
+        assert_eq!(
+            problem_of(&s, Kind::Deployment, "quota"),
+            own("FailedCreate", Some("pods \"quota-1\" is forbidden: exceeded quota: compute"))
+        );
+        assert_eq!(problem_of(&s, Kind::Deployment, "slow"), own("2 of 3 not ready", None));
+        assert_eq!(problem_of(&s, Kind::Deployment, "healthy"), None);
+        assert_eq!(
+            problem_of(&s, Kind::Job, "failed"),
+            own("BackoffLimitExceeded", Some("Job has reached the specified backoff limit"))
+        );
+        assert_eq!(problem_of(&s, Kind::CronJob, "paused"), own("Suspended", None));
+    }
+
+    #[test]
+    fn network_storage_and_scaling_problems() {
+        let s = Store::from_fixture("problems").unwrap();
+        assert_eq!(problem_of(&s, Kind::Service, "nopods"), own("Selects no pods", None));
+        assert_eq!(problem_of(&s, Kind::Service, "down"), own("No ready endpoints", None));
+        assert_eq!(
+            problem_of(&s, Kind::Ingress, "ing"),
+            own("Backend not found", Some("service \"missing\" does not exist"))
+        );
+        assert_eq!(problem_of(&s, Kind::PersistentVolumeClaim, "claim"), own("Pending", None));
+        assert_eq!(
+            problem_of(&s, Kind::HorizontalPodAutoscaler, "nometrics"),
+            own("FailedGetResourceMetric", Some("unable to get metrics for resource cpu"))
+        );
+    }
+
+    #[test]
+    fn services_ingresses_and_hpas_turn_yellow_when_they_cannot_work() {
+        let s = Store::from_fixture("problems").unwrap();
+        let status = |kind, name| describe(s.find(kind, Some("p"), name).unwrap(), &s).0;
+        assert_eq!(status(Kind::Service, "down"), Status::Warn);
+        assert_eq!(status(Kind::Ingress, "ing"), Status::Warn);
+        assert_eq!(status(Kind::HorizontalPodAutoscaler, "nometrics"), Status::Warn);
+        // The existing healthy cases stay green.
+        let st = Store::from_fixture("statuses").unwrap();
+        assert_eq!(describe(st.find(Kind::Service, Some("s"), "matched").unwrap(), &st).0, Status::Ok);
+        assert_eq!(describe(st.find(Kind::Ingress, Some("s"), "multi").unwrap(), &st).0, Status::Ok);
+    }
 
     fn describe_named(store: &Store, kind: Kind, name: &str) -> (Status, Vec<String>) {
         let obj = store.find(kind, Some("s"), name).or_else(|| store.find(kind, None, name)).unwrap();
