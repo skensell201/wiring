@@ -5,6 +5,7 @@ pub mod graph;
 pub mod kubeconfig;
 pub mod logs;
 pub mod manifest;
+pub mod metrics;
 pub mod session;
 pub mod store;
 
