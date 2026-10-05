@@ -17,7 +17,7 @@ Delta updates, release channels (beta), forced updates, background installs with
 - **Check.** 10 s after launch and then every 6 hours the app asks the update endpoint. Network errors and "no update" are silent.
 - **Offer.** When a newer version exists, the header shows an accent pill **Update 0.3.0**. Clicking it opens a dialog: version, release date, release notes (plain text, scrollable), **Install and restart** and **Later**. *Later* hides the pill until the next launch.
 - **Install.** *Install and restart* downloads with a progress bar (`12.3 / 45.6 MB`), verifies the signature, installs and relaunches. A failure shows the error inline in the dialog with **Retry**; the app keeps running.
-- **Manual check.** **Wiring → Check for Updates…** in the app menu (on Windows the same item under **Help**) runs a check now: an update opens the same dialog, otherwise a toast *Wiring 0.2.0 is up to date*, an error shows a toast with the message.
+- **Manual check.** **Wiring → Check for Updates…** in the macOS app menu runs a check now: an update opens the same dialog, otherwise a toast *Wiring 0.2.0 is up to date*, an error shows a toast with the message. macOS only in this iteration: Tauri installs a default menu only on macOS, and adding one on Windows would put a menu bar on an app that has none, so Windows gets automatic checks only.
 - **Dev builds.** `pnpm tauri dev` and local builds without the signing key never check (the check is compiled in but skipped when the app runs from a dev build), so development is not interrupted.
 
 ## 4. Backend
@@ -28,7 +28,7 @@ Delta updates, release channels (beta), forced updates, background installs with
 - Commands (Rust-side, so the webview needs no updater/process capabilities):
   - `check_update` → `UpdateInfo { version, date, notes } | null`; errors are `AppError` (`unavailable` for network/endpoint problems).
   - `install_update` → downloads and installs the update found by the last check, emitting `update_progress { downloaded, total | null }`, then relaunches; errors are returned.
-- App menu: the default menu plus **Check for Updates…** (Wiring menu on macOS, Help on Windows), emitting `menu_check_updates` to the frontend.
+- App menu: the default menu plus **Check for Updates…** (Wiring menu, macOS only; no menu is set elsewhere), emitting `menu_check_updates` to the frontend.
 - The periodic check lives in the frontend (timer), so it is trivially paused in tests and dev.
 
 ## 5. Frontend

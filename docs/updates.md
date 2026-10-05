@@ -1,7 +1,7 @@
 # Automatic updates
 
 Installed copies check `https://github.com/skensell201/wiring/releases/latest/download/latest.json`
-10 seconds after launch and every 6 hours (and on **Wiring → Check for Updates…**). That URL only
+10 seconds after launch and every 6 hours (and, on macOS only, on **Wiring → Check for Updates…**; Windows has automatic checks only). That URL only
 resolves to the latest **published** release, so a draft is never offered: publishing the draft is
 the release gate.
 

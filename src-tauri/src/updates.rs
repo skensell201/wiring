@@ -1,11 +1,15 @@
 //! Self-update: ask the release feed, download and verify the signed package, install, relaunch.
 //! The webview only sees these commands; it holds no updater or process permissions.
 
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, MutexGuard};
 
 use serde::Serialize;
+#[cfg(target_os = "macos")]
 use tauri::menu::{Menu, MenuEvent, MenuItem, MenuItemKind};
-use tauri::{AppHandle, Emitter, Runtime, State};
+#[cfg(target_os = "macos")]
+use tauri::Runtime;
+use tauri::{AppHandle, Emitter, State};
 use tauri_plugin_updater::{Update, UpdaterExt};
 
 use crate::error::{AppError, AppResult, ErrorKind};
@@ -42,6 +46,32 @@ pub struct UpdateProgress {
 #[derive(Default)]
 pub struct UpdateState {
     pending: Mutex<Option<Update>>,
+    installing: InstallGuard,
+}
+
+impl UpdateState {
+    /// Poison-tolerant: a panic elsewhere must not wedge updates.
+    fn pending(&self) -> MutexGuard<'_, Option<Update>> {
+        self.pending.lock().unwrap_or_else(|p| p.into_inner())
+    }
+}
+
+/// At most one install at a time; the permit frees the slot when dropped (i.e. on failure).
+#[derive(Default)]
+pub struct InstallGuard(AtomicBool);
+
+pub struct InstallPermit<'a>(&'a AtomicBool);
+
+impl InstallGuard {
+    pub fn try_acquire(&self) -> Option<InstallPermit<'_>> {
+        (!self.0.swap(true, Ordering::AcqRel)).then_some(InstallPermit(&self.0))
+    }
+}
+
+impl Drop for InstallPermit<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
 }
 
 /// Feed problems (offline, no published release with a `latest.json`) are `network`; signature,
@@ -76,7 +106,7 @@ pub async fn check_update(app: AppHandle, state: State<'_, UpdateState>) -> AppR
         .await
         .map_err(|e| update_error(&e))?;
     let update = found.as_ref().map(info);
-    *state.pending.lock().unwrap() = found;
+    *state.pending() = found;
     Ok(UpdateCheck {
         current: app.package_info().version.to_string(),
         update,
@@ -87,10 +117,12 @@ pub async fn check_update(app: AppHandle, state: State<'_, UpdateState>) -> AppR
 /// then relaunches into it. Returns only on failure.
 #[tauri::command]
 pub async fn install_update(app: AppHandle, state: State<'_, UpdateState>) -> AppResult<()> {
+    let _permit = state
+        .installing
+        .try_acquire()
+        .ok_or_else(|| AppError::new(ErrorKind::Conflict, "an update is already installing"))?;
     let update = state
-        .pending
-        .lock()
-        .unwrap()
+        .pending()
         .clone()
         .ok_or_else(|| AppError::new(ErrorKind::NotFound, "no update to install; check for updates again"))?;
     let emitter = app.clone();
@@ -114,24 +146,21 @@ pub async fn install_update(app: AppHandle, state: State<'_, UpdateState>) -> Ap
 pub const MENU_CHECK_UPDATES: &str = "check-updates";
 pub const EVENT_MENU_CHECK: &str = "menu_check_updates";
 
-/// Tauri's default menu plus "Check for Updates…": in the app menu on macOS (after About), in
-/// Help elsewhere.
+/// Tauri's default menu plus "Check for Updates…" after About in the app menu. macOS only: Tauri
+/// installs a default menu only there, so elsewhere the app keeps having no menu bar.
+#[cfg(target_os = "macos")]
 pub fn build_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
     let menu = Menu::default(app)?;
     let item = MenuItem::with_id(app, MENU_CHECK_UPDATES, "Check for Updates…", true, None::<&str>)?;
     // On macOS the default menu's first entry is the app submenu (About, services, hide, quit);
     // it has no fixed id, so it is found by position (tauri 2.11 `Menu::default`).
-    #[cfg(target_os = "macos")]
     if let Some(MenuItemKind::Submenu(app_menu)) = menu.items()?.into_iter().next() {
         app_menu.insert(&item, 1)?;
-    }
-    #[cfg(not(target_os = "macos"))]
-    if let Some(MenuItemKind::Submenu(help)) = menu.get(tauri::menu::HELP_SUBMENU_ID) {
-        help.append(&item)?;
     }
     Ok(menu)
 }
 
+#[cfg(target_os = "macos")]
 pub fn on_menu_event<R: Runtime>(app: &AppHandle<R>, event: MenuEvent) {
     if event.id().0 == MENU_CHECK_UPDATES {
         let _ = app.emit(EVENT_MENU_CHECK, ());
@@ -187,6 +216,16 @@ mod tests {
             .unwrap(),
             serde_json::json!({ "downloaded": 5, "total": null })
         );
+    }
+
+    #[test]
+    fn only_one_install_may_run_and_failure_frees_the_slot() {
+        let guard = InstallGuard::default();
+        let first = guard.try_acquire();
+        assert!(first.is_some());
+        assert!(guard.try_acquire().is_none());
+        drop(first);
+        assert!(guard.try_acquire().is_some());
     }
 
     #[test]
