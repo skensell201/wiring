@@ -168,6 +168,7 @@ pub fn usage_rows<'a>(store: &'a Store, index: &PodIndex<'a>, obj: &'a Object) -
     let note = |text: &str| vec![("Usage".to_string(), text.to_string())];
     match store.metrics.state {
         MetricsState::Pending => return note("waiting for the first metrics sample"),
+        MetricsState::Unavailable if store.metrics.unresponsive => return note("metrics-server not responding"),
         MetricsState::Unavailable => return note("Metrics API not available (install metrics-server)"),
         MetricsState::Forbidden => return note("No access to pod metrics (RBAC)"),
         MetricsState::Available => {}
@@ -176,11 +177,15 @@ pub fn usage_rows<'a>(store: &'a Store, index: &PodIndex<'a>, obj: &'a Object) -
         return note("no sample yet");
     };
     let r = resources(store, index, obj);
+    let stale = if store.metrics.is_stale() { " (stale)" } else { "" };
     vec![
-        ("CPU usage".into(), line(used.cpu_millis, r.cpu_request, r.cpu_limit, fmt_cpu)),
+        (
+            "CPU usage".into(),
+            line(used.cpu_millis, r.cpu_request, r.cpu_limit, fmt_cpu) + stale,
+        ),
         (
             "Memory usage".into(),
-            line(used.memory_bytes, r.memory_request, r.memory_limit, fmt_memory),
+            line(used.memory_bytes, r.memory_request, r.memory_limit, fmt_memory) + stale,
         ),
     ]
 }
@@ -211,6 +216,8 @@ pub(crate) mod tests {
     use crate::graph::build::is_owned_by;
     use crate::metrics::{MetricsSample, MetricsState, PodUsage};
 
+    use std::time::Duration;
+
     const MI: u64 = 1 << 20;
 
     /// The `metrics` fixture with a sample for every pod but `unsampled`.
@@ -234,6 +241,7 @@ pub(crate) mod tests {
             .into_iter()
             .map(|(n, u)| (n.to_string(), u))
             .collect(),
+            ..Default::default()
         };
         s
     }
@@ -394,6 +402,7 @@ pub(crate) mod tests {
             )]
             .into_iter()
             .collect(),
+            ..Default::default()
         };
         s
     }
@@ -460,6 +469,7 @@ pub(crate) mod tests {
         s.metrics = MetricsSample {
             state: MetricsState::Available,
             pods: [("p".to_string(), PodUsage::default())].into_iter().collect(),
+            ..Default::default()
         };
         assert_eq!(
             resources(&s, &PodIndex::new(&s), obj(&s, Kind::Pod, "p")),
@@ -470,5 +480,25 @@ pub(crate) mod tests {
                 memory_limit: Some(120 * MI)
             }
         );
+    }
+
+    #[test]
+    fn an_unresponsive_server_and_an_old_sample_are_said_so() {
+        let mut s = Store::from_fixture("metrics").unwrap();
+        s.metrics.state = MetricsState::Unavailable;
+        s.metrics.unresponsive = true;
+        assert_eq!(
+            usage_rows(&s, &PodIndex::new(&s), obj(&s, Kind::Pod, "hot")),
+            vec![("Usage".to_string(), "metrics-server not responding".to_string())]
+        );
+
+        let mut s = sampled();
+        s.metrics.sampled_at = Some(std::time::Instant::now());
+        let rows = usage_rows(&s, &PodIndex::new(&s), obj(&s, Kind::Pod, "free"));
+        assert_eq!(rows[0].1, "40m");
+        s.metrics.sampled_at = std::time::Instant::now().checked_sub(Duration::from_secs(61));
+        let rows = usage_rows(&s, &PodIndex::new(&s), obj(&s, Kind::Pod, "free"));
+        assert_eq!(rows[0].1, "40m (stale)");
+        assert_eq!(rows[1].1, "20Mi (stale)");
     }
 }

@@ -40,11 +40,25 @@ impl std::ops::Add for PodUsage {
     }
 }
 
+/// A sample older than this is shown as stale (four missed polls).
+pub const STALE_AFTER: std::time::Duration = std::time::Duration::from_secs(60);
+
 /// The latest sample of the selected namespace, keyed by pod name.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct MetricsSample {
     pub state: MetricsState,
+    /// `Unavailable` because metrics-server is registered but keeps failing (not because it is
+    /// missing); polling goes on and a sample turns the state back to `Available`.
+    pub unresponsive: bool,
+    /// When the sample in `pods` arrived.
+    pub sampled_at: Option<std::time::Instant>,
     pub pods: HashMap<String, PodUsage>,
+}
+
+impl MetricsSample {
+    pub fn is_stale(&self) -> bool {
+        self.sampled_at.is_some_and(|t| t.elapsed() > STALE_AFTER)
+    }
 }
 
 /// Payload of the `metrics_updated` event.

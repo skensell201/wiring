@@ -1,6 +1,6 @@
 use std::future::Future;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use kube::api::{Api, DynamicObject, ListParams};
 use kube::core::{ApiResource, GroupVersionKind};
@@ -17,6 +17,10 @@ use crate::metrics::{MetricsSample, MetricsState, MetricsUpdate};
 
 /// metrics-server scrapes every 15 s; polling faster only repeats the same sample.
 pub const POLL_PERIOD: Duration = Duration::from_secs(15);
+
+/// Consecutive transient failures, before any sample, after which the poller says metrics-server
+/// is not responding (a registered but unhealthy server answers 503 forever).
+const UNRESPONSIVE_AFTER: u32 = 3;
 
 /// What one poll means for the sample.
 #[derive(Debug, PartialEq)]
@@ -49,20 +53,38 @@ where
 {
     let mut ticker = tokio::time::interval(period);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut failures = 0u32;
     loop {
         ticker.tick().await;
         let (state, done) = match classify(fetch().await) {
             Outcome::Sample(items) => {
                 let pods = parse_pod_metrics(&items);
+                failures = 0;
                 shared.store().metrics = MetricsSample {
                     state: MetricsState::Available,
                     pods,
+                    sampled_at: Some(Instant::now()),
+                    ..Default::default()
                 };
                 (MetricsState::Available, false)
             }
             Outcome::Unavailable => (end(&shared, MetricsState::Unavailable), true),
             Outcome::Forbidden => (end(&shared, MetricsState::Forbidden), true),
-            Outcome::Transient => continue,
+            Outcome::Transient => {
+                failures += 1;
+                // Report it once, and only while there is no sample to keep showing; polling goes
+                // on, and a sample turns the state back to `Available`.
+                let silent = failures != UNRESPONSIVE_AFTER || shared.store().metrics.state == MetricsState::Available;
+                if silent {
+                    continue;
+                }
+                {
+                    let mut store = shared.store();
+                    store.metrics.state = MetricsState::Unavailable;
+                    store.metrics.unresponsive = true;
+                }
+                (MetricsState::Unavailable, false)
+            }
         };
         if reducer.send(ReducerMsg::Rebuild).await.is_err() {
             return; // the namespace session is gone
@@ -78,7 +100,7 @@ where
 fn end(shared: &Shared, state: MetricsState) -> MetricsState {
     shared.store().metrics = MetricsSample {
         state,
-        pods: Default::default(),
+        ..Default::default()
     };
     state
 }
@@ -265,6 +287,46 @@ mod tests {
         tokio::time::advance(Duration::from_secs(15)).await;
         assert!(matches!(next(&mut reducer).await, Some(ReducerMsg::Rebuild)));
         assert!(shared.store().metrics.pods.contains_key("a"));
+        task.abort();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn three_transient_failures_without_a_sample_read_as_unresponsive_until_one_arrives() {
+        let shared = Shared::default();
+        let (tx, mut reducer) = mpsc::channel(8);
+        let (emitter, mut events) = ChannelEmitter::new();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let c = calls.clone();
+        let task = tokio::spawn(run(
+            move || {
+                let n = c.fetch_add(1, SeqCst);
+                async move {
+                    if n < 4 {
+                        Err(api_error(503))
+                    } else {
+                        Ok(vec![item()])
+                    }
+                }
+            },
+            shared.clone(),
+            tx,
+            Arc::new(emitter),
+            Duration::from_secs(15),
+        ));
+        assert!(matches!(next(&mut reducer).await, Some(ReducerMsg::Rebuild)));
+        assert_eq!(calls.load(SeqCst), 3, "the third failure is the first to be reported");
+        assert_eq!(
+            next_event(&mut events).await,
+            Some(OutEvent::MetricsUpdated(MetricsUpdate {
+                state: MetricsState::Unavailable
+            }))
+        );
+        assert!(shared.store().metrics.unresponsive);
+        assert!(matches!(next(&mut reducer).await, Some(ReducerMsg::Rebuild)));
+        assert_eq!(calls.load(SeqCst), 5, "the 4th failure stays quiet; polling goes on to the sample");
+        assert_eq!(shared.store().metrics.state, MetricsState::Available);
+        assert!(!shared.store().metrics.unresponsive);
+        assert!(shared.store().metrics.sampled_at.is_some());
         task.abort();
     }
 
