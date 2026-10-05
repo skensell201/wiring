@@ -87,6 +87,25 @@ export interface Revision {
   template: string;
 }
 
+export const FORWARD_STATUSES = ["active", "noReadyPod", "podGone", "error"] as const;
+export type ForwardStatus = (typeof FORWARD_STATUSES)[number];
+
+/** A running port-forward (docs/ipc-contract.md#port-forward). */
+export interface Forward {
+  id: number;
+  nodeId: NodeId;
+  /** "Service web" */
+  targetLabel: string;
+  remotePort: number;
+  localPort: number;
+  /** The pod behind the latest connection. */
+  pod: string | null;
+  status: ForwardStatus;
+  message: string | null;
+}
+
+export interface PortOption { port: number; label: string }
+
 // ---- guards ---------------------------------------------------------------
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null;
@@ -159,6 +178,13 @@ export function isLogMessage(v: unknown): v is LogMessage {
 export function isRevision(v: unknown): v is Revision {
   return isObj(v) && typeof v.revision === "number" && typeof v.current === "boolean" && isStrOrNull(v.createdAt)
     && isStrOrNull(v.changeCause) && arrayOf(v.images, isStr) && isStr(v.template);
+}
+export function isForward(v: unknown): v is Forward {
+  return isObj(v) && typeof v.id === "number" && isStr(v.nodeId) && isStr(v.targetLabel) && typeof v.remotePort === "number"
+    && typeof v.localPort === "number" && isStrOrNull(v.pod) && oneOf(FORWARD_STATUSES, v.status) && isStrOrNull(v.message);
+}
+export function isPortOption(v: unknown): v is PortOption {
+  return isObj(v) && typeof v.port === "number" && isStr(v.label);
 }
 export function isAppError(v: unknown): v is AppError { return isObj(v) && oneOf(ERROR_KINDS, v.kind) && isStr(v.message); }
 

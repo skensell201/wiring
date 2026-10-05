@@ -1,5 +1,5 @@
 import { Channel, invoke } from "./tauri";
-import type { ConnectInfo, ContextInfo, Kind, LogMessage, LogRequest, NodeId, ObjectDetails, Revision, Table } from "./types";
+import type { ConnectInfo, ContextInfo, Forward, Kind, LogMessage, LogRequest, NodeId, ObjectDetails, PortOption, Revision, Table } from "./types";
 import { toAppError } from "./types";
 
 async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
@@ -35,5 +35,13 @@ export const commands = {
     return call<number>("start_logs", { ...req, onMessage: channel });
   },
   stopLogs: (sessionId: number) => call<null>("stop_logs", { sessionId }),
+  forwardPorts: (nodeId: NodeId) => call<PortOption[]>("forward_ports", { nodeId }),
+  suggestLocalPort: (port: number) => call<number>("suggest_local_port", { port }),
+  /** Returns at once with status "active"; the real status and pod arrive via `forwards_changed`. */
+  startForward: (nodeId: NodeId, remotePort: number, localPort: number) => call<Forward>("start_forward", { nodeId, remotePort, localPort }),
+  /** Resolves once the local port is free again. */
+  stopForward: (id: number) => call<null>("stop_forward", { id }),
+  /** Opens http://localhost:<localPort> from Rust. */
+  openForward: (id: number) => call<null>("open_forward", { id }),
   saveText: (path: string, text: string) => call<null>("save_text", { path, text }),
 };

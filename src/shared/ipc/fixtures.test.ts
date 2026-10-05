@@ -3,16 +3,18 @@ import appError from "./fixtures/app_error.json";
 import connectInfo from "./fixtures/connect_info.json";
 import connectionState from "./fixtures/connection_state.json";
 import contextInfo from "./fixtures/context_info.json";
+import forward from "./fixtures/forward.json";
 import graph from "./fixtures/graph.json";
 import graphDelta from "./fixtures/graph_delta.json";
 import logMessage from "./fixtures/log_message.json";
 import objectDetails from "./fixtures/object_details.json";
 import objectEvents from "./fixtures/object_events.json";
+import portOption from "./fixtures/port_option.json";
 import revision from "./fixtures/revision.json";
 import table from "./fixtures/table.json";
 import {
   CONNECTION_STATES, ERROR_KINDS, KINDS, RELATIONS, STATUSES,
-  isAppError, isConnectInfo, isConnectionState, isContextInfo, isGraph, isGraphDelta, isGraphNode, isLogMessage, isObjectDetails, isObjectEvents, isRevision, isTable,
+  isAppError, isConnectInfo, isConnectionState, isContextInfo, isForward, isGraph, isGraphDelta, isGraphNode, isLogMessage, isObjectDetails, isObjectEvents, isPortOption, isRevision, isTable,
 } from "./types";
 
 // The JSON files are the contract shared with the Rust side (guarded there by
@@ -27,6 +29,11 @@ describe("IPC fixtures match the TypeScript types", () => {
   it("connection_state", () => expect(isConnectionState(connectionState)).toBe(true));
   it("app_error", () => expect(isAppError(appError)).toBe(true));
   it("table", () => expect(isTable(table)).toBe(true));
+  it("forward", () => expect(isForward(forward)).toBe(true));
+  it("port_option", () => expect(isPortOption(portOption)).toBe(true));
+  it("rejects a forward with an unknown status", () => {
+    expect(isForward({ ...forward, status: "sleeping" })).toBe(false);
+  });
   it("log_message", () => expect(isLogMessage(logMessage)).toBe(true));
 
   it("revision", () => expect(isRevision(revision)).toBe(true));
