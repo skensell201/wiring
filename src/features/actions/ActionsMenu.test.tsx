@@ -1,5 +1,6 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { useState } from "react";
 import { initialState, useAppStore } from "../../app/store";
 import { ActionsMenu } from "./ActionsMenu";
 
@@ -59,5 +60,61 @@ describe("ActionsMenu", () => {
     render(<ActionsMenu />);
     fireEvent.mouseDown(screen.getByTestId("actions-backdrop"));
     expect(useAppStore.getState().actionsMenu).toBeNull();
+  });
+
+  describe("positioning and focus", () => {
+    const rectOf = (w: number, h: number) => vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({ width: w, height: h, top: 0, left: 0, right: w, bottom: h, x: 0, y: 0, toJSON: () => ({}) });
+    const menuEl = () => screen.getByRole("menu");
+    const setViewport = (w: number, h: number) => { window.innerWidth = w; window.innerHeight = h; };
+    beforeEach(() => { setViewport(1000, 800); });
+
+    it("flips above the anchor when it would overflow the bottom", () => {
+      rectOf(200, 150);
+      useAppStore.setState({ actionsMenu: { nodeId: "Deployment/p/web", x: 40, y: 760, flipY: 740 } });
+      render(<ActionsMenu />);
+      expect(menuEl().style.top).toBe("590px");
+    });
+
+    it("flips about the pointer without a flip anchor, and horizontally by measured width", () => {
+      rectOf(240, 150);
+      useAppStore.setState({ actionsMenu: { nodeId: "Deployment/p/web", x: 900, y: 760 } });
+      render(<ActionsMenu />);
+      expect(menuEl().style.top).toBe("610px");
+      expect(menuEl().style.left).toBe("752px");
+    });
+
+    it("closes on window resize", () => {
+      open("Deployment/p/web");
+      render(<ActionsMenu />);
+      act(() => { window.dispatchEvent(new Event("resize")); });
+      expect(useAppStore.getState().actionsMenu).toBeNull();
+    });
+
+    it("Escape handling aside, Tab closes the menu", () => {
+      open("Deployment/p/web");
+      render(<ActionsMenu />);
+      fireEvent.keyDown(screen.getByRole("menu"), { key: "Tab" });
+      expect(useAppStore.getState().actionsMenu).toBeNull();
+    });
+
+    it("returns focus to the opener when closed, but not when an item opened a dialog", async () => {
+      const Host = () => {
+        const [, set] = useState(0);
+        return <><button onClick={() => set(1)}>opener</button><ActionsMenu />{useAppStore.getState().actionDialog && <div role="dialog"><input aria-label="n" /></div>}</>;
+      };
+      const { rerender } = render(<Host />);
+      const opener = screen.getByText("opener");
+      opener.focus();
+      act(() => open("Deployment/p/web"));
+      expect(document.activeElement).toBe(screen.getByRole("menuitem", { name: "Scale…" }));
+      await act(async () => useAppStore.getState().closeActionsMenu());
+      expect(document.activeElement).toBe(opener);
+
+      act(() => open("Deployment/p/web"));
+      await act(async () => { useAppStore.setState({ actionsMenu: null, actionDialog: { type: "scale", nodeId: "Deployment/p/web" } }); });
+      rerender(<Host />);
+      await act(async () => { screen.getByLabelText("n").focus(); });
+      expect(document.activeElement).toBe(screen.getByLabelText("n"));
+    });
   });
 });

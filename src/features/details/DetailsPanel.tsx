@@ -46,8 +46,8 @@ function deleteWording(id: NodeId, node: GraphNode | undefined): { title: string
 }
 
 export function DetailsPanel() {
-  const { details, selectedId, node, requestDelete, openActionsMenu, maximized, toggleMaximized } = useAppStore(useShallow((s) => ({
-    details: s.details, selectedId: s.selectedId, node: s.selectedId ? s.nodes.get(s.selectedId) : undefined, requestDelete: s.requestDelete, openActionsMenu: s.openActionsMenu,
+  const { details, selectedId, node, requestDelete, openActionsMenu, menuOpen, maximized, toggleMaximized } = useAppStore(useShallow((s) => ({
+    details: s.details, selectedId: s.selectedId, node: s.selectedId ? s.nodes.get(s.selectedId) : undefined, requestDelete: s.requestDelete, openActionsMenu: s.openActionsMenu, menuOpen: s.actionsMenu !== null,
     maximized: s.detailsMaximized, toggleMaximized: s.toggleDetailsMaximized,
   })));
   const [tab, setTab] = useState<Tab>("overview");
@@ -132,8 +132,8 @@ export function DetailsPanel() {
           </div>
         )}
         {selectedId && (
-          <button type="button" aria-label="Actions" aria-haspopup="menu"
-            onClick={(e) => { const r = e.currentTarget.getBoundingClientRect(); openActionsMenu(selectedId, r.left, r.bottom + 4); }}
+          <button type="button" aria-label="Actions" aria-haspopup="menu" aria-expanded={menuOpen}
+            onClick={(e) => { const r = e.currentTarget.getBoundingClientRect(); openActionsMenu(selectedId, r.left, r.bottom + 4, r.top - 4); }}
             className="flex h-8 items-center gap-1 rounded-lg px-2 text-sm text-text-muted hover:bg-surface hover:text-text-hi">
             Actions <ChevronDown className="size-4" />
           </button>

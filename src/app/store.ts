@@ -37,7 +37,8 @@ export interface DeleteDialog { open: boolean; nodeId: NodeId | null }
 export interface DiscardDialog { open: boolean; pendingSelect: NodeId | null; pendingDeselect: boolean; pendingNamespace: string | null }
 
 /** The Actions menu, open for `nodeId` at viewport position (x, y). */
-export interface ActionsMenu { nodeId: NodeId; x: number; y: number }
+/** `flipY`: where the menu's bottom edge goes if it would overflow the viewport (the anchor's top). */
+export interface ActionsMenu { nodeId: NodeId; x: number; y: number; flipY?: number }
 export type ActionDialog =
   | { type: "scale"; nodeId: NodeId }
   | { type: "restart"; nodeId: NodeId }
@@ -182,7 +183,7 @@ export interface AppState extends GraphState {
 
   // workload actions
   /** Select `nodeId` and open the Actions menu for it at (x, y), unless a dirty editor asks first. */
-  openActionsMenu: (nodeId: NodeId, x: number, y: number) => void;
+  openActionsMenu: (nodeId: NodeId, x: number, y: number, flipY?: number) => void;
   closeActionsMenu: () => void;
   openActionDialog: (dialog: ActionDialog) => void;
   closeActionDialog: () => void;
@@ -748,11 +749,11 @@ export const useAppStore = create<AppState>()((set, get) => ({
   },
 
   toggleDetailsMaximized: () => set((s) => ({ detailsMaximized: !s.detailsMaximized })),
-  openActionsMenu: (nodeId, x, y) => {
+  openActionsMenu: (nodeId, x, y, flipY) => {
     void get().select(nodeId);
     // `select` decides synchronously whether a dirty editor must be confirmed first; then no menu.
     if (get().discardDialog.open) return;
-    set({ actionsMenu: { nodeId, x, y } });
+    set({ actionsMenu: flipY === undefined ? { nodeId, x, y } : { nodeId, x, y, flipY } });
   },
   closeActionsMenu: () => set({ actionsMenu: null }),
   openActionDialog: (dialog) => set({ actionDialog: dialog }),
