@@ -43,7 +43,8 @@ pub fn usage(store: &Store, obj: &Object) -> Option<PodUsage> {
         .reduce(|a, b| a + b)
 }
 
-/// Requests and limits summed over every container of `obj`'s pods.
+/// Requests and limits summed over every container of the pods of `obj` that have a sample — the
+/// same pods `usage` counts, so a percentage never divides one pod's usage by two pods' limits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Resources {
     pub cpu_request: Option<u64>,
@@ -70,6 +71,7 @@ fn total(containers: &[&Container], pick: impl Fn(&Container) -> Option<u64>) ->
 pub fn resources(store: &Store, obj: &Object) -> Resources {
     let containers: Vec<&Container> = pods_of(store, obj)
         .into_iter()
+        .filter(|p| p.metadata.name.as_deref().is_some_and(|n| store.metrics.pods.contains_key(n)))
         .filter_map(|p| p.spec.as_ref())
         .flat_map(|s| s.containers.iter())
         .collect();
@@ -304,5 +306,51 @@ pub(crate) mod tests {
         assert_eq!(badge(Kind::StatefulSet, "db"), None, "requests only: no limit, no badge");
         assert_eq!(badge(Kind::Pod, "free"), None);
         assert_eq!(badge(Kind::Pod, "unsampled"), None);
+    }
+
+    /// A StatefulSet `web` whose pod `web-1` has no sample (new, Pending or completed).
+    fn half_sampled() -> Store {
+        let pod = |name: &str| {
+            format!(
+                "apiVersion: v1\nkind: Pod\nmetadata:\n  name: {name}\n  namespace: m\n  ownerReferences: [ {{ apiVersion: apps/v1, kind: StatefulSet, name: web, uid: s-web }} ]\nspec:\n  containers: [ {{ name: c, image: x, resources: {{ requests: {{ cpu: 100m, memory: 50Mi }}, limits: {{ cpu: 200m, memory: 100Mi }} }} }} ]\n"
+            )
+        };
+        let yaml = format!(
+            "apiVersion: apps/v1\nkind: StatefulSet\nmetadata: {{ name: web, namespace: m }}\nspec: {{ replicas: 2, serviceName: web, selector: {{ matchLabels: {{ app: web }} }}, template: {{ spec: {{ containers: [ {{ name: c, image: x }} ] }} }} }}\n---\n{}---\n{}",
+            pod("web-0"),
+            pod("web-1")
+        );
+        let mut s = Store::from_yaml_docs(&yaml).unwrap();
+        s.metrics = MetricsSample {
+            state: MetricsState::Available,
+            pods: [(
+                "web-0".to_string(),
+                PodUsage {
+                    cpu_millis: 100,
+                    memory_bytes: 90 * MI,
+                },
+            )]
+            .into_iter()
+            .collect(),
+        };
+        s
+    }
+
+    #[test]
+    fn only_pods_with_a_sample_count_towards_requests_and_limits() {
+        let s = half_sampled();
+        let web = obj(&s, Kind::StatefulSet, "web");
+        assert_eq!(
+            resources(&s, web),
+            Resources {
+                cpu_request: Some(100),
+                cpu_limit: Some(200),
+                memory_request: Some(50 * MI),
+                memory_limit: Some(100 * MI)
+            },
+            "web-1 has no sample, so its resources are left out like its usage"
+        );
+        assert_eq!(usage_badge(&s, web), Some("mem 90%".into()));
+        assert_eq!(usage_rows(&s, web)[1].1, "90Mi / req 50Mi / lim 100Mi (90%)");
     }
 }
