@@ -125,6 +125,63 @@ fn pod_names(session: &Session) -> Vec<String> {
         .collect()
 }
 
+/// Whether the cluster serves the Metrics API (metrics-server installed).
+fn metrics_api_served(context: &str) -> bool {
+    Command::new("kubectl")
+        .args(["--context", context, "get", "apiservice", "v1beta1.metrics.k8s.io"])
+        .output()
+        .is_ok_and(|o| o.status.success())
+}
+
+/// With metrics-server: the talker pod gets CPU/Memory cells and Overview usage rows. Without it:
+/// the cells stay `—` and Overview says the Metrics API is missing.
+async fn exercise_metrics(session: &Session, context: &str) {
+    let served = metrics_api_served(context);
+    // metrics-server needs a scrape or two (15 s each) before a new pod shows up.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(150);
+    loop {
+        let table = session.list_rows(Kind::Pod);
+        let cpu = table
+            .columns
+            .iter()
+            .position(|c| c.key == "cpu")
+            .expect("the Pod table has a CPU column");
+        let mem = table
+            .columns
+            .iter()
+            .position(|c| c.key == "memory")
+            .expect("the Pod table has a Memory column");
+        let talker = table
+            .rows
+            .iter()
+            .find(|r| r.node_id.starts_with(&format!("Pod/{NAMESPACE}/talker-")))
+            .expect("a talker pod row");
+        let details = session.get_object(&talker.node_id).unwrap();
+        let done = if served {
+            talker.cells[cpu].text.ends_with('m')
+                && talker.cells[mem].text.ends_with("Mi")
+                && details.summary.iter().any(|(k, _)| k == "CPU usage")
+                && details.summary.iter().any(|(k, _)| k == "Memory usage")
+        } else {
+            talker.cells[cpu].text == "—"
+                && details
+                    .summary
+                    .iter()
+                    .any(|(k, v)| k == "Usage" && v == "Metrics API not available (install metrics-server)")
+        };
+        if done {
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "metrics never showed up (served: {served}); last cells {:?}, summary {:?}",
+            talker.cells,
+            details.summary
+        );
+        tokio::time::sleep(Duration::from_secs(3)).await;
+    }
+}
+
 /// Update / conflict / create / delete / invalid on ConfigMaps, then delete a PodGroup.
 async fn exercise_writes(session: &Session, rx: &mut UnboundedReceiver<OutEvent>, graph: &mut Graph, context: &str) {
     // (1) Add a key; the returned details are fresh even before the watch echo.
@@ -479,6 +536,8 @@ async fn graph_snapshot_reflects_applied_fixture() {
     })
     .await;
     assert!(ok, "the broken image never explained its Deployment; last graph: {graph:#?}");
+
+    exercise_metrics(&session, &context).await;
 
     // Details for the deployment must render YAML + summary.
     let details = session.get_object("Deployment/wiring-smoke/web").unwrap();
