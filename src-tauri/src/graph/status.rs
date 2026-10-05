@@ -72,12 +72,19 @@ fn workload_status(ready: i32, desired: i32, progressing_false: bool) -> Status 
 }
 
 /// `rolling updated/desired` while a rollout runs: the controller has not observed the latest
-/// generation, or not every replica runs the new template yet. Missing fields (old servers,
-/// hand-written fixtures) never count as rolling.
-fn rolling(generation: Option<i64>, observed: Option<i64>, updated: Option<i32>, desired: i32) -> Option<String> {
+/// generation, or fewer than `target` replicas run the new template yet. `target` is `None` when
+/// the strategy never rolls on its own (paused, OnDelete). Missing fields (old servers,
+/// hand-written fixtures) never count as rolling; a missing updated count shows no numbers.
+fn rolling(generation: Option<i64>, observed: Option<i64>, updated: Option<i32>, target: Option<i32>, desired: i32) -> Option<String> {
     let unseen = matches!((generation, observed), (Some(g), Some(o)) if o < g);
-    let behind = updated.is_some_and(|u| u < desired);
-    (unseen || behind).then(|| format!("rolling {}/{desired}", updated.unwrap_or(0)))
+    let behind = matches!((updated, target), (Some(u), Some(t)) if u < t);
+    if !(unseen || behind) {
+        return None;
+    }
+    Some(match updated {
+        Some(u) => format!("rolling {u}/{desired}"),
+        None => "rolling".to_string(),
+    })
 }
 
 /// Push the rolling badge (if any) and lift an otherwise healthy workload to a warning.
@@ -104,6 +111,7 @@ fn deployment(d: &Deployment) -> (Status, Badges) {
         d.metadata.generation,
         st.and_then(|s| s.observed_generation),
         st.and_then(|s| s.updated_replicas),
+        (!d.spec.as_ref().and_then(|s| s.paused).unwrap_or(false)).then_some(desired),
         desired,
     );
     let status = with_rollout(workload_status(ready, desired, progressing_false), rollout, &mut badges);
@@ -123,10 +131,18 @@ fn statefulset(s: &StatefulSet) -> (Status, Badges) {
     let st = s.status.as_ref();
     let ready = st.and_then(|s| s.ready_replicas).unwrap_or(0);
     let mut badges = vec![ready_desired(ready, desired)];
+    // OnDelete never rolls on its own; a partition leaves the first `partition` pods on the old revision.
+    let strategy = s.spec.as_ref().and_then(|s| s.update_strategy.as_ref());
+    let partition = strategy
+        .and_then(|u| u.rolling_update.as_ref())
+        .and_then(|r| r.partition)
+        .unwrap_or(0);
+    let target = (strategy.and_then(|u| u.type_.as_deref()) != Some("OnDelete")).then(|| (desired - partition).max(0));
     let rollout = rolling(
         s.metadata.generation,
         st.and_then(|s| s.observed_generation),
         st.and_then(|s| s.updated_replicas),
+        target,
         desired,
     );
     let status = with_rollout(workload_status(ready, desired, false), rollout, &mut badges);
@@ -150,6 +166,12 @@ fn daemonset(d: &DaemonSet) -> (Status, Badges) {
         d.metadata.generation,
         st.and_then(|s| s.observed_generation),
         st.and_then(|s| s.updated_number_scheduled),
+        (d.spec
+            .as_ref()
+            .and_then(|s| s.update_strategy.as_ref())
+            .and_then(|u| u.type_.as_deref())
+            != Some("OnDelete"))
+        .then_some(desired),
         desired,
     );
     let status = with_rollout(workload_status(ready, desired, false), rollout, &mut badges);
@@ -635,6 +657,27 @@ mod tests {
         assert_eq!(
             describe_rolling(Kind::DaemonSet, "agent"),
             (Status::Warn, strs(&["4/4", "rolling 2/4", "agent:3"]))
+        );
+        // Not rolling although updated < desired: paused, OnDelete, partition already reached.
+        assert_eq!(describe_rolling(Kind::Deployment, "paused"), (Status::Ok, strs(&["3/3", "web:5"])));
+        assert_eq!(
+            describe_rolling(Kind::StatefulSet, "ondelete"),
+            (Status::Ok, strs(&["3/3", "postgres:18"]))
+        );
+        assert_eq!(
+            describe_rolling(Kind::StatefulSet, "canary-done"),
+            (Status::Ok, strs(&["5/5", "postgres:18"]))
+        );
+        assert_eq!(describe_rolling(Kind::DaemonSet, "manual"), (Status::Ok, strs(&["4/4", "agent:4"])));
+        // Partitioned rollout that is still behind: 1 updated < 5 - 3.
+        assert_eq!(
+            describe_rolling(Kind::StatefulSet, "canary-behind"),
+            (Status::Warn, strs(&["5/5", "rolling 1/5", "postgres:18"]))
+        );
+        // Unobserved generation and no updated count: no invented number.
+        assert_eq!(
+            describe_rolling(Kind::Deployment, "nocount"),
+            (Status::Warn, strs(&["3/3", "rolling", "web:6"]))
         );
     }
 
