@@ -4,12 +4,17 @@
 # Usage: examples/demo/setup.sh [--with-metrics] [context]   (default context: docker-desktop)
 #   --with-metrics  also install metrics-server (for the CPU / Memory columns), with
 #                   --kubelet-insecure-tls as local clusters need.
+#   -h, --help      show this usage.
 set -euo pipefail
+metrics_server_version=v0.9.0
+usage() { echo "Usage: $0 [--with-metrics] [context]   (default context: docker-desktop)"; }
 ctx=docker-desktop
 with_metrics=0
 for arg in "$@"; do
   case "$arg" in
+    -h|--help) usage; exit 0 ;;
     --with-metrics) with_metrics=1 ;;
+    -*) echo "unknown option: $arg" >&2; usage >&2; exit 2 ;;
     *) ctx="$arg" ;;
   esac
 done
@@ -31,7 +36,7 @@ add_ctx wiring-viewer shop viewer
 add_ctx wiring-auditor default auditor
 
 if [[ "$with_metrics" == 1 ]]; then
-  kubectl --context "$ctx" apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
+  kubectl --context "$ctx" apply -f https://github.com/kubernetes-sigs/metrics-server/releases/download/$metrics_server_version/components.yaml
   # Local clusters serve kubelet certificates metrics-server cannot verify; add the flag once.
   if ! kubectl --context "$ctx" -n kube-system get deploy metrics-server \
       -o jsonpath='{.spec.template.spec.containers[0].args}' | grep -q -- --kubelet-insecure-tls; then
