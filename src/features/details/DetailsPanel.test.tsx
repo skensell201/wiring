@@ -254,7 +254,9 @@ describe("DetailsPanel maximise", () => {
   });
 
   it("has no Actions button when delete is the only action (the trash button covers it)", () => {
-    render(<DetailsPanel />); // a Pod
+    const cm = { ...node, id: "ConfigMap/p/cfg", kind: "ConfigMap" as const, name: "cfg" };
+    useAppStore.setState((s) => ({ nodes: new Map([...s.nodes, [cm.id, cm]]), selectedId: cm.id, details: { ...s.details!, nodeId: cm.id } }));
+    render(<DetailsPanel />);
     expect(screen.queryByRole("button", { name: "Actions" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Delete" })).toBeInTheDocument();
   });

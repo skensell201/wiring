@@ -20,7 +20,7 @@ describe("ActionsMenu", () => {
   it("lists the actions for the kind and focuses the first", () => {
     open("Deployment/p/web");
     render(<ActionsMenu />);
-    expect(items()).toEqual(["Scale…", "Restart", "Rollback…", "Delete…"]);
+    expect(items()).toEqual(["Scale…", "Restart", "Rollback…", "Port-forward…", "Delete…"]);
     expect(document.activeElement).toBe(screen.getByRole("menuitem", { name: "Scale…" }));
     fireEvent.keyDown(screen.getByRole("menu"), { key: "ArrowDown" });
     expect(document.activeElement).toBe(screen.getByRole("menuitem", { name: "Restart" }));
@@ -53,6 +53,15 @@ describe("ActionsMenu", () => {
     rerender(<ActionsMenu />);
     fireEvent.click(screen.getByRole("menuitem", { name: "Delete…" }));
     expect(useAppStore.getState().deleteDialog).toEqual({ open: true, nodeId: "Deployment/p/web" });
+  });
+
+  it("Port-forward… opens the forward dialog", () => {
+    open("Service/p/web");
+    render(<ActionsMenu />);
+    expect(items()).toEqual(["Port-forward…", "Delete…"]);
+    fireEvent.click(screen.getByRole("menuitem", { name: "Port-forward…" }));
+    expect(useAppStore.getState().actionDialog).toEqual({ type: "forward", nodeId: "Service/p/web" });
+    expect(useAppStore.getState().actionsMenu).toBeNull();
   });
 
   it("a click outside closes it", () => {

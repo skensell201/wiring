@@ -5,14 +5,16 @@ import { KIND_META } from "../graph/kindMeta";
 export const MAX_REPLICAS = 10_000;
 export const SCALE_KINDS: ReadonlySet<Kind> = new Set<Kind>(["Deployment", "StatefulSet"]);
 export const ROLLOUT_KINDS: ReadonlySet<Kind> = new Set<Kind>(["Deployment", "StatefulSet", "DaemonSet"]);
+export const FORWARD_KINDS: ReadonlySet<Kind> = new Set<Kind>(["Pod", "Service", "Deployment", "StatefulSet", "DaemonSet"]);
 
-export type ActionId = "scale" | "restart" | "rollback" | "delete";
+export type ActionId = "scale" | "restart" | "rollback" | "forward" | "delete";
 
 /** The Actions menu items for a kind, in menu order; everything can be deleted. */
 export function actionsFor(kind: Kind | null): ActionId[] {
   const out: ActionId[] = [];
   if (kind && SCALE_KINDS.has(kind)) out.push("scale");
   if (kind && ROLLOUT_KINDS.has(kind)) out.push("restart", "rollback");
+  if (kind && FORWARD_KINDS.has(kind)) out.push("forward");
   out.push("delete");
   return out;
 }

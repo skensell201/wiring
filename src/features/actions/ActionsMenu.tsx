@@ -3,7 +3,7 @@ import { useShallow } from "zustand/react/shallow";
 import { useAppStore } from "../../app/store";
 import { actionsFor, kindOf, type ActionId } from "./actionKinds";
 
-const LABEL: Record<ActionId, string> = { scale: "Scale…", restart: "Restart", rollback: "Rollback…", delete: "Delete…" };
+const LABEL: Record<ActionId, string> = { scale: "Scale…", restart: "Restart", rollback: "Rollback…", forward: "Port-forward…", delete: "Delete…" };
 const WIDTH = 200;
 const MARGIN = 8;
 
@@ -50,7 +50,7 @@ export function ActionsMenu() {
   const items = actionsFor(kindOf(menu.nodeId));
   const run = (id: ActionId) => {
     close();
-    if (id === "scale" || id === "restart") openActionDialog({ type: id, nodeId: menu.nodeId });
+    if (id === "scale" || id === "restart" || id === "forward") openActionDialog({ type: id, nodeId: menu.nodeId });
     else if (id === "rollback") requestTab("history");
     else requestDelete(menu.nodeId);
   };

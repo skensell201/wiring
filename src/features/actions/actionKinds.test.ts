@@ -8,10 +8,11 @@ const node = (id: string, kind: GraphNode["kind"], badges: string[]): GraphNode 
 
 describe("actionKinds", () => {
   it("offers scale, restart and rollback by kind, and delete for everything", () => {
-    expect(actionsFor("Deployment")).toEqual(["scale", "restart", "rollback", "delete"]);
-    expect(actionsFor("StatefulSet")).toEqual(["scale", "restart", "rollback", "delete"]);
-    expect(actionsFor("DaemonSet")).toEqual(["restart", "rollback", "delete"]);
-    expect(actionsFor("Pod")).toEqual(["delete"]);
+    expect(actionsFor("Deployment")).toEqual(["scale", "restart", "rollback", "forward", "delete"]);
+    expect(actionsFor("StatefulSet")).toEqual(["scale", "restart", "rollback", "forward", "delete"]);
+    expect(actionsFor("DaemonSet")).toEqual(["restart", "rollback", "forward", "delete"]);
+    expect(actionsFor("Pod")).toEqual(["forward", "delete"]);
+    expect(actionsFor("Service")).toEqual(["forward", "delete"]);
     expect(actionsFor("PodGroup")).toEqual(["delete"]);
     expect(actionsFor(null)).toEqual(["delete"]);
   });
