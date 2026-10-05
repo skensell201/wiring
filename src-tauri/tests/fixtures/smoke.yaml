@@ -50,3 +50,13 @@ spec:
   template:
     metadata: { labels: { app: db } }
     spec: { containers: [ { name: db, image: "registry.k8s.io/pause:3.9" } ] }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: broken, namespace: wiring-smoke }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: broken } }
+  template:
+    metadata: { labels: { app: broken } }
+    spec: { containers: [ { name: broken, image: "registry.k8s.io/pause:wiring-does-not-exist" } ] }

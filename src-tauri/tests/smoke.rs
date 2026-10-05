@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use tokio::sync::mpsc::{self, UnboundedReceiver};
 use wiring_lib::error::ErrorKind;
-use wiring_lib::graph::{Graph, GraphDelta, Relation};
+use wiring_lib::graph::{Graph, GraphDelta, Problem, Relation};
 use wiring_lib::kubeconfig;
 use wiring_lib::logs::session::LogRequest;
 use wiring_lib::logs::LogMessage;
@@ -95,6 +95,16 @@ fn web_pod_count(g: &Graph) -> usize {
 
 fn has_node(g: &Graph, id: &str) -> bool {
     g.node(id).is_some()
+}
+
+/// The problem at the end of `id`'s cause chain (at most 8 hops), as the frontend resolves it.
+fn root_problem<'a>(g: &'a Graph, id: &str) -> Option<&'a Problem> {
+    let mut problem = g.node(id)?.problem.as_ref()?;
+    for _ in 0..8 {
+        let Some(next) = problem.cause.as_deref() else { break };
+        problem = g.node(next)?.problem.as_ref()?;
+    }
+    Some(problem)
 }
 
 const CONFIGMAP_ID: &str = "ConfigMap/wiring-smoke/web-cfg";
@@ -391,6 +401,14 @@ async fn graph_snapshot_reflects_applied_fixture() {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
     let ok = graph_until(&mut rx, &mut graph, deadline, fixture_is_live).await;
     assert!(ok, "fixture never fully appeared in the graph; last graph: {graph:#?}");
+
+    // A pod that cannot pull its image explains its Deployment.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
+    let ok = graph_until(&mut rx, &mut graph, deadline, |g| {
+        root_problem(g, "Deployment/wiring-smoke/broken").is_some_and(|p| p.reason == "ImagePullBackOff" || p.reason == "ErrImagePull")
+    })
+    .await;
+    assert!(ok, "the broken image never explained its Deployment; last graph: {graph:#?}");
 
     // Details for the deployment must render YAML + summary.
     let details = session.get_object("Deployment/wiring-smoke/web").unwrap();
