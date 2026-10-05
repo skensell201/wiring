@@ -1,5 +1,6 @@
 pub mod commands;
 pub mod error;
+pub mod forward;
 pub mod graph;
 pub mod kubeconfig;
 pub mod logs;

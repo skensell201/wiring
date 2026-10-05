@@ -297,7 +297,7 @@ pub fn selector_matches(selector: &BTreeMap<String, String>, labels: Option<&BTr
 }
 
 /// Ready means a `Ready=True` condition and not being deleted; a pod without a `Ready` condition counts as ready, so hand-written fixtures stay healthy.
-fn pod_ready(p: &Pod) -> bool {
+pub(crate) fn pod_ready(p: &Pod) -> bool {
     p.metadata.deletion_timestamp.is_none()
         && p.status
             .as_ref()
