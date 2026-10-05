@@ -65,4 +65,11 @@ describe("update store", () => {
     await useUpdateStore.getState().install();
     expect(invoke).not.toHaveBeenCalled();
   });
+
+  it("skips automatic and manual checks while installing", async () => {
+    useUpdateStore.setState({ installing: true });
+    await useUpdateStore.getState().check(false);
+    await useUpdateStore.getState().check(true);
+    expect(invoke).not.toHaveBeenCalled();
+  });
 });

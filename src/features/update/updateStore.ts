@@ -30,6 +30,7 @@ export const initialUpdateState = (): UpdateData => ({
 export const useUpdateStore = create<UpdateStore>()((set, get) => ({
   ...initialUpdateState(),
   check: async (manual) => {
+    if (get().installing) return;
     try {
       const r = await commands.checkUpdate();
       set({ current: r.current, available: r.update });
