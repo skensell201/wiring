@@ -72,6 +72,16 @@ export type LogMessage =
 
 export interface LogRequest { nodeId: NodeId; container: string | null; previous: boolean; timestamps: boolean }
 
+export interface Revision {
+  revision: number;
+  current: boolean;
+  createdAt: string | null;
+  changeCause: string | null;
+  images: string[];
+  /** The revision's pod template as YAML. */
+  template: string;
+}
+
 // ---- guards ---------------------------------------------------------------
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null;
@@ -136,6 +146,10 @@ export function isLogMessage(v: unknown): v is LogMessage {
     case "truncated": return typeof v.limit === "number";
     default: return false;
   }
+}
+export function isRevision(v: unknown): v is Revision {
+  return isObj(v) && typeof v.revision === "number" && typeof v.current === "boolean" && isStrOrNull(v.createdAt)
+    && isStrOrNull(v.changeCause) && arrayOf(v.images, isStr) && isStr(v.template);
 }
 export function isAppError(v: unknown): v is AppError { return isObj(v) && oneOf(ERROR_KINDS, v.kind) && isStr(v.message); }
 

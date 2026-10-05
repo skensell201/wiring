@@ -8,10 +8,11 @@ import graphDelta from "./fixtures/graph_delta.json";
 import logMessage from "./fixtures/log_message.json";
 import objectDetails from "./fixtures/object_details.json";
 import objectEvents from "./fixtures/object_events.json";
+import revision from "./fixtures/revision.json";
 import table from "./fixtures/table.json";
 import {
   CONNECTION_STATES, ERROR_KINDS, KINDS, RELATIONS, STATUSES,
-  isAppError, isConnectInfo, isConnectionState, isContextInfo, isGraph, isGraphDelta, isLogMessage, isObjectDetails, isObjectEvents, isTable,
+  isAppError, isConnectInfo, isConnectionState, isContextInfo, isGraph, isGraphDelta, isLogMessage, isObjectDetails, isObjectEvents, isRevision, isTable,
 } from "./types";
 
 // The JSON files are the contract shared with the Rust side (guarded there by
@@ -27,6 +28,12 @@ describe("IPC fixtures match the TypeScript types", () => {
   it("app_error", () => expect(isAppError(appError)).toBe(true));
   it("table", () => expect(isTable(table)).toBe(true));
   it("log_message", () => expect(isLogMessage(logMessage)).toBe(true));
+
+  it("revision", () => expect(isRevision(revision)).toBe(true));
+
+  it("rejects a revision without images", () => {
+    expect(isRevision({ ...revision, images: undefined })).toBe(false);
+  });
 
   it("enum lists match docs/ipc-contract.md", () => {
     expect(KINDS).toHaveLength(16);
