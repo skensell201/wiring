@@ -15,7 +15,8 @@ pub fn run() {
 
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_store::Builder::new().build())
-        .plugin(tauri_plugin_dialog::init());
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init());
 
     commands::register(builder)
         .run(tauri::generate_context!())
