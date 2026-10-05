@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../shared/ipc/tauri", () => ({ invoke: vi.fn(async () => null), listen: vi.fn(async () => () => {}), Channel: class { onmessage: (m: unknown) => void = () => {}; } }));
@@ -32,7 +32,7 @@ describe("ForwardsIndicator", () => {
     expect(button).toHaveTextContent("2");
     fireEvent.click(button);
     expect(useAppStore.getState().forwardsOpen).toBe(true);
-    expect(screen.getByText("localhost:8080")).toBeInTheDocument();
+    expect(screen.getByText("127.0.0.1:8080")).toBeInTheDocument();
     expect(screen.getByText("active · web-1")).toBeInTheDocument();
     expect(screen.getByText("error: forbidden")).toBeInTheDocument();
   });
@@ -40,12 +40,20 @@ describe("ForwardsIndicator", () => {
   it("Open, Copy and Stop act on their forward", () => {
     useAppStore.setState({ forwards: [a], forwardsOpen: true });
     render(<ForwardsIndicator />);
-    fireEvent.click(screen.getByRole("button", { name: "Open localhost:8080" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open 127.0.0.1:8080" }));
     expect(invoke).toHaveBeenCalledWith("open_forward", { id: 1 });
-    fireEvent.click(screen.getByRole("button", { name: "Copy localhost:8080" }));
-    expect(writeText).toHaveBeenCalledWith("http://localhost:8080");
-    fireEvent.click(screen.getByRole("button", { name: "Stop localhost:8080" }));
+    fireEvent.click(screen.getByRole("button", { name: "Copy 127.0.0.1:8080" }));
+    expect(writeText).toHaveBeenCalledWith("http://127.0.0.1:8080");
+    fireEvent.click(screen.getByRole("button", { name: "Stop 127.0.0.1:8080" }));
     expect(invoke).toHaveBeenCalledWith("stop_forward", { id: 1 });
+  });
+
+  it("toasts an error when the clipboard refuses the address", async () => {
+    writeText.mockRejectedValueOnce(new Error("denied"));
+    useAppStore.setState({ forwards: [a], forwardsOpen: true });
+    render(<ForwardsIndicator />);
+    fireEvent.click(screen.getByRole("button", { name: "Copy 127.0.0.1:8080" }));
+    await waitFor(() => expect(useAppStore.getState().toasts.at(-1)).toMatchObject({ kind: "internal", message: expect.stringContaining("denied") }));
   });
 
   it("a click outside closes the popover", () => {

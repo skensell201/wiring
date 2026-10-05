@@ -267,7 +267,7 @@ pub async fn stop_forward(state: State<'_, AppState>, id: u32) -> AppResult<()> 
     Ok(())
 }
 
-/// Open `http://localhost:<port>` of forward `id` in the default browser. The URL is built here
+/// Open `http://127.0.0.1:<port>` of forward `id` in the default browser. The URL is built here
 /// from the forward's own port, so the webview cannot open arbitrary URLs through this.
 #[tauri::command]
 pub async fn open_forward(app: AppHandle, state: State<'_, AppState>, id: u32) -> AppResult<()> {
@@ -277,7 +277,7 @@ pub async fn open_forward(app: AppHandle, state: State<'_, AppState>, id: u32) -
     }
     .ok_or_else(|| AppError::new(ErrorKind::NotFound, format!("no forward {id}")))?;
     app.opener()
-        .open_url(format!("http://localhost:{port}"), None::<&str>)
+        .open_url(format!("http://127.0.0.1:{port}"), None::<&str>)
         .map_err(|e| AppError::internal(e.to_string()))
 }
 

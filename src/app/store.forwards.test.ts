@@ -32,7 +32,7 @@ describe("port-forwards", () => {
     const s = useAppStore.getState();
     expect(s.forwards).toEqual([fwd]);
     expect(s.actionDialog).toBeNull();
-    expect(s.toasts.at(-1)).toMatchObject({ kind: "info", message: "Forwarding localhost:8080 → Service web:80" });
+    expect(s.toasts.at(-1)).toMatchObject({ kind: "info", message: "Forwarding 127.0.0.1:8080 → Service web:80" });
   });
 
   it("a failed start returns the error and keeps the dialog", async () => {

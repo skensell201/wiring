@@ -3,7 +3,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from
 import { createPortal } from "react-dom";
 import { useShallow } from "zustand/react/shallow";
 import { useAppStore } from "../../app/store";
-import type { Forward, ForwardStatus, Status } from "../../shared/ipc/types";
+import { toAppError, type Forward, type ForwardStatus, type Status } from "../../shared/ipc/types";
 import { Dot } from "../../shared/ui/Dot";
 
 const TEXT: Record<ForwardStatus, string> = { active: "active", noReadyPod: "no ready pod", podGone: "pod gone", error: "error" };
@@ -15,6 +15,14 @@ const action = "rounded-lg px-2 py-0.5 hover:bg-muted hover:text-text-hi";
 function detail(f: Forward): string {
   if (f.status === "error") return `error: ${f.message ?? "unknown"}`;
   return f.pod ? `${TEXT[f.status]} · ${f.pod}` : TEXT[f.status];
+}
+
+async function copy(text: string): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch (e) {
+    useAppStore.getState().toast(toAppError(e));
+  }
 }
 
 /** `⇄ N` in the header; its popover lists the forwards with Open / Copy / Stop. Escape closes it via `useGlobalKeys`. */
@@ -69,7 +77,7 @@ export function ForwardsIndicator() {
             className="fixed z-40 max-h-[70vh] overflow-y-auto rounded-card border border-border bg-elevated p-2 text-sm">
             <ul className="space-y-1">
               {forwards.map((f) => {
-                const addr = `localhost:${f.localPort}`;
+                const addr = `127.0.0.1:${f.localPort}`;
                 return (
                   <li key={f.id} className="rounded-lg px-3 py-2 hover:bg-surface">
                     <div className="flex items-center gap-2">
@@ -80,7 +88,7 @@ export function ForwardsIndicator() {
                     <div className="mt-1 flex items-center gap-1 text-xs text-text-muted">
                       <span className="min-w-0 flex-1 truncate">{detail(f)}</span>
                       <button type="button" aria-label={`Open ${addr}`} className={action} onClick={() => void openUrl(f.id)}>Open</button>
-                      <button type="button" aria-label={`Copy ${addr}`} className={action} onClick={() => void navigator.clipboard.writeText(`http://${addr}`)}>Copy</button>
+                      <button type="button" aria-label={`Copy ${addr}`} className={action} onClick={() => void copy(`http://${addr}`)}>Copy</button>
                       <button type="button" aria-label={`Stop ${addr}`} className={`${action} text-status-err`} onClick={() => void stop(f.id)}>Stop</button>
                     </div>
                   </li>

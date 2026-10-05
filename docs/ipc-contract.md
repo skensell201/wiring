@@ -150,7 +150,7 @@ Container logs stream through a Tauri `Channel` passed to `start_logs`, not thro
 | `suggest_local_port` | `{ port }` | `number` — `port` if ≥ 1024 and free on 127.0.0.1, else the first free port from 8080 |
 | `start_forward` | `{ nodeId, remotePort, localPort }` | `Forward` — returns immediately with `status: active` and `pod: null`; the first pod resolution happens in the background and is reported through `forwards_changed` |
 | `stop_forward` | `{ id }` | `null` — unknown ids are a no-op; the local port is released when the call returns |
-| `open_forward` | `{ id }` | `null` — opens `http://localhost:<localPort>` in the default browser; unknown id is `notFound` |
+| `open_forward` | `{ id }` | `null` — opens `http://127.0.0.1:<localPort>` in the default browser; unknown id is `notFound` |
 
 `nodeId` may be a `Pod`, `Service`, `Deployment`, `StatefulSet` or `DaemonSet` (anything else, and PodGroups, are `invalid`). `localPort` below 1024 is `invalid`; a port already in use is `conflict` ("port N is already in use"). Forwards bind `127.0.0.1` only, survive `select_namespace` and stop on `disconnect` / `connect`.
 

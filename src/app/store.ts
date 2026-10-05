@@ -792,7 +792,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
         forwards: s.forwards.some((x) => x.id === f.id) ? s.forwards : [...s.forwards, f],
         actionDialog: s.actionDialog?.type === "forward" && s.actionDialog.nodeId === nodeId ? null : s.actionDialog,
       }));
-      get().toast({ kind: "info", message: `Forwarding localhost:${f.localPort} → ${f.targetLabel}:${f.remotePort}` });
+      get().toast({ kind: "info", message: `Forwarding 127.0.0.1:${f.localPort} → ${f.targetLabel}:${f.remotePort}` });
       return null;
     } catch (e) {
       return toAppError(e);

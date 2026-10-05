@@ -41,7 +41,7 @@ export const commands = {
   startForward: (nodeId: NodeId, remotePort: number, localPort: number) => call<Forward>("start_forward", { nodeId, remotePort, localPort }),
   /** Resolves once the local port is free again. */
   stopForward: (id: number) => call<null>("stop_forward", { id }),
-  /** Opens http://localhost:<localPort> from Rust. */
+  /** Opens http://127.0.0.1:<localPort> from Rust. */
   openForward: (id: number) => call<null>("open_forward", { id }),
   saveText: (path: string, text: string) => call<null>("save_text", { path, text }),
 };
