@@ -128,7 +128,7 @@ pub fn selector_string(labels: &BTreeMap<String, String>) -> Option<String> {
 }
 
 fn port_free(port: u16) -> bool {
-    std::net::TcpListener::bind(("127.0.0.1", port)).is_ok()
+    super::bind_loopback(port).is_ok()
 }
 
 /// `port` itself when it is unprivileged and free, else the first free port from 8080 (0 if none).
@@ -261,5 +261,12 @@ spec:
         drop(taken);
         assert_eq!(suggest_local_port(port), port);
         assert!(suggest_local_port(80) >= 8080);
+    }
+
+    #[test]
+    fn a_wildcard_listener_makes_the_port_unsuggestable() {
+        let taken = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
+        let port = taken.local_addr().unwrap().port();
+        assert_ne!(suggest_local_port(port), port);
     }
 }

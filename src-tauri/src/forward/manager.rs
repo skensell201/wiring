@@ -2,20 +2,19 @@
 //! and gets its own tunnel, which is what makes Service/workload forwards follow restarts.
 
 use std::collections::{BTreeMap, HashMap};
-use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use futures::future::BoxFuture;
 use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::net::{TcpListener, TcpSocket, TcpStream};
+use tokio::net::{TcpListener, TcpStream};
 use tokio::task::JoinSet;
 
 use crate::error::{AppError, AppResult, ErrorKind};
 use crate::session::emitter::{Emitter, OutEvent};
 use crate::session::watch::AbortOnDrop;
 
-use super::{Forward, ForwardStatus, ForwardTarget};
+use super::{bind_loopback, BindError, Forward, ForwardStatus, ForwardTarget};
 
 pub trait Duplex: AsyncRead + AsyncWrite + Unpin + Send {}
 impl<T: AsyncRead + AsyncWrite + Unpin + Send> Duplex for T {}
@@ -196,16 +195,12 @@ async fn abort_and_wait(mut task: AbortOnDrop) {
     let _ = (&mut task.0).await;
 }
 
-/// Bind loopback only, without SO_REUSEADDR: with it, BSD/macOS lets us bind 127.0.0.1:P
-/// while another process holds 0.0.0.0:P and we would silently steal its loopback traffic.
 fn listen(port: u16) -> AppResult<TcpListener> {
     let in_use = || AppError::new(ErrorKind::Conflict, format!("port {port} is already in use"));
     let cannot = |e: std::io::Error| AppError::internal(format!("cannot listen on port {port}: {e}"));
-    let socket = TcpSocket::new_v4().map_err(cannot)?;
-    socket.set_reuseaddr(false).map_err(cannot)?;
-    socket.bind(SocketAddr::from(([127, 0, 0, 1], port))).map_err(|e| match e.kind() {
-        std::io::ErrorKind::AddrInUse => in_use(),
-        _ => cannot(e),
+    let socket = bind_loopback(port).map_err(|e| match e {
+        BindError::InUse => in_use(),
+        BindError::Other(e) => cannot(e),
     })?;
     socket.listen(1024).map_err(|e| match e.kind() {
         std::io::ErrorKind::AddrInUse => in_use(),
@@ -514,6 +509,25 @@ mod tests {
         m.stop(f.id).await;
         m.start("Service/ns/web", svc(), "Service web".into(), 80, port).unwrap();
         assert_eq!(&ping(port).await.unwrap(), b"ping");
+    }
+
+    #[tokio::test]
+    async fn a_port_with_closed_connections_can_be_reused_right_after_stop() {
+        let (mut m, _, _rx) = manager(Ok(("web-1".into(), 8080)));
+        let port = free_port();
+        let f = m.start("Service/ns/web", svc(), "Service web".into(), 80, port).unwrap();
+        // The client stays connected while we stop, so our side closes first and holds TIME_WAIT.
+        let mut c = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        c.write_all(b"ping").await.unwrap();
+        let mut buf = [0u8; 4];
+        tokio::time::timeout(WAIT, c.read_exact(&mut buf))
+            .await
+            .expect("read timed out")
+            .unwrap();
+        m.stop(f.id).await;
+        m.start("Service/ns/web", svc(), "Service web".into(), 80, port).unwrap();
+        assert_eq!(&ping(port).await.unwrap(), b"ping");
+        drop(c);
     }
 
     #[tokio::test(start_paused = true)]
