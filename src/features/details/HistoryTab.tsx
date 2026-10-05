@@ -21,39 +21,51 @@ export function HistoryTab({ nodeId }: { nodeId: NodeId }) {
   const [error, setError] = useState<AppError | null>(null);
   const [picked, setPicked] = useState<number | null>(null);
   const lastLoad = useRef(0);
+  const seq = useRef(0);
+  const mounted = useRef(true);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
 
-  // `node` changes identity with every graph update of this workload (a rollout, a scale): refetch then.
+  // `node` changes identity with every graph update of this workload (a rollout, a scale): refetch then,
+  // throttled. A request is never cancelled by the next delta; only the latest request's result is applied.
   useEffect(() => {
-    let active = true;
     const load = () => {
       lastLoad.current = Date.now();
+      const mine = ++seq.current;
+      const latest = () => mounted.current && mine === seq.current;
       commands.rolloutHistory(nodeId).then(
-        (r) => { if (active) { setRevisions(r); setError(null); } },
-        (e) => { if (active) setError(toAppError(e)); },
+        (r) => { if (latest()) { setRevisions(r); setError(null); } },
+        (e) => { if (latest()) setError(toAppError(e)); },
       );
     };
     const wait = REFRESH_MS - (Date.now() - lastLoad.current);
     if (wait <= 0) {
       load();
-      return () => { active = false; };
+      return;
     }
     const timer = setTimeout(load, wait);
-    return () => { active = false; clearTimeout(timer); };
+    return () => clearTimeout(timer);
   }, [nodeId, node]);
 
-  if (error?.kind === "forbidden") {
-    const source = nodeId.startsWith("Deployment/") ? "replicasets" : "controllerrevisions";
-    return <Message text={`No permission to read revision history (${source}).`} />;
-  }
-  if (error) return <Message text={`Could not load the history: ${error.message}`} />;
-  if (!revisions) return <Message text="Loading history…" />;
-  if (revisions.length === 0) return <Message text="No revisions recorded." />;
-
   // Right after a restart or rollback no entry may be marked current yet: the newest one is the base then.
-  const base = revisions.find((r) => r.current) ?? revisions[0];
-  const selected = revisions.find((r) => r.revision === picked && r.revision !== base.revision) ?? null;
+  const base = revisions ? (revisions.find((r) => r.current) ?? revisions[0]) : undefined;
+  const selected = revisions && base ? (revisions.find((r) => r.revision === picked && r.revision !== base.revision) ?? null) : null;
+  // A pick that vanished from a refreshed list, or became the base, is dropped for good.
+  useEffect(() => { if (revisions && picked !== null && !selected) setPicked(null); }, [revisions, picked, selected]);
+
+  if (!revisions || !base) {
+    if (error?.kind === "forbidden") {
+      const source = nodeId.startsWith("Deployment/") ? "replicasets" : "controllerrevisions";
+      return <Message text={`No permission to read revision history (${source}).`} />;
+    }
+    if (error) return <Message text={`Could not load the history: ${error.message}`} />;
+    return <Message text="Loading history…" />;
+  }
+  if (revisions.length === 0) return <Message text="No revisions recorded." />;
+  const which = base.current ? "current" : "newest";
   return (
-    <div className="flex h-full min-h-0">
+    <div className="flex h-full min-h-0 flex-col">
+      {error && <div role="alert" className="shrink-0 border-b border-border px-5 py-1.5 text-xs text-status-err">Could not refresh the history: {error.message}</div>}
+      <div className="flex min-h-0 flex-1">
       <ul aria-label="Revisions" className="w-80 shrink-0 overflow-auto border-r border-border">
         {revisions.map((r) => (
           <li key={r.revision}>
@@ -82,8 +94,9 @@ export function HistoryTab({ nodeId }: { nodeId: NodeId }) {
             <div className="min-h-0 flex-1"><DiffView original={base.template} next={selected.template} /></div>
           </>
         ) : (
-          <Message text="Pick a revision to compare it with the current one." />
+          <Message text={`Pick a revision to compare it with the ${which} one.`} />
         )}
+      </div>
       </div>
     </div>
   );
