@@ -1,6 +1,7 @@
 //! One live connection to a cluster: watchers, store, graph, events.
 
 pub mod emitter;
+pub mod metrics;
 pub mod reducer;
 pub mod rollout;
 pub mod shared;
@@ -202,6 +203,13 @@ impl Session {
             }
         });
         self.tasks = spawn_all(&self.client, namespace, &store_tx);
+        self.tasks.push(metrics::spawn(
+            self.client.clone(),
+            namespace,
+            self.shared.clone(),
+            reducer_tx.clone(),
+            Arc::new(self.ns_emitter.clone()),
+        ));
         self.tasks.push(bridge);
         self.tasks.push(reducer_task);
         self.reducer_tx = Some(reducer_tx);
