@@ -78,6 +78,8 @@ If the object changed on the server while you were editing, you can **Reload** (
 
 While a rollout runs, the node shows `rolling updated/desired`. A Deployment that misses its progress deadline turns red, and Overview shows why.
 
+**Port-forward.** **Port-forward…** in the Actions menu (Pods, Services, Deployments, StatefulSets, DaemonSets) forwards a local port on `127.0.0.1` to the object. Pick one of its ports. The local port defaults to the same number when it is free. A Service or workload forward follows ready pods, so it keeps working through restarts and rollouts. The **⇄** button in the header lists the running forwards, with **Open** (in the browser), **Copy** and **Stop**. Forwards stop when you switch cluster or disconnect.
+
 **Logs.** Pods and workloads (Deployment, StatefulSet, DaemonSet, Job, CronJob and pod groups) get a **Logs** tab:
 - It shows the last 500 lines of each container and then follows live output.
 - A workload's pods are merged into one view, each line prefixed with a coloured `[pod/container]` tag.
