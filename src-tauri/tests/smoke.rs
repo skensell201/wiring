@@ -8,9 +8,13 @@ use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
 
+use base64::engine::general_purpose::STANDARD;
+use base64::Engine;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc::{self, UnboundedReceiver};
 use wiring_lib::error::ErrorKind;
+use wiring_lib::exec::session::ExecRequest;
+use wiring_lib::exec::{ExecMessage, ExecPod};
 use wiring_lib::forward::resolve::suggest_local_port;
 use wiring_lib::graph::{Graph, GraphDelta, Problem, Relation};
 use wiring_lib::kubeconfig;
@@ -429,6 +433,110 @@ async fn exercise_forward(session: &mut Session, context: &str) {
     }
 }
 
+/// The running pods of `node_id` once the store has them.
+async fn exec_pods_until_running(session: &Session, node_id: &str) -> Vec<ExecPod> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
+    loop {
+        if let Ok(pods) = session.exec_pods(node_id) {
+            if !pods.is_empty() {
+                return pods;
+            }
+        }
+        assert!(tokio::time::Instant::now() < deadline, "{node_id} never had a running pod");
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+}
+
+async fn exercise_exec(session: &mut Session, context: &str) {
+    kubectl(
+        context,
+        &["-n", NAMESPACE, "rollout", "status", "deployment/talker", "--timeout=180s"],
+    );
+    let talker = format!("Deployment/{NAMESPACE}/talker");
+    let pods = exec_pods_until_running(session, &talker).await;
+    assert_eq!(pods[0].containers, vec!["talker".to_string()]);
+
+    let (tx, mut rx) = mpsc::unbounded_channel::<ExecMessage>();
+    let req = ExecRequest {
+        node_id: talker.clone(),
+        pod: pods[0].name.clone(),
+        container: "talker".into(),
+        cols: 120,
+        rows: 30,
+    };
+    let id = session.start_exec(req, Arc::new(tx)).unwrap();
+    // Queued until the shell is up. The TTY echoes the command line, which contains
+    // `wiring-$((6*7))`, so only the evaluated `wiring-42` proves the shell ran it.
+    session.exec_input(id, b"echo wiring-$((6*7))\n".to_vec());
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    let mut out = String::new();
+    while !out.contains("wiring-42") {
+        match tokio::time::timeout_at(deadline, rx.recv())
+            .await
+            .expect("exec output in time")
+            .expect("channel open")
+        {
+            ExecMessage::Output { data, .. } => out.push_str(&String::from_utf8_lossy(&STANDARD.decode(data).unwrap())),
+            other => panic!("unexpected {other:?}; output so far: {out}"),
+        }
+    }
+    session.exec_input(id, b"exit 3\n".to_vec());
+    let code = loop {
+        match tokio::time::timeout_at(deadline, rx.recv())
+            .await
+            .expect("exec end in time")
+            .expect("channel open")
+        {
+            ExecMessage::Output { .. } => continue,
+            ExecMessage::Ended { code, .. } => break code,
+            ExecMessage::Error { message, .. } => panic!("exec error: {message}"),
+        }
+    };
+    assert_eq!(code, Some(3));
+    session.stop_exec(id).await;
+
+    // `db` runs the pause image, which has no shell.
+    let db = format!("StatefulSet/{NAMESPACE}/db");
+    let pods = exec_pods_until_running(session, &db).await;
+    let (tx, mut rx) = mpsc::unbounded_channel::<ExecMessage>();
+    let req = ExecRequest {
+        node_id: db,
+        pod: pods[0].name.clone(),
+        container: "db".into(),
+        cols: 80,
+        rows: 24,
+    };
+    let id = session.start_exec(req, Arc::new(tx)).unwrap();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    let message = loop {
+        match tokio::time::timeout_at(deadline, rx.recv())
+            .await
+            .expect("no-shell outcome in time")
+            .expect("channel open")
+        {
+            ExecMessage::Output { .. } => continue,
+            ExecMessage::Ended { message, code, .. } => break format!("{message:?} (code {code:?})"),
+            ExecMessage::Error { message, .. } => break message,
+        }
+    };
+    println!("no-shell outcome: {message}");
+    assert!(message.contains("no shell"), "expected the no-shell message, got {message}");
+    session.stop_exec(id).await;
+
+    // A pod outside the workload is refused before any connection.
+    let req = ExecRequest {
+        node_id: talker,
+        pod: "not-a-talker".into(),
+        container: "talker".into(),
+        cols: 80,
+        rows: 24,
+    };
+    let err = session
+        .start_exec(req, Arc::new(mpsc::unbounded_channel::<ExecMessage>().0))
+        .unwrap_err();
+    assert_eq!(err.kind, ErrorKind::Invalid, "{err:?}");
+}
+
 /// Stream the talker's logs: a `started`, then lines containing "tick"; stopping ends the flow.
 async fn exercise_logs(session: &mut Session, context: &str) {
     kubectl(
@@ -554,6 +662,7 @@ async fn graph_snapshot_reflects_applied_fixture() {
     exercise_rollout(&session, &mut rx, &mut graph, &context).await;
     exercise_forward(&mut session, &context).await;
     exercise_logs(&mut session, &context).await;
+    exercise_exec(&mut session, &context).await;
 
     session.shutdown().await;
     kubectl(&context, &["delete", "namespace", NAMESPACE, "--wait=false"]);
