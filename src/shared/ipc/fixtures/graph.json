@@ -16,7 +16,12 @@
       "name": "web",
       "status": "err",
       "badges": ["×7", "6 ok · 1 err"],
-      "group": { "count": 7, "ok": 6, "warn": 0, "err": 1 }
+      "group": { "count": 7, "ok": 6, "warn": 0, "err": 1 },
+      "problem": {
+        "reason": "1 of 7 pods: CrashLoopBackOff",
+        "message": "web-7f9c-x2k: container web: last exit code 1 (Error)",
+        "cause": null
+      }
     }
   ],
   "edges": [

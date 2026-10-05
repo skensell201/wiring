@@ -75,6 +75,14 @@ Argument names are camelCase on the JS side; Tauri maps them to the Rust snake_c
 - Collapsed pods: `PodGroup/<namespace>/<OwnerKind>/<ownerName>`. The owner is the *visible* owner — a Deployment whose single ReplicaSet is hidden yields `PodGroup/ns/Deployment/web`. During a rollout two ReplicaSets are visible, so the groups are `PodGroup/ns/ReplicaSet/<rs>` and the id changes back when the old ReplicaSet drains; expanded-group state does not survive that.
 - `get_object` on a PodGroup returns `yaml: ""` and a summary of member counts; `watch_events` on a PodGroup is a no-op.
 
+## Problems
+
+A node whose `status` is `warn` or `err` may carry `problem: { reason, message, cause }`; healthy nodes have no `problem` key at all.
+- `reason` is short (`ImagePullBackOff`, `2 of 3 not ready`, `No ready endpoints`, `Backend not found`, `1 of 7 pods: CrashLoopBackOff`). `message` is the Kubernetes text behind it (kubelet, scheduler or controller), at most 300 characters, or `null`.
+- `cause` is the id of a node in the same graph to blame next (a workload's worst-status owned child, a Service's worst-status selected pod or pod group), or `null` at the root. It is resolved after ReplicaSet hiding and pod-group collapse, so it always names a visible node. Follow it to the root, stopping at a missing node, a repeat or 8 steps.
+- A PodGroup's problem summarises its members: `K of N pods: <reason>` with the message of the first such pod by name, prefixed with the pod name.
+- Problems change with the objects, so they arrive through the usual `graph_snapshot` / `graph_delta` (`updatedNodes`).
+
 ## Table
 
 `list_rows({ kind })` returns `Table { kind, columns: TableColumn[], rows: TableRow[] }`:

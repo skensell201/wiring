@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use serde::Serialize;
 use wiring_lib::error::{AppError, ErrorKind};
-use wiring_lib::graph::{Edge, Graph, GraphDelta, GroupInfo, Node, Relation, Status};
+use wiring_lib::graph::{Edge, Graph, GraphDelta, GroupInfo, Node, Problem, Relation, Status};
 use wiring_lib::kubeconfig::ContextInfo;
 use wiring_lib::logs::{LogLine, LogMessage};
 use wiring_lib::session::emitter::{ConnectionState, K8sEvent, ObjectEvents};
@@ -76,19 +76,26 @@ fn graph() {
                 &["3/3", "nginx:1.27"],
                 None,
             ),
-            node(
-                "PodGroup/payments/Deployment/web",
-                Kind::PodGroup,
-                "web",
-                Status::Err,
-                &["×7", "6 ok · 1 err"],
-                Some(GroupInfo {
-                    count: 7,
-                    ok: 6,
-                    warn: 0,
-                    err: 1,
+            Node {
+                problem: Some(Problem {
+                    reason: "1 of 7 pods: CrashLoopBackOff".into(),
+                    message: Some("web-7f9c-x2k: container web: last exit code 1 (Error)".into()),
+                    cause: None,
                 }),
-            ),
+                ..node(
+                    "PodGroup/payments/Deployment/web",
+                    Kind::PodGroup,
+                    "web",
+                    Status::Err,
+                    &["×7", "6 ok · 1 err"],
+                    Some(GroupInfo {
+                        count: 7,
+                        ok: 6,
+                        warn: 0,
+                        err: 1,
+                    }),
+                )
+            },
         ],
         edges: vec![Edge::new(
             "Deployment/payments/web",
