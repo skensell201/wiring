@@ -98,7 +98,10 @@ While a rollout runs, the node shows `rolling updated/desired`. A Deployment tha
 ```bash
 examples/demo/setup.sh                 # uses the docker-desktop context
 examples/demo/setup.sh kind-kind       # or name another context
+examples/demo/setup.sh --with-metrics  # also install metrics-server (flag and context can be combined, in any order)
 ```
+
+`--with-metrics` applies the official metrics-server manifest and adds `--kubelet-insecure-tls` (once; re-running is safe), which local clusters need. It makes the CPU and Memory columns and the Overview usage rows show data; without metrics-server they stay empty.
 
 The manifests are in [`examples/demo/`](examples/demo/): [`shop.yaml`](examples/demo/shop.yaml), [`blog.yaml`](examples/demo/blog.yaml) and [`rbac.yaml`](examples/demo/rbac.yaml).
 

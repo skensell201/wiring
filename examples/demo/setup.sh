@@ -1,9 +1,18 @@
 #!/usr/bin/env bash
 # Deploy the demo workloads and RBAC identities, and add two restricted kubeconfig
 # contexts (wiring-viewer, wiring-auditor) that reuse the current cluster.
-# Usage: examples/demo/setup.sh [context]   (default: docker-desktop)
+# Usage: examples/demo/setup.sh [--with-metrics] [context]   (default context: docker-desktop)
+#   --with-metrics  also install metrics-server (for the CPU / Memory columns), with
+#                   --kubelet-insecure-tls as local clusters need.
 set -euo pipefail
-ctx="${1:-docker-desktop}"
+ctx=docker-desktop
+with_metrics=0
+for arg in "$@"; do
+  case "$arg" in
+    --with-metrics) with_metrics=1 ;;
+    *) ctx="$arg" ;;
+  esac
+done
 here="$(cd "$(dirname "$0")" && pwd)"
 
 kubectl --context "$ctx" apply -f "$here/shop.yaml"
@@ -20,6 +29,17 @@ add_ctx() { # name, namespace, service account
 }
 add_ctx wiring-viewer shop viewer
 add_ctx wiring-auditor default auditor
+
+if [[ "$with_metrics" == 1 ]]; then
+  kubectl --context "$ctx" apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
+  # Local clusters serve kubelet certificates metrics-server cannot verify; add the flag once.
+  if ! kubectl --context "$ctx" -n kube-system get deploy metrics-server \
+      -o jsonpath='{.spec.template.spec.containers[0].args}' | grep -q -- --kubelet-insecure-tls; then
+    kubectl --context "$ctx" -n kube-system patch deployment metrics-server --type=json \
+      -p='[{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--kubelet-insecure-tls"}]'
+  fi
+  kubectl --context "$ctx" -n kube-system rollout status deploy/metrics-server --timeout=180s
+fi
 
 echo "Waiting for the healthy workloads..."
 kubectl --context "$ctx" -n shop rollout status deploy/web deploy/api deploy/workers --timeout=300s
