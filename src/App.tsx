@@ -12,6 +12,7 @@ import { ViewHeader } from "./features/graph/ViewHeader";
 import { Navigator } from "./features/navigator/Navigator";
 import { TableView } from "./features/table/TableView";
 import { ErrorBoundary } from "./shared/ui/ErrorBoundary";
+import { ActionsMenu } from "./features/actions/ActionsMenu";
 import { Toasts } from "./shared/ui/Toasts";
 
 export function App() {
@@ -50,6 +51,7 @@ export function App() {
       {/* The dialogs sit outside the columns; a failure in one (the lazily loaded editor, say) must not blank the app. */}
       <ErrorBoundary name="cluster picker"><ContextPicker /></ErrorBoundary>
       <ErrorBoundary name="create dialog"><CreateDialog /></ErrorBoundary>
+      <ActionsMenu />
       <Toasts />
     </div>
   );

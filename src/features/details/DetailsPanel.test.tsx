@@ -244,4 +244,10 @@ describe("DetailsPanel maximise", () => {
     expect(screen.queryByTitle(/collapse panel/i)).not.toBeInTheDocument();
     expect(screen.queryByText("▾")).not.toBeInTheDocument();
   });
+
+  it("the Actions button opens the menu for the selection", () => {
+    render(<DetailsPanel />);
+    fireEvent.click(screen.getByRole("button", { name: "Actions" }));
+    expect(useAppStore.getState().actionsMenu).toMatchObject({ nodeId: "Pod/p/web-1" });
+  });
 });

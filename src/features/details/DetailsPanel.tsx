@@ -1,4 +1,4 @@
-import { Maximize2, Minimize2, Trash2 } from "lucide-react";
+import { ChevronDown, Maximize2, Minimize2, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { useAppStore } from "../../app/store";
@@ -46,8 +46,8 @@ function deleteWording(id: NodeId, node: GraphNode | undefined): { title: string
 }
 
 export function DetailsPanel() {
-  const { details, selectedId, node, requestDelete, maximized, toggleMaximized } = useAppStore(useShallow((s) => ({
-    details: s.details, selectedId: s.selectedId, node: s.selectedId ? s.nodes.get(s.selectedId) : undefined, requestDelete: s.requestDelete,
+  const { details, selectedId, node, requestDelete, openActionsMenu, maximized, toggleMaximized } = useAppStore(useShallow((s) => ({
+    details: s.details, selectedId: s.selectedId, node: s.selectedId ? s.nodes.get(s.selectedId) : undefined, requestDelete: s.requestDelete, openActionsMenu: s.openActionsMenu,
     maximized: s.detailsMaximized, toggleMaximized: s.toggleDetailsMaximized,
   })));
   const [tab, setTab] = useState<Tab>("overview");
@@ -130,6 +130,13 @@ export function DetailsPanel() {
             <span className="text-sm font-medium text-text-hi">{heading.name}</span>
             {heading.kind && <span className="text-xs text-text-muted">{KIND_META[heading.kind].label}{heading.namespace ? ` · ${heading.namespace}` : ""}</span>}
           </div>
+        )}
+        {selectedId && (
+          <button type="button" aria-label="Actions" aria-haspopup="menu"
+            onClick={(e) => { const r = e.currentTarget.getBoundingClientRect(); openActionsMenu(selectedId, r.left, r.bottom + 4); }}
+            className="flex h-8 items-center gap-1 rounded-lg px-2 text-sm text-text-muted hover:bg-surface hover:text-text-hi">
+            Actions <ChevronDown className="size-4" />
+          </button>
         )}
         {selectedId && (
           <button type="button" title="Delete" aria-label="Delete" onClick={() => requestDelete(selectedId)}

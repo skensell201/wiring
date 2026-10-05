@@ -146,4 +146,10 @@ describe("TableView", () => {
     expect(screen.getByText(/loading pods/i)).toBeInTheDocument();
     expect(screen.queryByText(/no pods in/i)).not.toBeInTheDocument();
   });
+
+  it("right-clicking a row opens the Actions menu for it", () => {
+    render(<TableView />);
+    fireEvent.contextMenu(screen.getByText("db"), { clientX: 30, clientY: 40 });
+    expect(useAppStore.getState().actionsMenu).toEqual({ nodeId: "Pod/payments/db", x: 30, y: 40 });
+  });
 });
