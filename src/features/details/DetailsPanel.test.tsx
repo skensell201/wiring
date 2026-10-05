@@ -250,4 +250,16 @@ describe("DetailsPanel maximise", () => {
     fireEvent.click(screen.getByRole("button", { name: "Actions" }));
     expect(useAppStore.getState().actionsMenu).toMatchObject({ nodeId: "Pod/p/web-1" });
   });
+
+  it("offers a History tab for rollout kinds only, and opens it on request", () => {
+    const historyTab = () => screen.queryByRole("tab", { name: "History" });
+    const { unmount } = render(<DetailsPanel />);
+    expect(historyTab()).not.toBeInTheDocument(); // a Pod
+    unmount();
+    const dep = { ...node, id: "Deployment/p/web", kind: "Deployment" as const, name: "web" };
+    useAppStore.setState((s) => ({ nodes: new Map([...s.nodes, [dep.id, dep]]), selectedId: dep.id, details: { ...s.details!, nodeId: dep.id }, requestedTab: "history" }));
+    render(<DetailsPanel />);
+    expect(historyTab()).toHaveAttribute("aria-selected", "true");
+    expect(useAppStore.getState().requestedTab).toBeNull();
+  });
 });
