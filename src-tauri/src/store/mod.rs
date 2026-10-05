@@ -205,6 +205,8 @@ impl Object {
 #[derive(Debug, Default, Clone)]
 pub struct Store {
     objects: HashMap<ObjectKey, Object>,
+    /// The latest metrics-server sample of this namespace (written by `session::metrics`).
+    pub metrics: crate::metrics::MetricsSample,
 }
 
 impl Store {

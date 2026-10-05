@@ -2,6 +2,7 @@
 //! poller that fetches samples lives in `session::metrics`.
 
 pub mod quantity;
+pub mod sample;
 
 use std::collections::HashMap;
 
