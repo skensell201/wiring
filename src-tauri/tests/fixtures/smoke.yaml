@@ -39,3 +39,14 @@ spec:
         - name: talker
           image: busybox:1.36
           command: [ "sh", "-c", "i=0; while true; do echo \"tick $i\"; i=$((i+1)); sleep 1; done" ]
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata: { name: db, namespace: wiring-smoke }
+spec:
+  replicas: 1
+  serviceName: db
+  selector: { matchLabels: { app: db } }
+  template:
+    metadata: { labels: { app: db } }
+    spec: { containers: [ { name: db, image: "registry.k8s.io/pause:3.9" } ] }

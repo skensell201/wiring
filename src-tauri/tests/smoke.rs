@@ -1,6 +1,6 @@
 //! End-to-end: apply a fixture namespace, run a headless Session, assert the graph, then
-//! exercise the write path (update / conflict / create / delete / PodGroup delete) and
-//! log streaming (start / lines / stop / invalid kind).
+//! exercise the write path (update / conflict / create / delete / PodGroup delete), the rollout
+//! actions (scale / restart / history / rollback) and log streaming (start / lines / stop / invalid kind).
 //! Run: WIRING_SMOKE_CONTEXT=docker-desktop cargo test --test smoke -- --ignored --nocapture
 
 use std::collections::HashSet;
@@ -15,6 +15,7 @@ use wiring_lib::kubeconfig;
 use wiring_lib::logs::session::LogRequest;
 use wiring_lib::logs::LogMessage;
 use wiring_lib::session::emitter::{ChannelEmitter, ConnectionState, OutEvent};
+use wiring_lib::session::rollout::Revision;
 use wiring_lib::session::Session;
 use wiring_lib::store::Kind;
 
@@ -216,6 +217,81 @@ async fn exercise_writes(session: &Session, rx: &mut UnboundedReceiver<OutEvent>
     assert_eq!(err.kind, ErrorKind::NotFound, "{err:?}");
 }
 
+const WEB_ID: &str = "Deployment/wiring-smoke/web";
+const DB_ID: &str = "StatefulSet/wiring-smoke/db";
+
+/// Poll `rollout_history` until `ok` holds or two minutes pass; returns the last answer.
+async fn history_until(session: &Session, node_id: &str, ok: impl Fn(&[Revision]) -> bool) -> Vec<Revision> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(120);
+    loop {
+        let revisions = session.rollout_history(node_id).await.unwrap();
+        if ok(&revisions) || tokio::time::Instant::now() > deadline {
+            return revisions;
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+}
+
+/// Scale, restart and roll back the `web` Deployment and the `db` StatefulSet.
+async fn exercise_rollout(session: &Session, rx: &mut UnboundedReceiver<OutEvent>, graph: &mut Graph, context: &str) {
+    // (1) Scale through /scale; the returned details already carry the new spec.
+    let details = session.scale_object(WEB_ID, 2).await.unwrap();
+    assert!(details.yaml.contains("replicas: 2"), "{}", details.yaml);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(120);
+    let ok = graph_until(rx, graph, deadline, |g| {
+        g.node(WEB_ID).is_some_and(|n| n.badges.first().map(String::as_str) == Some("2/2"))
+    })
+    .await;
+    assert!(ok, "web never settled at 2/2; last graph: {graph:#?}");
+    for (id, n) in [(WEB_ID, -1), (WEB_ID, 10_001), (CONFIGMAP_ID, 1)] {
+        let err = session.scale_object(id, n).await.unwrap_err();
+        assert_eq!(err.kind, ErrorKind::Invalid, "{id} {n}: {err:?}");
+    }
+
+    // (2) Restart: a new current revision whose template carries the restartedAt stamp.
+    let before = session.rollout_history(WEB_ID).await.unwrap();
+    let top = before.iter().map(|r| r.revision).max().expect("web has a revision");
+    session.restart_object(WEB_ID).await.unwrap();
+    let after = history_until(session, WEB_ID, |r| r.iter().any(|r| r.current && r.revision > top)).await;
+    let current = after.iter().find(|r| r.current).unwrap_or_else(|| panic!("{after:#?}"));
+    assert!(current.revision > top, "{after:#?}");
+    assert!(
+        current.template.contains("kubectl.kubernetes.io/restartedAt"),
+        "{}",
+        current.template
+    );
+    kubectl(context, &["-n", NAMESPACE, "rollout", "status", "deployment/web", "--timeout=180s"]);
+
+    // (3) Roll back to the pre-restart revision: the stamp is gone from the live template.
+    let err = session.rollback_object(WEB_ID, current.revision).await.unwrap_err();
+    assert_eq!(err.kind, ErrorKind::Invalid, "{err:?}");
+    let err = session.rollback_object(WEB_ID, 999).await.unwrap_err();
+    assert_eq!(err.kind, ErrorKind::NotFound, "{err:?}");
+    let details = session.rollback_object(WEB_ID, top).await.unwrap();
+    assert!(!details.yaml.contains("restartedAt"), "{}", details.yaml);
+    kubectl(context, &["-n", NAMESPACE, "rollout", "status", "deployment/web", "--timeout=180s"]);
+
+    // (4) The same through ControllerRevisions for a StatefulSet.
+    let before = history_until(session, DB_ID, |r| !r.is_empty()).await;
+    assert_eq!(before.len(), 1, "{before:#?}");
+    session.restart_object(DB_ID).await.unwrap();
+    let after = history_until(session, DB_ID, |r| r.len() == 2 && r[0].current).await;
+    assert!(after.len() == 2 && after[0].current, "{after:#?}");
+    kubectl(context, &["-n", NAMESPACE, "rollout", "status", "statefulset/db", "--timeout=180s"]);
+    let details = session.rollback_object(DB_ID, after[1].revision).await.unwrap();
+    assert!(!details.yaml.contains("restartedAt"), "{}", details.yaml);
+    kubectl(context, &["-n", NAMESPACE, "rollout", "status", "statefulset/db", "--timeout=180s"]);
+
+    // (5) Kinds without a rollout are refused before any request.
+    for err in [
+        session.restart_object(CONFIGMAP_ID).await.unwrap_err(),
+        session.rollout_history(CONFIGMAP_ID).await.unwrap_err(),
+        session.rollback_object(GROUP_ID, 1).await.unwrap_err(),
+    ] {
+        assert_eq!(err.kind, ErrorKind::Invalid, "{err:?}");
+    }
+}
+
 /// Stream the talker's logs: a `started`, then lines containing "tick"; stopping ends the flow.
 async fn exercise_logs(session: &mut Session, context: &str) {
     kubectl(
@@ -291,6 +367,10 @@ async fn graph_snapshot_reflects_applied_fixture() {
         &context,
         &["-n", NAMESPACE, "rollout", "status", "deployment/web", "--timeout=180s"],
     );
+    kubectl(
+        &context,
+        &["-n", NAMESPACE, "rollout", "status", "statefulset/db", "--timeout=180s"],
+    );
 
     let merged = kubeconfig::load_merged(&kubeconfig::default_paths()).unwrap();
     let (emitter, mut rx) = ChannelEmitter::new();
@@ -324,6 +404,7 @@ async fn graph_snapshot_reflects_applied_fixture() {
     assert!(ok, "scale-down never reached the graph; last graph: {graph:#?}");
 
     exercise_writes(&session, &mut rx, &mut graph, &context).await;
+    exercise_rollout(&session, &mut rx, &mut graph, &context).await;
     exercise_logs(&mut session, &context).await;
 
     session.shutdown();
