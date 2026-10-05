@@ -102,4 +102,13 @@ describe("nextSort", () => {
     expect(nextSort({ key: "age", dir: "desc" }, "age")).toBeNull();
     expect(nextSort({ key: "age", dir: "desc" }, "name")).toEqual({ key: "name", dir: "asc" });
   });
+
+  it("sorts kubectl-top usage cells numerically, empty ones last", () => {
+    const cols = [{ key: "name", label: "Name", numeric: false }, { key: "cpu", label: "CPU", numeric: true }, { key: "memory", label: "Memory", numeric: true }];
+    const row = (name: string, cpu: string, memory: string) => ({ nodeId: `Pod/p/${name}`, status: "ok" as const, cells: [{ text: name, status: null }, { text: cpu, status: null }, { text: memory, status: null }] });
+    const rows = [row("a", "1500m", "1024Mi"), row("b", "120m", "64Mi"), row("c", "—", "—"), row("d", "9m", "512Mi")];
+    expect(sortRows(rows, cols, { key: "cpu", dir: "asc" }).map((r) => r.cells[0].text)).toEqual(["d", "b", "a", "c"]);
+    expect(sortRows(rows, cols, { key: "cpu", dir: "desc" }).map((r) => r.cells[0].text)).toEqual(["a", "b", "d", "c"]);
+    expect(sortRows(rows, cols, { key: "memory", dir: "asc" }).map((r) => r.cells[0].text)).toEqual(["b", "d", "a", "c"]);
+  });
 });

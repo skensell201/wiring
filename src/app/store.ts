@@ -520,10 +520,14 @@ export const useAppStore = create<AppState>()((set, get) => ({
 
   refreshTable: async (kind) => {
     const ns = get().connection.namespace;
+    const onTable = (v: View) => v.name === "table" && v.kind === kind;
+    const wasOnTable = onTable(get().view);
     try {
       const table = await commands.listRows(kind);
       // The namespace moved on while this fetch was in flight — its rows are stale.
       if (ns === null || get().connection.namespace !== ns) return;
+      // The user left this table while its refetch was in flight; showing it again refetches.
+      if (wasOnTable && !onTable(get().view)) return;
       set((s) => {
         const tables = new Map(s.tables);
         tables.set(kind, table);
@@ -854,6 +858,11 @@ export function cancelDetailsRefresh(): void {
   if (detailsRefreshTimer !== null) clearTimeout(detailsRefreshTimer);
   detailsRefreshTimer = null;
   detailsRefreshAt = 0;
+}
+
+/** Reload the open details soon (throttled like graph-driven reloads), e.g. after a metrics sample. */
+export function requestDetailsRefresh(): void {
+  scheduleDetailsRefresh();
 }
 
 /** The graph changed under the open details: the selected node was replaced, or an edge touching

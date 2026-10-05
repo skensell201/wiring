@@ -1,8 +1,11 @@
 import { commands } from "../shared/ipc/commands";
 import { listenAll } from "../shared/ipc/events";
 import type { GraphDelta, Kind } from "../shared/ipc/types";
-import { disconnectedState, useAppStore } from "./store";
+import { disconnectedState, requestDetailsRefresh, useAppStore } from "./store";
 import { cancelTableRefresh, scheduleTableRefresh } from "./tableRefresh";
+
+/** Kinds whose tables show CPU / Memory, refetched on every metrics sample. */
+const USAGE_KINDS: ReadonlySet<Kind> = new Set<Kind>(["Pod", "Deployment", "StatefulSet", "DaemonSet"]);
 
 /** Whether a delta changes rows that a `kind` table would show. `PodGroup` nodes collapse pods,
  *  so any PodGroup touched by the delta also counts as touching `Pod`. Single ReplicaSets are
@@ -35,6 +38,18 @@ export function wireEvents(): Promise<() => void> {
     },
     object_events: ({ nodeId, events }) => s().setObjectEvents(nodeId, events),
     forwards_changed: (forwards) => s().setForwards(forwards),
+    metrics_updated: () => {
+      const view = s().view;
+      if (view.name === "table" && USAGE_KINDS.has(view.kind)) {
+        const kind = view.kind;
+        scheduleTableRefresh(() => {
+          // Only the table still on screen: the user may have moved on during the debounce.
+          const now = useAppStore.getState().view;
+          if (now.name === "table" && now.kind === kind) void useAppStore.getState().refreshTable(kind);
+        });
+      }
+      requestDetailsRefresh();
+    },
     connection_state: (state) => {
       s().setConnectionState(state);
       // A connect in flight tears the old session down first; that "disconnected" is its own to

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { EventHandlers } from "../shared/ipc/events";
 import { initialState, useAppStore, viewEditor } from "./store";
 
@@ -10,6 +10,9 @@ vi.mock("../shared/ipc/events", () => ({
 vi.mock("../shared/ipc/tauri", () => ({ invoke: vi.fn(async () => null), listen: vi.fn(async () => () => {}), Channel: class { onmessage: (m: unknown) => void = () => {}; } }));
 
 import type { GraphDelta } from "../shared/ipc/types";
+import { invoke } from "../shared/ipc/tauri";
+import { cancelDetailsRefresh } from "./store";
+import { TABLE_REFRESH_DEBOUNCE_MS } from "./tableRefresh";
 import { deltaTouches, wireEvents } from "./wireEvents";
 
 const node = { id: "Pod/p/a", kind: "Pod" as const, namespace: "p", name: "a", status: "ok" as const, badges: [], group: null };
@@ -216,5 +219,43 @@ describe("table refresh", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("metrics_updated", () => {
+  beforeEach(() => { vi.useFakeTimers(); cancelDetailsRefresh(); vi.mocked(invoke).mockClear(); });
+  afterEach(() => vi.useRealTimers());
+
+  it("refetches an open pod or workload table, not other tables", async () => {
+    await wireEvents();
+    const refreshTable = vi.fn(async () => {});
+    useAppStore.setState({ refreshTable, view: { name: "table", kind: "Deployment" } });
+    hoisted.handlers!.metrics_updated({ state: "available" });
+    vi.advanceTimersByTime(TABLE_REFRESH_DEBOUNCE_MS);
+    expect(refreshTable).toHaveBeenCalledWith("Deployment");
+    refreshTable.mockClear();
+    useAppStore.setState({ view: { name: "table", kind: "Service" } });
+    hoisted.handlers!.metrics_updated({ state: "available" });
+    vi.advanceTimersByTime(TABLE_REFRESH_DEBOUNCE_MS);
+    expect(refreshTable).not.toHaveBeenCalled();
+  });
+
+  it("does not refetch a table the user left before the debounce fired", async () => {
+    await wireEvents();
+    const refreshTable = vi.fn(async () => {});
+    useAppStore.setState({ refreshTable, view: { name: "table", kind: "Pod" } });
+    hoisted.handlers!.metrics_updated({ state: "available" });
+    useAppStore.setState({ view: { name: "graph" } });
+    vi.advanceTimersByTime(TABLE_REFRESH_DEBOUNCE_MS);
+    expect(refreshTable).not.toHaveBeenCalled();
+  });
+
+  it("reloads the selected details", async () => {
+    await wireEvents();
+    const data = { yaml: "kind: Pod", summary: [], related: [] };
+    useAppStore.setState({ selectedId: "Pod/p/a", details: { nodeId: "Pod/p/a", data, events: [], loading: false, editor: viewEditor(data.yaml) } });
+    hoisted.handlers!.metrics_updated({ state: "available" });
+    await vi.runAllTimersAsync();
+    expect(vi.mocked(invoke).mock.calls.filter(([c]) => c === "get_object")).toEqual([["get_object", { nodeId: "Pod/p/a" }]]);
   });
 });
