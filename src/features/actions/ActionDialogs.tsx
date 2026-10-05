@@ -4,6 +4,7 @@ import { useAppStore } from "../../app/store";
 import type { NodeId } from "../../shared/ipc/types";
 import { Button } from "../../shared/ui/Button";
 import { ConfirmDialog } from "../../shared/ui/ConfirmDialog";
+import { ForwardDialog } from "../forward/ForwardDialog";
 import { describeId, desiredReplicas, hpaFor, MAX_REPLICAS } from "./actionKinds";
 
 /** Whichever action dialog the store has open. Escape closes it from `useGlobalKeys`. */
@@ -12,7 +13,7 @@ export function ActionDialogs() {
   if (!dialog) return null;
   if (dialog.type === "scale") return <ScaleDialog nodeId={dialog.nodeId} />;
   if (dialog.type === "restart") return <RestartDialog nodeId={dialog.nodeId} />;
-  if (dialog.type === "forward") return null; // Task 9 renders the forward dialog
+  if (dialog.type === "forward") return <ForwardDialog nodeId={dialog.nodeId} />;
   return <RollbackDialog nodeId={dialog.nodeId} revision={dialog.revision} />;
 }
 
