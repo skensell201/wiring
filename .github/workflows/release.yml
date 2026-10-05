@@ -96,7 +96,11 @@ jobs:
 
       # Updates are signed with Wiring's updater key (not the Apple/Windows certificates). With the
       # key present the bundle also gets `.sig` files and tauri-action uploads `latest.json`.
-      # The config is a file so the path passes through `args` with no quoting on either runner.
+      # The config is a file so only a path passes through `args`. The path is absolute because
+      # tauri-action runs the CLI from a different directory than the repo root. On the Windows
+      # runner $GITHUB_WORKSPACE is like D:\a\wiring\wiring; backslashes could be eaten when
+      # tauri-action splits `args`, so they are turned into forward slashes (Windows accepts
+      # D:/a/wiring/wiring/...). The same string is written to and passed, so they cannot differ.
       - name: Updater artifacts
         shell: bash
         env:
@@ -106,8 +110,9 @@ jobs:
             echo "::warning title=Updater::TAURI_SIGNING_PRIVATE_KEY is not set; building without update packages"
             exit 0
           fi
-          echo '{ "bundle": { "createUpdaterArtifacts": true } }' > src-tauri/tauri.updater.conf.json
-          echo "UPDATER_ARGS=--config src-tauri/tauri.updater.conf.json" >> "$GITHUB_ENV"
+          CONF="${GITHUB_WORKSPACE//\\//}/src-tauri/tauri.updater.conf.json"
+          echo '{ "bundle": { "createUpdaterArtifacts": true } }' > "$CONF"
+          echo "UPDATER_ARGS=--config $CONF" >> "$GITHUB_ENV"
 
       - uses: tauri-apps/tauri-action@v0
         env:
@@ -120,6 +125,8 @@ jobs:
           releaseName: "Wiring ${{ github.ref_name }}"
           releaseBody: "Installers for macOS (universal .dmg) and Windows (.msi, -setup.exe). Install notes: https://github.com/${{ github.repository }}#install"
           releaseDraft: true
+          # The NSIS -setup.exe is the updatable Windows installer.
+          updaterJsonPreferNsis: true
           args: ${{ matrix.args }} ${{ env.UPDATER_ARGS }}
 
       - name: Upload the installers of a manual run
@@ -134,5 +141,4 @@ jobs:
             src-tauri/target/*/release/bundle/macos/*.app.tar.gz*
             src-tauri/target/release/bundle/msi/*.sig
             src-tauri/target/release/bundle/nsis/*.sig
-            src-tauri/target/*/release/bundle/latest.json
           if-no-files-found: error
