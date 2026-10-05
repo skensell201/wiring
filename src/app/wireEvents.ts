@@ -34,6 +34,7 @@ export function wireEvents(): Promise<() => void> {
       }
     },
     object_events: ({ nodeId, events }) => s().setObjectEvents(nodeId, events),
+    forwards_changed: (forwards) => s().setForwards(forwards),
     connection_state: (state) => {
       s().setConnectionState(state);
       // A connect in flight tears the old session down first; that "disconnected" is its own to

@@ -5,7 +5,7 @@ import { logBuffer } from "../features/logs/logBuffer";
 import { applyLogMessage, initialLogs, type LogsState } from "../features/logs/logsState";
 import { commands } from "../shared/ipc/commands";
 import type {
-  AppError, ConnectionState, ContextInfo, Graph, GraphDelta, GraphEdge, GraphNode, K8sEvent, Kind, LogMessage, NodeId, ObjectDetails,
+  AppError, ConnectionState, ContextInfo, Graph, GraphDelta, GraphEdge, Forward, GraphNode, K8sEvent, Kind, LogMessage, NodeId, ObjectDetails,
   Status, Table,
 } from "../shared/ipc/types";
 import { toAppError } from "../shared/ipc/types";
@@ -42,7 +42,8 @@ export interface ActionsMenu { nodeId: NodeId; x: number; y: number; flipY?: num
 export type ActionDialog =
   | { type: "scale"; nodeId: NodeId }
   | { type: "restart"; nodeId: NodeId }
-  | { type: "rollback"; nodeId: NodeId; revision: number };
+  | { type: "rollback"; nodeId: NodeId; revision: number }
+  | { type: "forward"; nodeId: NodeId };
 export type DetailsTab = "overview" | "yaml" | "events" | "logs" | "history";
 
 export function viewEditor(original = ""): EditorState {
@@ -120,6 +121,10 @@ export interface AppState extends GraphState {
   actionBusy: boolean;
   /** A tab the details panel should switch to once it shows the selection (e.g. Rollback… → History). */
   requestedTab: DetailsTab | null;
+  /** Running port-forwards, replaced by every `forwards_changed`. */
+  forwards: Forward[];
+  /** The header's port-forward popover. */
+  forwardsOpen: boolean;
 
   // graph events
   applySnapshot: (g: Graph) => void;
@@ -193,6 +198,14 @@ export interface AppState extends GraphState {
   requestTab: (tab: DetailsTab) => void;
   consumeRequestedTab: () => void;
   toggleDetailsMaximized: () => void;
+
+  // port-forwards
+  setForwards: (forwards: Forward[]) => void;
+  setForwardsOpen: (open: boolean) => void;
+  /** Start a forward; resolves to the error (shown in the dialog, not toasted) or null. */
+  startForward: (nodeId: NodeId, remotePort: number, localPort: number) => Promise<AppError | null>;
+  stopForward: (id: number) => Promise<void>;
+  openForward: (id: number) => Promise<void>;
 }
 
 let toastSeq = 0;
@@ -230,6 +243,8 @@ export function initialState(): Omit<AppState, keyof Actions> {
     actionDialog: null,
     actionBusy: false,
     requestedTab: null,
+    forwards: [],
+    forwardsOpen: false,
     detailsMaximized: false,
   };
 }
@@ -259,7 +274,8 @@ type Actions = Pick<AppState,
   | "confirmDiscard" | "cancelDiscard" | "openCreate" | "setCreateKind" | "setCreateBuffer" | "submitCreate" | "closeCreate"
   | "requestDelete" | "confirmDelete" | "cancelDelete" | "startLogs" | "stopLogs" | "setLogsContainer" | "toggleLogsPrevious"
   | "toggleLogsTimestamps" | "toggleDetailsMaximized" | "openActionsMenu" | "closeActionsMenu" | "openActionDialog"
-  | "closeActionDialog" | "scaleObject" | "restartObject" | "rollbackObject" | "requestTab" | "consumeRequestedTab">;
+  | "closeActionDialog" | "scaleObject" | "restartObject" | "rollbackObject" | "requestTab" | "consumeRequestedTab"
+  | "setForwards" | "setForwardsOpen" | "startForward" | "stopForward" | "openForward">;
 
 // ---- selectors --------------------------------------------------------------
 
@@ -763,6 +779,40 @@ export const useAppStore = create<AppState>()((set, get) => ({
   closeActionsMenu: () => set({ actionsMenu: null }),
   openActionDialog: (dialog) => set({ actionDialog: dialog }),
   closeActionDialog: () => set({ actionDialog: null }),
+  setForwards: (forwards) => set((s) => ({ forwards, forwardsOpen: forwards.length > 0 && s.forwardsOpen })),
+  setForwardsOpen: (forwardsOpen) => set({ forwardsOpen }),
+  startForward: async (nodeId, remotePort, localPort) => {
+    try {
+      const f = await commands.startForward(nodeId, remotePort, localPort);
+      set((s) => ({
+        // `forwards_changed` may have listed it already (with a fresher status).
+        forwards: s.forwards.some((x) => x.id === f.id) ? s.forwards : [...s.forwards, f],
+        actionDialog: s.actionDialog?.type === "forward" && s.actionDialog.nodeId === nodeId ? null : s.actionDialog,
+      }));
+      get().toast({ kind: "info", message: `Forwarding localhost:${f.localPort} → ${f.targetLabel}:${f.remotePort}` });
+      return null;
+    } catch (e) {
+      return toAppError(e);
+    }
+  },
+  stopForward: async (id) => {
+    try {
+      await commands.stopForward(id);
+      set((s) => {
+        const forwards = s.forwards.filter((f) => f.id !== id);
+        return { forwards, forwardsOpen: forwards.length > 0 && s.forwardsOpen };
+      });
+    } catch (e) {
+      get().toast(toAppError(e));
+    }
+  },
+  openForward: async (id) => {
+    try {
+      await commands.openForward(id);
+    } catch (e) {
+      get().toast(toAppError(e));
+    }
+  },
   scaleObject: (nodeId, replicas) =>
     runAction(nodeId, () => commands.scaleObject(nodeId, replicas), `Scaled ${describeNode(nodeId)} to ${replicas}`),
   restartObject: (nodeId) => runAction(nodeId, () => commands.restartObject(nodeId), `Restarted ${describeNode(nodeId)}`),

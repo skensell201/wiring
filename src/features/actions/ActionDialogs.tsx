@@ -12,6 +12,7 @@ export function ActionDialogs() {
   if (!dialog) return null;
   if (dialog.type === "scale") return <ScaleDialog nodeId={dialog.nodeId} />;
   if (dialog.type === "restart") return <RestartDialog nodeId={dialog.nodeId} />;
+  if (dialog.type === "forward") return null; // Task 9 renders the forward dialog
   return <RollbackDialog nodeId={dialog.nodeId} revision={dialog.revision} />;
 }
 

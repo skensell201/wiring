@@ -1,5 +1,5 @@
 import { listen, type UnlistenFn } from "./tauri";
-import type { AppError, ConnectionState, Graph, GraphDelta, ObjectEvents } from "./types";
+import type { AppError, ConnectionState, Forward, Graph, GraphDelta, ObjectEvents } from "./types";
 
 export interface BackendEvents {
   graph_snapshot: Graph;
@@ -7,6 +7,7 @@ export interface BackendEvents {
   object_events: ObjectEvents;
   connection_state: ConnectionState;
   connection_error: AppError;
+  forwards_changed: Forward[];
 }
 
 export type EventHandlers = { [K in keyof BackendEvents]: (payload: BackendEvents[K]) => void };

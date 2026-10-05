@@ -210,6 +210,22 @@ describe("editing keys", () => {
     expect(select).not.toHaveBeenCalled();
   });
 
+  it("Escape closes the port-forward popover before touching the selection", () => {
+    const select = vi.fn(async () => {});
+    useAppStore.setState({ connection: { ...initialState().connection, context: "prod", state: "connected" }, selectedId: "Pod/p/a", select, forwardsOpen: true });
+    render(<App />);
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(useAppStore.getState().forwardsOpen).toBe(false);
+    expect(select).not.toHaveBeenCalled();
+  });
+
+  it("Escape closes the forward dialog", () => {
+    useAppStore.setState({ connection: { ...initialState().connection, context: "prod", state: "connected" }, actionDialog: { type: "forward", nodeId: "Service/p/web" } });
+    render(<App />);
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(useAppStore.getState().actionDialog).toBeNull();
+  });
+
   it("Escape does not close the action dialog while the action is in flight", () => {
     useAppStore.setState({
       connection: { ...initialState().connection, context: "prod", state: "connected" },

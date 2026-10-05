@@ -33,6 +33,9 @@ describe("wireEvents", () => {
     expect(useAppStore.getState().details?.events).toHaveLength(1);
     hoisted.handlers!.object_events({ nodeId: "Pod/p/zzz", events: [] });
     expect(useAppStore.getState().details?.events).toHaveLength(1); // ignored: not the selection
+    const fwd = { id: 1, nodeId: "Service/p/web", targetLabel: "Service web", remotePort: 80, localPort: 8080, pod: null, status: "noReadyPod" as const, message: null };
+    hoisted.handlers!.forwards_changed([fwd]);
+    expect(useAppStore.getState().forwards).toEqual([fwd]);
     hoisted.handlers!.connection_error({ kind: "forbidden", message: "Secret: forbidden" });
     expect(useAppStore.getState().toasts.at(-1)).toMatchObject({ kind: "forbidden" });
     stop();
