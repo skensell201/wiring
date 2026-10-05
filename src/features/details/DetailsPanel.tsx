@@ -165,7 +165,7 @@ export function DetailsPanel() {
         ) : details.loading || !details.data ? (
           <div className="grid h-full place-items-center text-sm text-text-muted">{details.loading ? "Loading…" : "Details unavailable"}</div>
         ) : tab === "overview" ? (
-          <OverviewTab data={details.data} />
+          <OverviewTab nodeId={details.nodeId} data={details.data} />
         ) : tab === "yaml" ? (
           <YamlTab />
         ) : tab === "logs" ? (
