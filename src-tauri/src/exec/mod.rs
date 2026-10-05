@@ -1,5 +1,6 @@
 //! Interactive shell into a container (spec: docs/superpowers/specs/2026-10-06-exec-terminal-design.md).
 
+pub mod errors;
 pub mod targets;
 
 use std::sync::atomic::{AtomicBool, Ordering};
