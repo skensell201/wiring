@@ -1,0 +1,82 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: web, namespace: h, uid: dep-web }
+spec:
+  replicas: 2
+  selector: { matchLabels: { app: web } }
+  template:
+    metadata: { labels: { app: web } }
+    spec: { containers: [ { name: web, image: "web:2" } ] }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: frozen, namespace: h, uid: dep-frozen }
+spec:
+  paused: true
+  selector: { matchLabels: { app: frozen } }
+  template:
+    metadata: { labels: { app: frozen } }
+    spec: { containers: [ { name: frozen, image: "frozen:1" } ] }
+---
+apiVersion: apps/v1
+kind: ReplicaSet
+metadata:
+  name: web-1111
+  namespace: h
+  uid: rs-1111
+  creationTimestamp: "2026-10-01T10:00:00Z"
+  annotations:
+    deployment.kubernetes.io/revision: "1"
+    kubernetes.io/change-cause: first release
+  ownerReferences: [ { apiVersion: apps/v1, kind: Deployment, name: web, uid: dep-web, controller: true } ]
+spec:
+  replicas: 0
+  selector: { matchLabels: { app: web, pod-template-hash: "1111" } }
+  template:
+    metadata: { labels: { app: web, pod-template-hash: "1111" } }
+    spec: { containers: [ { name: web, image: "web:1" } ] }
+---
+apiVersion: apps/v1
+kind: ReplicaSet
+metadata:
+  name: web-2222
+  namespace: h
+  uid: rs-2222
+  creationTimestamp: "2026-10-02T10:00:00Z"
+  annotations:
+    deployment.kubernetes.io/revision: "2"
+  ownerReferences: [ { apiVersion: apps/v1, kind: Deployment, name: web, uid: dep-web, controller: true } ]
+spec:
+  replicas: 2
+  selector: { matchLabels: { app: web, pod-template-hash: "2222" } }
+  template:
+    metadata: { labels: { app: web, pod-template-hash: "2222" } }
+    spec: { containers: [ { name: web, image: "web:2" } ] }
+---
+apiVersion: apps/v1
+kind: ReplicaSet
+metadata:
+  name: web-legacy
+  namespace: h
+  uid: rs-legacy
+  ownerReferences: [ { apiVersion: apps/v1, kind: Deployment, name: web, uid: dep-web, controller: true } ]
+spec:
+  selector: { matchLabels: { app: web } }
+  template:
+    metadata: { labels: { app: web } }
+    spec: { containers: [ { name: web, image: "web:0" } ] }
+---
+apiVersion: apps/v1
+kind: ReplicaSet
+metadata:
+  name: api-9999
+  namespace: h
+  uid: rs-9999
+  annotations:
+    deployment.kubernetes.io/revision: "9"
+  ownerReferences: [ { apiVersion: apps/v1, kind: Deployment, name: api, uid: dep-api, controller: true } ]
+spec:
+  selector: { matchLabels: { app: api } }
+  template:
+    metadata: { labels: { app: api } }
+    spec: { containers: [ { name: api, image: "api:9" } ] }
