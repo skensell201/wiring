@@ -5,6 +5,7 @@ use std::path::PathBuf;
 
 use serde::Serialize;
 use wiring_lib::error::{AppError, ErrorKind};
+use wiring_lib::exec::{ExecMessage, ExecPod};
 use wiring_lib::graph::{Edge, Graph, GraphDelta, GroupInfo, Node, Problem, Relation, Status};
 use wiring_lib::kubeconfig::ContextInfo;
 use wiring_lib::logs::{LogLine, LogMessage};
@@ -310,6 +311,24 @@ fn update_check_and_progress() {
         &UpdateProgress {
             downloaded: 4194304,
             total: Some(47185920),
+        },
+    );
+}
+
+#[test]
+fn exec_message_and_pod() {
+    assert_matches(
+        "exec_message",
+        &ExecMessage::Output {
+            session_id: 2,
+            data: "aGkK".into(),
+        },
+    );
+    assert_matches(
+        "exec_pod",
+        &ExecPod {
+            name: "web-7f9c-a".into(),
+            containers: vec!["app".into(), "sidecar".into()],
         },
     );
 }

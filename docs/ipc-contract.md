@@ -132,6 +132,11 @@ Container logs stream through a Tauri `Channel` passed to `start_logs`, not thro
 |---|---|---|
 | `start_logs` | `{ nodeId, container: string \| null, previous: bool, timestamps: bool, onMessage: Channel<LogMessage> }` | `sessionId: number` |
 | `stop_logs` | `{ sessionId }` | `null` |
+| `exec_pods` | `{ nodeId }` | `ExecPod[]` — running pods of a Pod / Deployment / StatefulSet / DaemonSet / Job / PodGroup with their regular containers; other kinds `invalid` |
+| `start_exec` | `{ nodeId, pod, container, cols, rows, onMessage: Channel<ExecMessage> }` | `number` session id; see [Exec](#exec) |
+| `exec_input` | `{ sessionId, data }` | `null` — `data` is base64 keystrokes; not base64 → `invalid` |
+| `exec_resize` | `{ sessionId, cols, rows }` | `null` |
+| `stop_exec` | `{ sessionId }` | `null` — nothing reaches the channel afterwards |
 | `save_text` | `{ path, text }` | `null` — writes a file chosen with the save dialog |
 
 `nodeId` may be a `Pod`, `Deployment`, `StatefulSet`, `DaemonSet`, `Job`, `CronJob` or `PodGroup`; anything else is `invalid`. A selection that resolves to no container at all (an unknown `container`, a workload without pods) is `notFound`, so a session always has something to stream. Each `(pod, container)` the node stands for is one stream (`tail_lines=500`, `follow` unless `previous`). Pods that appear or disappear while streaming start/stop their streams, and a container that restarts gets a stream for its new run. At most 64 streams per session.
@@ -147,6 +152,16 @@ Container logs stream through a Tauri `Channel` passed to `start_logs`, not thro
 | `truncated` | `sessionId`, `limit` |
 
 `ended` means the stream is over, whether the server closed it or the session stopped it because its pod (or that run of its container) went away. Batches arrive at most every 50 ms or every 256 lines. After `stop_logs` nothing more is sent on that channel. Fixture: `log_message.json`.
+
+## Exec
+
+`start_exec` checks the request against the cached store (`pod` must be a running pod of `nodeId`, `container` one of its regular containers — otherwise `invalid` / `notFound`) and returns at once. The session then opens `sh -c "command -v bash >/dev/null && exec bash || exec sh"` with a TTY of `cols`x`rows` (each clamped to 1...1000) and pushes `ExecMessage`s (tagged by `type`) through the channel:
+
+- `{ type: "output", sessionId, data }` — `data` is base64 of the raw TTY bytes, chunked as they arrive.
+- `{ type: "ended", sessionId, code, message }` — the shell exited: `code` from the exit status (`0` on success, `null` when unknown); `message` is `"This container has no shell (distroless image?)"` when the image has no `sh`, the server's message for other failures, else `null`.
+- `{ type: "error", sessionId, message }` — the connection could not be opened: `"No permission to exec into pods (pods/exec)"`, `"timed out connecting to the container"` (15 s), or the API error.
+
+Input sent before the connection is up is queued. Sessions end with the namespace session (namespace switch, disconnect) like log sessions. Nothing typed or printed is logged. Fixtures: `exec_message.json`, `exec_pod.json`.
 
 ## Port-forward
 
