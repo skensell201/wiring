@@ -63,6 +63,15 @@ describe("ProblemBlock", () => {
     expect(screen.queryByRole("list", { name: "Path" })).not.toBeInTheDocument();
   });
 
+  it("does not borrow the selected node's Warning event for a root further down the path", () => {
+    showing(dep.id, [warning]);
+    useAppStore.setState({ nodes: new Map(useAppStore.getState().nodes).set(pod.id, { ...pod, problem: { reason: "ImagePullBackOff", message: null, cause: null } }) });
+    render(<ProblemBlock nodeId={dep.id} />);
+    expect(screen.getByText("ImagePullBackOff")).toBeInTheDocument();
+    expect(screen.queryByText(/storageclass/)).not.toBeInTheDocument();
+    expect(screen.queryByText("from Events")).not.toBeInTheDocument();
+  });
+
   it("renders nothing for a healthy node", () => {
     showing(ok.id, [warning]);
     const { container } = render(<ProblemBlock nodeId={ok.id} />);

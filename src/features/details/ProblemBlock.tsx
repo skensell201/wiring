@@ -22,7 +22,8 @@ export function ProblemBlock({ nodeId }: { nodeId: NodeId }) {
 
   const path = problemPath(nodeId, nodes);
   const root = path.length > 0 ? nodes.get(path[path.length - 1])! : node;
-  const warning = events.find((e) => e.type === "Warning");
+  // The Events tab belongs to the selected node: it only explains a root that is that node.
+  const warning = root.id === nodeId ? events.find((e) => e.type === "Warning") : undefined;
   const reason = root.problem?.reason ?? warning?.reason;
   if (!reason) return null;
   // The root's own message wins; without one the newest Warning event stands in. When the node
