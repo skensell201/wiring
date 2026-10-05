@@ -7,10 +7,10 @@ pub mod usage;
 
 use std::collections::HashMap;
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 /// Whether the namespace has usage to show, and if not, why.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum MetricsState {
     /// No poll has answered yet.
@@ -62,7 +62,7 @@ impl MetricsSample {
 }
 
 /// Payload of the `metrics_updated` event.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct MetricsUpdate {
     pub state: MetricsState,
 }
