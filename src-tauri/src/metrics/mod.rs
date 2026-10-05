@@ -3,6 +3,7 @@
 
 pub mod quantity;
 pub mod sample;
+pub mod usage;
 
 use std::collections::HashMap;
 
