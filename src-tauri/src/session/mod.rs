@@ -444,7 +444,9 @@ pub fn object_details(store: &Store, graph: &Graph, node_id: &str) -> AppResult<
     let obj = store
         .find(kind, ns.as_deref(), &name)
         .ok_or_else(|| AppError::new(ErrorKind::NotFound, format!("{node_id} not in store")))?;
-    details_of(obj, related)
+    let mut details = details_of(obj, related)?;
+    details.summary.extend(crate::metrics::usage::usage_rows(store, obj));
+    Ok(details)
 }
 
 /// The details of one object: its YAML and summary rows, with the given related nodes.
@@ -492,6 +494,32 @@ pub fn events_to_list(events: &BTreeMap<String, CoreEvent>) -> Vec<K8sEvent> {
 mod tests {
     use super::*;
     use crate::store::{Kind, Store};
+
+    #[test]
+    fn object_details_carry_usage_rows() {
+        let store = crate::metrics::usage::tests::sampled();
+        let graph = crate::graph::build(&store, &Default::default());
+        let d = object_details(&store, &graph, "Deployment/m/api").unwrap();
+        assert!(
+            d.summary
+                .contains(&("CPU usage".to_string(), "200m / req 200m / lim 1000m (20%)".to_string())),
+            "{:?}",
+            d.summary
+        );
+        assert!(d
+            .summary
+            .contains(&("Memory usage".to_string(), "100Mi / req 128Mi / lim 256Mi (39%)".to_string())));
+        let mut missing = Store::from_fixture("metrics").unwrap();
+        missing.metrics.state = crate::metrics::MetricsState::Unavailable;
+        let graph = crate::graph::build(&missing, &Default::default());
+        let d = object_details(&missing, &graph, "Pod/m/hot").unwrap();
+        assert!(d.summary.contains(&(
+            "Usage".to_string(),
+            "Metrics API not available (install metrics-server)".to_string()
+        )));
+        let d = object_details(&missing, &graph, "StatefulSet/m/db").unwrap();
+        assert!(d.summary.iter().any(|(k, _)| k == "Usage"));
+    }
 
     #[tokio::test]
     async fn announce_connected_emits_connected_state() {
