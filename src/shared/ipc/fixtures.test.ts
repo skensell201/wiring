@@ -13,9 +13,11 @@ import objectEvents from "./fixtures/object_events.json";
 import portOption from "./fixtures/port_option.json";
 import revision from "./fixtures/revision.json";
 import table from "./fixtures/table.json";
+import updateCheck from "./fixtures/update_check.json";
+import updateProgress from "./fixtures/update_progress.json";
 import {
   CONNECTION_STATES, ERROR_KINDS, KINDS, RELATIONS, STATUSES,
-  isAppError, isConnectInfo, isConnectionState, isContextInfo, isForward, isGraph, isGraphDelta, isGraphNode, isLogMessage, isMetricsUpdate, isObjectDetails, isObjectEvents, isPortOption, isRevision, isTable,
+  isAppError, isConnectInfo, isConnectionState, isContextInfo, isForward, isGraph, isGraphDelta, isGraphNode, isLogMessage, isMetricsUpdate, isObjectDetails, isObjectEvents, isPortOption, isRevision, isTable, isUpdateCheck, isUpdateProgress,
 } from "./types";
 
 // The JSON files are the contract shared with the Rust side (guarded there by
@@ -38,6 +40,13 @@ describe("IPC fixtures match the TypeScript types", () => {
   it("metrics_updated", () => expect(isMetricsUpdate(metricsUpdated)).toBe(true));
   it("rejects a metrics update with an unknown state", () => {
     expect(isMetricsUpdate({ state: "sleeping" })).toBe(false);
+  });
+  it("update_check", () => expect(isUpdateCheck(updateCheck)).toBe(true));
+  it("update_check without an offer", () => expect(isUpdateCheck({ current: "0.2.0", update: null })).toBe(true));
+  it("rejects an update_check without a current version", () => expect(isUpdateCheck({ update: null })).toBe(false));
+  it("update_progress", () => {
+    expect(isUpdateProgress(updateProgress)).toBe(true);
+    expect(isUpdateProgress({ downloaded: 1, total: null })).toBe(true);
   });
   it("log_message", () => expect(isLogMessage(logMessage)).toBe(true));
 

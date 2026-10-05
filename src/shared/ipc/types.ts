@@ -111,11 +111,17 @@ export interface Forward {
 
 export interface PortOption { port: number; label: string }
 
+/** A newer published release (docs/ipc-contract.md#updates). */
+export interface UpdateInfo { version: string; date: string | null; notes: string | null }
+export interface UpdateCheck { current: string; update: UpdateInfo | null }
+export interface UpdateProgress { downloaded: number; total: number | null }
+
 // ---- guards ---------------------------------------------------------------
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null;
 const isStr = (v: unknown): v is string => typeof v === "string";
 const isStrOrNull = (v: unknown): v is string | null => v === null || isStr(v);
+const isNumOrNull = (v: unknown): v is number | null => v === null || typeof v === "number";
 const oneOf = <T extends readonly string[]>(list: T, v: unknown): v is T[number] => isStr(v) && (list as readonly string[]).includes(v);
 const arrayOf = <T>(v: unknown, g: (x: unknown) => x is T): v is T[] => Array.isArray(v) && v.every(g);
 
@@ -201,4 +207,14 @@ export function toAppError(e: unknown): AppError {
   if (isAppError(e)) return e;
   if (e instanceof Error) return { kind: "internal", message: e.message };
   return { kind: "internal", message: String(e) };
+}
+
+export function isUpdateInfo(v: unknown): v is UpdateInfo {
+  return isObj(v) && isStr(v.version) && isStrOrNull(v.date) && isStrOrNull(v.notes);
+}
+export function isUpdateCheck(v: unknown): v is UpdateCheck {
+  return isObj(v) && isStr(v.current) && (v.update === null || isUpdateInfo(v.update));
+}
+export function isUpdateProgress(v: unknown): v is UpdateProgress {
+  return isObj(v) && typeof v.downloaded === "number" && isNumOrNull(v.total);
 }

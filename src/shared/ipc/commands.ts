@@ -1,5 +1,5 @@
 import { Channel, invoke } from "./tauri";
-import type { ConnectInfo, ContextInfo, Forward, Kind, LogMessage, LogRequest, NodeId, ObjectDetails, PortOption, Revision, Table } from "./types";
+import type { ConnectInfo, ContextInfo, Forward, Kind, LogMessage, LogRequest, NodeId, ObjectDetails, PortOption, Revision, Table, UpdateCheck } from "./types";
 import { toAppError } from "./types";
 
 async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
@@ -36,6 +36,9 @@ export const commands = {
   },
   stopLogs: (sessionId: number) => call<null>("stop_logs", { sessionId }),
   forwardPorts: (nodeId: NodeId) => call<PortOption[]>("forward_ports", { nodeId }),
+  checkUpdate: () => call<UpdateCheck>("check_update"),
+  /** Resolves only on failure: success relaunches the app. */
+  installUpdate: () => call<null>("install_update"),
   suggestLocalPort: (port: number) => call<number>("suggest_local_port", { port }),
   /** Returns at once with status "active"; the real status and pod arrive via `forwards_changed`. */
   startForward: (nodeId: NodeId, remotePort: number, localPort: number) => call<Forward>("start_forward", { nodeId, remotePort, localPort }),
