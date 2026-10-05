@@ -322,7 +322,11 @@ fn link_causes(nodes: &mut HashMap<NodeId, Node>, edges: &[Edge]) {
     let links: Vec<(NodeId, NodeId)> = nodes
         .values()
         // A suspended CronJob is paused on purpose: its own problem, not its Jobs', is what to show.
-        .filter(|n| n.problem.as_ref().is_some_and(|p| !(n.kind == Kind::CronJob && p.reason == "Suspended")))
+        .filter(|n| {
+            n.problem
+                .as_ref()
+                .is_some_and(|p| !(n.kind == Kind::CronJob && p.reason == "Suspended"))
+        })
         .filter_map(|n| {
             let relation = match n.kind {
                 Kind::Deployment | Kind::StatefulSet | Kind::DaemonSet | Kind::ReplicaSet | Kind::Job | Kind::CronJob => Relation::Owns,

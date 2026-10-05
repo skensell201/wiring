@@ -868,7 +868,9 @@ mod tests {
             assert!(!pod_ready(&pod(serde_json::json!({ "phase": phase }))), "{phase}");
         }
         assert!(pod_ready(&pod(serde_json::json!({ "phase": "Running" }))));
-        assert!(!pod_ready(&pod(serde_json::json!({ "phase": "Running", "conditions": [{ "type": "Ready", "status": "False" }] }))));
+        assert!(!pod_ready(&pod(
+            serde_json::json!({ "phase": "Running", "conditions": [{ "type": "Ready", "status": "False" }] })
+        )));
         assert!(pod_ready(&pod(serde_json::json!({}))));
         let bare: Pod = serde_json::from_value(serde_json::json!({ "metadata": { "name": "p" } })).unwrap();
         assert!(pod_ready(&bare));
