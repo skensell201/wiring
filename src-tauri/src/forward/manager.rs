@@ -2,12 +2,13 @@
 //! and gets its own tunnel, which is what makes Service/workload forwards follow restarts.
 
 use std::collections::{BTreeMap, HashMap};
+use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use futures::future::BoxFuture;
 use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::{TcpListener, TcpSocket, TcpStream};
 use tokio::task::JoinSet;
 
 use crate::error::{AppError, AppResult, ErrorKind};
@@ -122,14 +123,12 @@ impl ForwardManager {
         if local_port < 1024 {
             return Err(AppError::new(ErrorKind::Invalid, "the local port must be between 1024 and 65535"));
         }
-        let listener = TcpListener::bind(("127.0.0.1", local_port)).await.map_err(|e| match e.kind() {
-            std::io::ErrorKind::AddrInUse => AppError::new(ErrorKind::Conflict, format!("port {local_port} is already in use")),
-            _ => AppError::internal(format!("cannot listen on port {local_port}: {e}")),
-        })?;
+        let listener = listen(local_port)?;
         let id = self.next_id;
         self.next_id = self.next_id.wrapping_add(1);
-        // Resolve once up front so the popover shows the pod (or why there is none) right away.
-        let (pod, status, message) = match self.connector.resolve(&target, remote_port).await {
+        // Resolve once up front (bounded by CONNECT_TIMEOUT, which is also how long this holds
+        // `&mut self`; the caller's lock cannot be released mid-call within this design) so the popover shows the pod (or why there is none) right away.
+        let (pod, status, message) = match with_timeout(self.connector.resolve(&target, remote_port)).await {
             Ok((pod, _)) => (Some(pod), ForwardStatus::Active, None),
             Err(e) => {
                 let (s, m) = outcome(&e);
@@ -161,20 +160,29 @@ impl ForwardManager {
     }
 
     /// Close the port and its connections; unknown ids are a no-op.
-    pub fn stop(&mut self, id: u32) {
+    /// Returns once the accept loop is gone, so the port can be bound again immediately.
+    pub async fn stop(&mut self, id: u32) {
         let removed = lock(&self.infos).remove(&id).is_some();
-        self.tasks.remove(&id); // dropping aborts the loop, its JoinSet and the listener
+        if let Some(task) = self.tasks.remove(&id) {
+            abort_and_wait(task).await; // ends the loop, its JoinSet and the listener
+        }
         if removed {
             publish(&self.infos, &*self.emitter);
         }
     }
 
-    pub fn stop_all(&mut self) {
+    pub async fn stop_all(&mut self) {
         if self.tasks.is_empty() {
             return;
         }
         lock(&self.infos).clear();
-        self.tasks.clear();
+        let tasks: Vec<_> = self.tasks.drain().map(|(_, t)| t).collect();
+        for t in &tasks {
+            t.0.abort();
+        }
+        for t in tasks {
+            abort_and_wait(t).await;
+        }
         publish(&self.infos, &*self.emitter);
     }
 
@@ -185,6 +193,37 @@ impl ForwardManager {
     pub fn local_port(&self, id: u32) -> Option<u16> {
         lock(&self.infos).get(&id).map(|f| f.local_port)
     }
+}
+
+async fn abort_and_wait(mut task: AbortOnDrop) {
+    task.0.abort();
+    let _ = (&mut task.0).await;
+}
+
+/// Bind loopback only, without SO_REUSEADDR: with it, BSD/macOS lets us bind 127.0.0.1:P
+/// while another process holds 0.0.0.0:P and we would silently steal its loopback traffic.
+fn listen(port: u16) -> AppResult<TcpListener> {
+    let in_use = || AppError::new(ErrorKind::Conflict, format!("port {port} is already in use"));
+    let cannot = |e: std::io::Error| AppError::internal(format!("cannot listen on port {port}: {e}"));
+    let socket = TcpSocket::new_v4().map_err(cannot)?;
+    socket.set_reuseaddr(false).map_err(cannot)?;
+    socket.bind(SocketAddr::from(([127, 0, 0, 1], port))).map_err(|e| match e.kind() {
+        std::io::ErrorKind::AddrInUse => in_use(),
+        _ => cannot(e),
+    })?;
+    socket.listen(1024).map_err(|e| match e.kind() {
+        std::io::ErrorKind::AddrInUse => in_use(),
+        _ => cannot(e),
+    })
+}
+
+/// Bound for each resolve/open so a stalled API server cannot wedge a connection or `start`.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+async fn with_timeout<T>(fut: impl std::future::Future<Output = Result<T, ConnectError>>) -> Result<T, ConnectError> {
+    tokio::time::timeout(CONNECT_TIMEOUT, fut)
+        .await
+        .unwrap_or_else(|_| Err(ConnectError::Failed("timed out".into())))
 }
 
 /// Accept until aborted; connections live in the JoinSet, so aborting the loop ends them too.
@@ -206,14 +245,16 @@ async fn accept_loop(listener: TcpListener, ctx: Ctx) {
 
 async fn serve(mut socket: TcpStream, ctx: Ctx) {
     let tunnel = async {
-        let (pod, port) = ctx.connector.resolve(&ctx.target, ctx.remote_port).await?;
-        let tunnel = ctx.connector.open(&ctx.target.namespace, &pod, port).await?;
+        let (pod, port) = with_timeout(ctx.connector.resolve(&ctx.target, ctx.remote_port)).await?;
+        let tunnel = with_timeout(ctx.connector.open(&ctx.target.namespace, &pod, port)).await?;
         Ok::<_, ConnectError>((pod, tunnel))
     }
     .await;
     match tunnel {
         Ok((pod, mut tunnel)) => {
             ctx.set(Some(pod), ForwardStatus::Active, None);
+            // A mid-stream failure just ends this connection: the status only changes on
+            // connection attempts, not while one is running.
             let _ = tokio::io::copy_bidirectional(&mut socket, &mut tunnel.stream).await;
         }
         // Dropping `socket` closes the client's connection.
@@ -234,12 +275,19 @@ mod tests {
     /// Resolves to whatever `next` holds; `open` returns an in-memory echo tunnel.
     struct Fake {
         next: Mutex<Result<(String, u16), ConnectError>>,
+        hang: std::sync::atomic::AtomicBool,
     }
 
     impl Connector for Fake {
         fn resolve(&self, _: &ForwardTarget, _: u16) -> BoxFuture<'static, Result<(String, u16), ConnectError>> {
             let r = lock(&self.next).clone();
-            Box::pin(async move { r })
+            let hang = self.hang.load(std::sync::atomic::Ordering::SeqCst);
+            Box::pin(async move {
+                if hang {
+                    std::future::pending::<()>().await;
+                }
+                r
+            })
         }
         fn open(&self, _: &str, _: &str, _: u16) -> BoxFuture<'static, Result<Tunnel, ConnectError>> {
             Box::pin(async {
@@ -257,7 +305,10 @@ mod tests {
     }
 
     fn manager(next: Result<(String, u16), ConnectError>) -> (ForwardManager, Arc<Fake>, tokio::sync::mpsc::UnboundedReceiver<OutEvent>) {
-        let fake = Arc::new(Fake { next: Mutex::new(next) });
+        let fake = Arc::new(Fake {
+            next: Mutex::new(next),
+            hang: Default::default(),
+        });
         let (emitter, rx) = ChannelEmitter::new();
         (ForwardManager::new(fake.clone(), Arc::new(emitter)), fake, rx)
     }
@@ -367,16 +418,72 @@ mod tests {
         let (a, b) = (free_port(), free_port());
         let fa = m.start("Service/ns/web", svc(), "Service web".into(), 80, a).await.unwrap();
         m.start("Service/ns/web", svc(), "Service web".into(), 80, b).await.unwrap();
-        m.stop(fa.id);
+        m.stop(fa.id).await;
         let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
         while matches!(tokio::time::timeout(WAIT, TcpStream::connect(("127.0.0.1", a))).await, Ok(Ok(_))) {
             assert!(tokio::time::Instant::now() < deadline, "port {a} still open after stop");
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         assert_eq!(m.list().len(), 1);
-        m.stop_all();
+        m.stop_all().await;
         assert!(m.list().is_empty());
         let last = std::iter::from_fn(|| rx.try_recv().ok()).last().unwrap();
         assert_eq!(last, OutEvent::ForwardsChanged(vec![]));
+    }
+
+    #[tokio::test]
+    async fn a_wildcard_listener_on_the_port_is_a_conflict() {
+        let taken = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
+        let port = taken.local_addr().unwrap().port();
+        let (mut m, _, _rx) = manager(Ok(("web-1".into(), 8080)));
+        let err = m.start("Service/ns/web", svc(), "Service web".into(), 80, port).await.unwrap_err();
+        assert_eq!(err.kind, ErrorKind::Conflict);
+        assert_eq!(err.message, format!("port {port} is already in use"));
+    }
+
+    #[tokio::test]
+    async fn stop_closes_a_live_connection() {
+        let (mut m, _, _rx) = manager(Ok(("web-1".into(), 8080)));
+        let port = free_port();
+        let f = m.start("Service/ns/web", svc(), "Service web".into(), 80, port).await.unwrap();
+        let mut c = tokio::time::timeout(WAIT, TcpStream::connect(("127.0.0.1", port)))
+            .await
+            .expect("connect timed out")
+            .unwrap();
+        tokio::time::timeout(WAIT, c.write_all(b"ping"))
+            .await
+            .expect("write timed out")
+            .unwrap();
+        let mut buf = [0u8; 4];
+        tokio::time::timeout(WAIT, c.read_exact(&mut buf))
+            .await
+            .expect("read timed out")
+            .unwrap();
+        m.stop(f.id).await;
+        let r = tokio::time::timeout(Duration::from_secs(2), c.read(&mut buf))
+            .await
+            .expect("connection still open after stop");
+        assert!(matches!(r, Ok(0) | Err(_)));
+    }
+
+    #[tokio::test]
+    async fn a_port_can_be_reused_right_after_stop() {
+        let (mut m, _, _rx) = manager(Ok(("web-1".into(), 8080)));
+        let port = free_port();
+        let f = m.start("Service/ns/web", svc(), "Service web".into(), 80, port).await.unwrap();
+        m.stop(f.id).await;
+        m.start("Service/ns/web", svc(), "Service web".into(), 80, port).await.unwrap();
+        assert_eq!(&ping(port).await.unwrap(), b"ping");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_hanging_resolve_times_out_instead_of_blocking_start() {
+        let (mut m, fake, _rx) = manager(Ok(("web-1".into(), 8080)));
+        fake.hang.store(true, std::sync::atomic::Ordering::SeqCst);
+        let f = m
+            .start("Service/ns/web", svc(), "Service web".into(), 80, free_port())
+            .await
+            .unwrap();
+        assert_eq!((f.status, f.message.as_deref()), (ForwardStatus::Error, Some("timed out")));
     }
 }
