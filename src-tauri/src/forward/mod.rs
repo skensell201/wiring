@@ -4,7 +4,10 @@ pub mod kube;
 pub mod manager;
 pub mod resolve;
 
-use std::net::{SocketAddr, TcpStream};
+use std::net::SocketAddr;
+#[cfg(not(target_os = "linux"))]
+use std::net::TcpStream;
+#[cfg(not(target_os = "linux"))]
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -26,6 +29,22 @@ pub(crate) enum BindError {
 /// loopback: a wildcard listener accepts loopback connects, so a refused connect means nothing is
 /// listening and the address is only held by TIME_WAIT leftovers of a just-stopped forward; then
 /// SO_REUSEADDR is safe and lets us rebind at once.
+///
+/// Linux refuses SO_REUSEADDR binds while any listener (wildcard included) holds the port, so
+/// there it is safe, and it is required: sockets accepted by a listener without it keep the port
+/// blocked from TIME_WAIT even for a later SO_REUSEADDR bind.
+#[cfg(target_os = "linux")]
+pub(crate) fn bind_loopback(port: u16) -> Result<TcpSocket, BindError> {
+    let socket = TcpSocket::new_v4().map_err(BindError::Other)?;
+    socket.set_reuseaddr(true).map_err(BindError::Other)?;
+    match socket.bind(SocketAddr::from(([127, 0, 0, 1], port))) {
+        Ok(()) => Ok(socket),
+        Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => Err(BindError::InUse),
+        Err(e) => Err(BindError::Other(e)),
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
 pub(crate) fn bind_loopback(port: u16) -> Result<TcpSocket, BindError> {
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
     let other = BindError::Other;
