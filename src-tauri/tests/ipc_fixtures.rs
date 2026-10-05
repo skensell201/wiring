@@ -290,3 +290,26 @@ fn metrics_updated() {
         );
     }
 }
+
+#[test]
+fn update_check_and_progress() {
+    use wiring_lib::updates::{UpdateCheck, UpdateInfo, UpdateProgress};
+    assert_matches(
+        "update_check",
+        &UpdateCheck {
+            current: "0.2.0".into(),
+            update: Some(UpdateInfo {
+                version: "0.3.0".into(),
+                date: Some("2026-10-05".into()),
+                notes: Some("Workload actions, problem explanations, port-forward and metrics.".into()),
+            }),
+        },
+    );
+    assert_matches(
+        "update_progress",
+        &UpdateProgress {
+            downloaded: 4194304,
+            total: Some(47185920),
+        },
+    );
+}

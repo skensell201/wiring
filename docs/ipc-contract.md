@@ -167,3 +167,15 @@ Each accepted local connection picks its pod at that moment: a Pod target itself
 ### `Forward`
 
 `{ id, nodeId, targetLabel, remotePort, localPort, pod: string | null, status, message: string | null }`, `status` ∈ `active`, `noReadyPod`, `podGone` (a Pod target that no longer exists), `error` (with `message`: `forbidden (pods/portforward)` for RBAC, a kubelet stream error, `unsupported selector (matchExpressions)`, a timeout). Fixtures: `forward.json`, `port_option.json`.
+
+## Updates
+
+| Command | Args | Returns |
+|---|---|---|
+| `check_update` | — | `UpdateCheck { current, update: UpdateInfo \| null }`; `UpdateInfo = { version, date: string \| null (YYYY-MM-DD), notes: string \| null }`. Rejects `network` when the feed is unreachable or no published release has a `latest.json`. |
+| `install_update` | — | Downloads, verifies and installs the update found by the last `check_update`, then relaunches — the promise never resolves on success. Rejects `notFound` without a prior offer, `network` / `internal` on download, signature or install failures. |
+
+| Event | Payload | Notes |
+|---|---|---|
+| `update_progress` | `{ downloaded, total: number \| null }` | During `install_update`, at most every 256 KiB and for the last chunk. |
+| `menu_check_updates` | `null` | **Check for Updates…** was chosen in the app menu. |
