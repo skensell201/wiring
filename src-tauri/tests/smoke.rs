@@ -8,8 +8,10 @@ use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
 
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc::{self, UnboundedReceiver};
 use wiring_lib::error::ErrorKind;
+use wiring_lib::forward::resolve::suggest_local_port;
 use wiring_lib::graph::{Graph, GraphDelta, Problem, Relation};
 use wiring_lib::kubeconfig;
 use wiring_lib::logs::session::LogRequest;
@@ -302,6 +304,74 @@ async fn exercise_rollout(session: &Session, rx: &mut UnboundedReceiver<OutEvent
     }
 }
 
+const WHOAMI_SVC: &str = "Service/wiring-smoke/whoami";
+
+/// One HTTP/1.0 request through the forward; the whole response.
+async fn http_get(port: u16) -> std::io::Result<String> {
+    let mut s = tokio::net::TcpStream::connect(("127.0.0.1", port)).await?;
+    s.write_all(b"GET / HTTP/1.0\r\nHost: localhost\r\n\r\n").await?;
+    let mut out = String::new();
+    tokio::time::timeout(Duration::from_secs(10), s.read_to_string(&mut out))
+        .await
+        .map_err(|_| std::io::Error::other("timeout"))??;
+    Ok(out)
+}
+
+/// The pod whoami says served the request.
+fn served_by(body: &str) -> Option<String> {
+    body.lines().find_map(|l| l.strip_prefix("Hostname: ")).map(str::to_owned)
+}
+
+async fn exercise_forward(session: &mut Session, context: &str) {
+    kubectl(
+        context,
+        &["-n", NAMESPACE, "rollout", "status", "deployment/whoami", "--timeout=180s"],
+    );
+    let ports = session.forward_ports(WHOAMI_SVC).unwrap();
+    assert_eq!(ports.iter().map(|p| p.port).collect::<Vec<_>>(), vec![8080], "{ports:?}");
+    assert_eq!(
+        session.start_forward(CONFIGMAP_ID, 80, 18080).await.unwrap_err().kind,
+        ErrorKind::Invalid
+    );
+
+    let local = suggest_local_port(18080);
+    let fwd = session.start_forward(WHOAMI_SVC, 8080, local).await.unwrap();
+    assert_eq!(
+        session.start_forward(WHOAMI_SVC, 8080, local).await.unwrap_err().kind,
+        ErrorKind::Conflict
+    );
+
+    // start returns before the first pod is resolved: poll until a request goes through.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    let first = loop {
+        if let Some(h) = http_get(local).await.ok().and_then(|b| served_by(&b)) {
+            break h;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "no response through the forward");
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    };
+
+    // The serving pod goes away: new connections must reach the other one.
+    kubectl(context, &["-n", NAMESPACE, "delete", "pod", &first, "--wait=false"]);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(120);
+    loop {
+        if let Some(h) = http_get(local).await.ok().and_then(|b| served_by(&b)) {
+            if h != first {
+                break;
+            }
+        }
+        assert!(tokio::time::Instant::now() < deadline, "the forward never moved off {first}");
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+
+    session.stop_forward(fwd.id).await;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while tokio::net::TcpStream::connect(("127.0.0.1", local)).await.is_ok() {
+        assert!(tokio::time::Instant::now() < deadline, "port {local} still open after stop");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
 /// Stream the talker's logs: a `started`, then lines containing "tick"; stopping ends the flow.
 async fn exercise_logs(session: &mut Session, context: &str) {
     kubectl(
@@ -423,6 +493,7 @@ async fn graph_snapshot_reflects_applied_fixture() {
 
     exercise_writes(&session, &mut rx, &mut graph, &context).await;
     exercise_rollout(&session, &mut rx, &mut graph, &context).await;
+    exercise_forward(&mut session, &context).await;
     exercise_logs(&mut session, &context).await;
 
     session.shutdown().await;
