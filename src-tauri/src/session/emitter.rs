@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
 use crate::error::AppError;
+use crate::forward::Forward;
 use crate::graph::{Graph, GraphDelta, NodeId};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -44,6 +45,7 @@ pub enum OutEvent {
     ObjectEvents(ObjectEvents),
     ConnectionState(ConnectionState),
     ConnectionError(AppError),
+    ForwardsChanged(Vec<Forward>),
 }
 
 impl OutEvent {
@@ -58,6 +60,7 @@ impl OutEvent {
             OutEvent::ObjectEvents(e) => ("object_events", json(&e)),
             OutEvent::ConnectionState(s) => ("connection_state", json(&s)),
             OutEvent::ConnectionError(e) => ("connection_error", json(&e)),
+            OutEvent::ForwardsChanged(f) => ("forwards_changed", json(&f)),
         }
     }
 }

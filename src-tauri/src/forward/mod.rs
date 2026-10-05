@@ -1,5 +1,6 @@
 //! Port-forwarding (spec: docs/superpowers/specs/2026-10-05-port-forward-design.md).
 
+pub mod manager;
 pub mod resolve;
 
 use serde::{Deserialize, Serialize};
