@@ -34,6 +34,7 @@ fn node(id: &str, kind: Kind, name: &str, status: Status, badges: &[&str], group
         status,
         badges: badges.iter().map(|s| s.to_string()).collect(),
         group,
+        problem: None,
     }
 }
 

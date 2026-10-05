@@ -43,6 +43,7 @@ pub fn build(store: &Store, opts: &BuildOptions) -> Graph {
                 status,
                 badges,
                 group: None,
+                problem: None,
             },
         );
     }
@@ -256,6 +257,7 @@ fn collapse_pod_groups(nodes: &mut HashMap<NodeId, Node>, edges: &mut Vec<Edge>,
                 status: worst,
                 badges,
                 group: Some(info),
+                problem: None,
             },
         );
     }
