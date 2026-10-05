@@ -141,3 +141,122 @@ status:
   conditions:
     - { type: AbleToScale, status: "True" }
     - { type: ScalingActive, status: "False", reason: FailedGetResourceMetric, message: "unable to get metrics for resource cpu" }
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata: { name: db, namespace: p }
+spec:
+  replicas: 3
+  serviceName: db
+  selector: { matchLabels: { app: db } }
+  template: { metadata: { labels: { app: db } }, spec: { containers: [ { name: c, image: nginx } ] } }
+status: { replicas: 3, readyReplicas: 1 }
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata: { name: agent, namespace: p }
+spec:
+  selector: { matchLabels: { app: agent } }
+  template: { metadata: { labels: { app: agent } }, spec: { containers: [ { name: c, image: nginx } ] } }
+status: { desiredNumberScheduled: 3, numberReady: 2, currentNumberScheduled: 3, numberMisscheduled: 0 }
+---
+apiVersion: apps/v1
+kind: ReplicaSet
+metadata: { name: rs, namespace: p }
+spec:
+  replicas: 2
+  selector: { matchLabels: { app: rs } }
+  template: { metadata: { labels: { app: rs } }, spec: { containers: [ { name: c, image: nginx } ] } }
+status: { replicas: 2, readyReplicas: 0 }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: rolling, namespace: p, generation: 2 }
+spec:
+  replicas: 2
+  selector: { matchLabels: { app: rolling } }
+  template: { metadata: { labels: { app: rolling } }, spec: { containers: [ { name: c, image: nginx } ] } }
+status: { replicas: 2, readyReplicas: 2, observedGeneration: 1, updatedReplicas: 2 }
+---
+apiVersion: v1
+kind: Pod
+metadata: { name: failedpod, namespace: p }
+spec: { containers: [ { name: c, image: nginx } ] }
+status: { phase: Failed, message: "The node was low on resource: memory." }
+---
+apiVersion: v1
+kind: Pod
+metadata: { name: pendingmsg, namespace: p }
+spec: { containers: [ { name: c, image: nginx } ] }
+status: { phase: Pending, message: "waiting for something" }
+---
+apiVersion: v1
+kind: Pod
+metadata: { name: going, namespace: p, labels: { app: going }, deletionTimestamp: "2026-10-05T10:00:00Z" }
+spec: { containers: [ { name: c, image: nginx } ] }
+status:
+  phase: Running
+  conditions: [ { type: Ready, status: "True" } ]
+  containerStatuses:
+    - { name: c, ready: true, restartCount: 0, image: nginx, imageID: "", state: { running: {} } }
+---
+apiVersion: v1
+kind: Pod
+metadata: { name: oom, namespace: p }
+spec: { containers: [ { name: c, image: nginx } ] }
+status:
+  phase: Running
+  containerStatuses:
+    - { name: c, ready: false, restartCount: 1, image: nginx, imageID: "", state: { terminated: { exitCode: 137, reason: OOMKilled } } }
+---
+apiVersion: v1
+kind: Pod
+metadata: { name: errored, namespace: p }
+spec: { containers: [ { name: c, image: nginx } ] }
+status:
+  phase: Running
+  containerStatuses:
+    - { name: c, ready: false, restartCount: 0, image: nginx, imageID: "", state: { terminated: { exitCode: 2, reason: Error, message: boom } } }
+---
+apiVersion: v1
+kind: Pod
+metadata: { name: unknownready, namespace: p, labels: { app: unk } }
+spec: { containers: [ { name: c, image: nginx } ] }
+status:
+  phase: Running
+  conditions: [ { type: Ready, status: Unknown } ]
+  containerStatuses:
+    - { name: c, ready: true, restartCount: 0, image: nginx, imageID: "", state: { running: {} } }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: unk, namespace: p }
+spec: { selector: { app: unk }, ports: [ { port: 80 } ] }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: goingsvc, namespace: p }
+spec: { selector: { app: going }, ports: [ { port: 80 } ] }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: headless, namespace: p }
+spec: { clusterIP: None, ports: [ { port: 80 } ] }
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata: { name: many, namespace: p }
+spec:
+  rules:
+    - http:
+        paths:
+          - { path: /a, pathType: Prefix, backend: { service: { name: gone-a, port: { number: 80 } } } }
+          - { path: /b, pathType: Prefix, backend: { service: { name: gone-b, port: { number: 80 } } } }
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata: { name: cantscale, namespace: p }
+spec: { minReplicas: 1, maxReplicas: 4, scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: healthy } }
+status:
+  conditions:
+    - { type: AbleToScale, status: "False", reason: FailedGetScale, message: "no such target" }
