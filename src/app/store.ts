@@ -334,16 +334,21 @@ function dropSelection<S extends GraphState>(s: S, dropped: boolean): S {
 export const useAppStore = create<AppState>()((set, get) => ({
   ...initialState(),
 
-  applySnapshot: (g) =>
+  applySnapshot: (g) => {
+    const before = get();
     set((s) => {
       // Belt and braces: a snapshot of the previous namespace can still be queued behind
       // select_namespace; the namespaced nodes tell which namespace it belongs to.
       const namespaced = g.nodes.find((n) => n.namespace !== null);
       if (namespaced && namespaced.namespace !== s.connection.namespace) return s;
       return applySnapshot(s, g);
-    }),
+    });
+    refreshDetailsIfTouched(before, get());
+  },
   applyDelta: (d) => {
+    const before = get();
     set((s) => applyDelta(s, d));
+    refreshDetailsIfTouched(before, get());
     // A selection made before its node existed (an object just created here): fetch it now.
     const { selectedId, details } = get();
     if (selectedId !== null && details && details.data === null && !details.loading && d.addedNodes.some((n) => n.id === selectedId)) {
@@ -785,6 +790,51 @@ async function runAction(nodeId: NodeId, call: () => Promise<ObjectDetails>, don
   } catch (e) {
     useAppStore.setState({ actionBusy: false });
     useAppStore.getState().toast(toAppError(e));
+  }
+}
+
+const DETAILS_REFRESH_MS = 1000;
+let detailsRefreshAt = 0;
+let detailsRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+
+export function cancelDetailsRefresh(): void {
+  if (detailsRefreshTimer !== null) clearTimeout(detailsRefreshTimer);
+  detailsRefreshTimer = null;
+  detailsRefreshAt = 0;
+}
+
+/** The graph changed under the open details: the selected node was replaced, or an edge touching
+ *  it came or went (its Related list and summary derive from them). */
+function refreshDetailsIfTouched(before: GraphState, after: GraphState): void {
+  const id = after.selectedId;
+  if (id === null || !after.nodes.has(id) || before.nodes.get(id) === undefined) return;
+  const touching = (g: GraphState) => [...g.edges.values()].filter((e) => e.source === id || e.target === id).map((e) => e.id).sort().join("\n");
+  if (before.nodes.get(id) !== after.nodes.get(id) || touching(before) !== touching(after)) scheduleDetailsRefresh();
+}
+
+/** Reload the open details' object at most once a second (a leading reload, then one trailing).
+ *  View mode only, so an edit or review in progress is never clobbered; events stay with the
+ *  existing watch. */
+function scheduleDetailsRefresh(): void {
+  if (detailsRefreshTimer !== null) return;
+  const wait = detailsRefreshAt + DETAILS_REFRESH_MS - Date.now();
+  if (wait > 0) {
+    detailsRefreshTimer = setTimeout(() => { detailsRefreshTimer = null; void reloadDetails(); }, wait);
+  } else {
+    void reloadDetails();
+  }
+}
+
+async function reloadDetails(): Promise<void> {
+  const { selectedId: id, details } = useAppStore.getState();
+  if (id === null || !details || details.nodeId !== id || !details.data || details.loading || details.editor.mode !== "view") return;
+  detailsRefreshAt = Date.now();
+  try {
+    const data = await commands.getObject(id);
+    useAppStore.setState((s) => (s.selectedId === id && s.details?.nodeId === id && s.details.editor.mode === "view"
+      ? { details: { ...s.details, data, editor: viewEditor(data.yaml) } } : {}));
+  } catch {
+    // The next change retries; a failed background refresh is not worth a toast.
   }
 }
 
