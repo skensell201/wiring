@@ -12,7 +12,7 @@ import revision from "./fixtures/revision.json";
 import table from "./fixtures/table.json";
 import {
   CONNECTION_STATES, ERROR_KINDS, KINDS, RELATIONS, STATUSES,
-  isAppError, isConnectInfo, isConnectionState, isContextInfo, isGraph, isGraphDelta, isLogMessage, isObjectDetails, isObjectEvents, isRevision, isTable,
+  isAppError, isConnectInfo, isConnectionState, isContextInfo, isGraph, isGraphDelta, isGraphNode, isLogMessage, isObjectDetails, isObjectEvents, isRevision, isTable,
 } from "./types";
 
 // The JSON files are the contract shared with the Rust side (guarded there by
@@ -57,5 +57,14 @@ describe("IPC fixtures match the TypeScript types", () => {
   it("rejects a log message with an unknown type", () => {
     expect(isLogMessage({ type: "bogus", sessionId: 1 })).toBe(false);
     expect(isLogMessage({ type: "lines", sessionId: 1, lines: [{ pod: "p" }] })).toBe(false);
+  });
+
+  it("graph nodes carry an optional problem", () => {
+    const group = graph.nodes[1];
+    expect(group.problem?.reason).toBe("1 of 7 pods: CrashLoopBackOff");
+    expect(isGraphNode(group)).toBe(true);
+    expect(isGraphNode(graph.nodes[0])).toBe(true); // no problem key at all
+    expect(isGraphNode({ ...group, problem: { reason: 3, message: null, cause: null } })).toBe(false);
+    expect(isGraphNode({ ...group, problem: { reason: "x", message: null } })).toBe(false);
   });
 });

@@ -25,6 +25,9 @@ export type NodeId = string;
 
 export interface GroupInfo { count: number; ok: number; warn: number; err: number }
 
+/** Why a node is yellow or red; `cause` names the neighbour to blame (see docs/ipc-contract.md#problems). */
+export interface Problem { reason: string; message: string | null; cause: NodeId | null }
+
 export interface GraphNode {
   id: NodeId;
   kind: Kind;
@@ -33,6 +36,8 @@ export interface GraphNode {
   status: Status;
   badges: string[];
   group: GroupInfo | null;
+  /** Present only on warn/err nodes. */
+  problem?: Problem;
 }
 
 export interface GraphEdge { id: string; source: NodeId; target: NodeId; relation: Relation }
@@ -90,9 +95,13 @@ const isStrOrNull = (v: unknown): v is string | null => v === null || isStr(v);
 const oneOf = <T extends readonly string[]>(list: T, v: unknown): v is T[number] => isStr(v) && (list as readonly string[]).includes(v);
 const arrayOf = <T>(v: unknown, g: (x: unknown) => x is T): v is T[] => Array.isArray(v) && v.every(g);
 
+function isProblem(v: unknown): v is Problem {
+  return isObj(v) && isStr(v.reason) && isStrOrNull(v.message) && isStrOrNull(v.cause);
+}
 export function isGraphNode(v: unknown): v is GraphNode {
   return isObj(v) && isStr(v.id) && oneOf(KINDS, v.kind) && isStrOrNull(v.namespace) && isStr(v.name)
-    && oneOf(STATUSES, v.status) && arrayOf(v.badges, isStr) && (v.group === null || (isObj(v.group) && typeof v.group.count === "number"));
+    && oneOf(STATUSES, v.status) && arrayOf(v.badges, isStr) && (v.group === null || (isObj(v.group) && typeof v.group.count === "number"))
+    && (v.problem === undefined || isProblem(v.problem));
 }
 export function isGraphEdge(v: unknown): v is GraphEdge {
   return isObj(v) && isStr(v.id) && isStr(v.source) && isStr(v.target) && oneOf(RELATIONS, v.relation);
