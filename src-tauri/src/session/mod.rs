@@ -297,7 +297,7 @@ impl Session {
     pub async fn start_forward(&mut self, node_id: &str, remote_port: u16, local_port: u16) -> AppResult<Forward> {
         let target = forward::resolve::target(node_id)?;
         let label = format!("{} {}", target.kind.as_str(), target.name);
-        self.forwards.start(node_id, target, label, remote_port, local_port).await
+        self.forwards.start(node_id, target, label, remote_port, local_port)
     }
 
     pub async fn stop_forward(&mut self, id: u32) {

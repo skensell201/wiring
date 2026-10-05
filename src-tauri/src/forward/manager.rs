@@ -24,6 +24,9 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> Duplex for T {}
 pub struct Tunnel {
     pub stream: Box<dyn Duplex>,
     pub keep: Box<dyn std::any::Any + Send>,
+    /// Resolves with the error the kubelet reported on this stream, if any (e.g. nothing
+    /// listens on the pod port); awaited after the stream ends.
+    pub error: Option<BoxFuture<'static, Option<String>>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -112,7 +115,9 @@ impl ForwardManager {
     }
 
     /// Bind `127.0.0.1:local_port` and start forwarding it to `target:remote_port`.
-    pub async fn start(
+    /// Returns at once (the caller holds the session lock): the accept task makes the first
+    /// resolve itself and reports the pod, or why there is none, through `forwards_changed`.
+    pub fn start(
         &mut self,
         node_id: &str,
         target: ForwardTarget,
@@ -126,24 +131,15 @@ impl ForwardManager {
         let listener = listen(local_port)?;
         let id = self.next_id;
         self.next_id = self.next_id.wrapping_add(1);
-        // Resolve once up front (bounded by CONNECT_TIMEOUT, which is also how long this holds
-        // `&mut self`; the caller's lock cannot be released mid-call within this design) so the popover shows the pod (or why there is none) right away.
-        let (pod, status, message) = match with_timeout(self.connector.resolve(&target, remote_port)).await {
-            Ok((pod, _)) => (Some(pod), ForwardStatus::Active, None),
-            Err(e) => {
-                let (s, m) = outcome(&e);
-                (None, s, m)
-            }
-        };
         let info = Forward {
             id,
             node_id: node_id.to_string(),
             target_label,
             remote_port,
             local_port,
-            pod,
-            status,
-            message,
+            pod: None,
+            status: ForwardStatus::Active,
+            message: None,
         };
         lock(&self.infos).insert(id, info.clone());
         publish(&self.infos, &*self.emitter);
@@ -229,6 +225,7 @@ async fn with_timeout<T>(fut: impl std::future::Future<Output = Result<T, Connec
 /// Accept until aborted; connections live in the JoinSet, so aborting the loop ends them too.
 async fn accept_loop(listener: TcpListener, ctx: Ctx) {
     let mut conns = JoinSet::new();
+    conns.spawn(first_resolve(ctx.clone()));
     loop {
         tokio::select! {
             accepted = listener.accept() => match accepted {
@@ -243,6 +240,17 @@ async fn accept_loop(listener: TcpListener, ctx: Ctx) {
     }
 }
 
+/// The status right after `start`, before any connection: the pod, or why there is none.
+async fn first_resolve(ctx: Ctx) {
+    match with_timeout(ctx.connector.resolve(&ctx.target, ctx.remote_port)).await {
+        Ok((pod, _)) => ctx.set(Some(pod), ForwardStatus::Active, None),
+        Err(e) => {
+            let (status, message) = outcome(&e);
+            ctx.set(None, status, message);
+        }
+    }
+}
+
 async fn serve(mut socket: TcpStream, ctx: Ctx) {
     let tunnel = async {
         let (pod, port) = with_timeout(ctx.connector.resolve(&ctx.target, ctx.remote_port)).await?;
@@ -252,10 +260,15 @@ async fn serve(mut socket: TcpStream, ctx: Ctx) {
     .await;
     match tunnel {
         Ok((pod, mut tunnel)) => {
-            ctx.set(Some(pod), ForwardStatus::Active, None);
+            ctx.set(Some(pod.clone()), ForwardStatus::Active, None);
             // A mid-stream failure just ends this connection: the status only changes on
             // connection attempts, not while one is running.
             let _ = tokio::io::copy_bidirectional(&mut socket, &mut tunnel.stream).await;
+            if let Some(error) = tunnel.error.take() {
+                if let Ok(Some(message)) = tokio::time::timeout(Duration::from_secs(2), error).await {
+                    ctx.set(Some(pod), ForwardStatus::Error, Some(message));
+                }
+            }
         }
         // Dropping `socket` closes the client's connection.
         Err(e) => {
@@ -276,13 +289,21 @@ mod tests {
     struct Fake {
         next: Mutex<Result<(String, u16), ConnectError>>,
         hang: std::sync::atomic::AtomicBool,
+        /// resolve blocks until this is notified
+        gate: Option<Arc<tokio::sync::Notify>>,
+        /// kubelet error reported by every tunnel
+        stream_error: Option<String>,
     }
 
     impl Connector for Fake {
         fn resolve(&self, _: &ForwardTarget, _: u16) -> BoxFuture<'static, Result<(String, u16), ConnectError>> {
             let r = lock(&self.next).clone();
             let hang = self.hang.load(std::sync::atomic::Ordering::SeqCst);
+            let gate = self.gate.clone();
             Box::pin(async move {
+                if let Some(g) = gate {
+                    g.notified().await;
+                }
                 if hang {
                     std::future::pending::<()>().await;
                 }
@@ -290,7 +311,8 @@ mod tests {
             })
         }
         fn open(&self, _: &str, _: &str, _: u16) -> BoxFuture<'static, Result<Tunnel, ConnectError>> {
-            Box::pin(async {
+            let err = self.stream_error.clone();
+            Box::pin(async move {
                 let (ours, theirs) = tokio::io::duplex(1024);
                 tokio::spawn(async move {
                     let (mut r, mut w) = tokio::io::split(theirs);
@@ -299,6 +321,7 @@ mod tests {
                 Ok(Tunnel {
                     stream: Box::new(ours),
                     keep: Box::new(()),
+                    error: err.map(|m| Box::pin(async move { Some(m) }) as BoxFuture<'static, Option<String>>),
                 })
             })
         }
@@ -308,9 +331,31 @@ mod tests {
         let fake = Arc::new(Fake {
             next: Mutex::new(next),
             hang: Default::default(),
+            gate: None,
+            stream_error: None,
         });
         let (emitter, rx) = ChannelEmitter::new();
         (ForwardManager::new(fake.clone(), Arc::new(emitter)), fake, rx)
+    }
+
+    fn manager_with(fake: Fake) -> (ForwardManager, tokio::sync::mpsc::UnboundedReceiver<OutEvent>) {
+        let (emitter, rx) = ChannelEmitter::new();
+        (ForwardManager::new(Arc::new(fake), Arc::new(emitter)), rx)
+    }
+
+    /// Poll until the forward satisfies `pred` (the accept task reports asynchronously).
+    async fn wait_for(m: &ForwardManager, id: u32, pred: impl Fn(&Forward) -> bool) -> Forward {
+        let deadline = tokio::time::Instant::now() + WAIT;
+        loop {
+            if let Some(f) = m.list().into_iter().find(|f| f.id == id).filter(|f| pred(f)) {
+                return f;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "forward {id} never reached the expected state"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
     }
 
     fn free_port() -> u16 {
@@ -342,12 +387,10 @@ mod tests {
     async fn a_forward_tunnels_bytes_and_reports_its_pod() {
         let (mut m, _, mut rx) = manager(Ok(("web-1".into(), 8080)));
         let port = free_port();
-        let f = m.start("Service/ns/web", svc(), "Service web".into(), 80, port).await.unwrap();
-        assert_eq!(
-            (f.status, f.pod.as_deref(), f.local_port),
-            (ForwardStatus::Active, Some("web-1"), port)
-        );
+        let f = m.start("Service/ns/web", svc(), "Service web".into(), 80, port).unwrap();
+        assert_eq!((f.status, f.pod.as_deref(), f.local_port), (ForwardStatus::Active, None, port));
         assert!(matches!(rx.try_recv().unwrap(), OutEvent::ForwardsChanged(list) if list.len() == 1));
+        assert_eq!(wait_for(&m, f.id, |f| f.pod.is_some()).await.pod.as_deref(), Some("web-1"));
         assert_eq!(&ping(port).await.unwrap(), b"ping");
         assert_eq!(m.local_port(f.id), Some(port));
     }
@@ -357,7 +400,7 @@ mod tests {
         let taken = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = taken.local_addr().unwrap().port();
         let (mut m, _, _rx) = manager(Ok(("web-1".into(), 8080)));
-        let err = m.start("Service/ns/web", svc(), "Service web".into(), 80, port).await.unwrap_err();
+        let err = m.start("Service/ns/web", svc(), "Service web".into(), 80, port).unwrap_err();
         assert_eq!(err.kind, ErrorKind::Conflict);
         assert_eq!(err.message, format!("port {port} is already in use"));
         assert!(m.list().is_empty());
@@ -367,10 +410,7 @@ mod tests {
     async fn privileged_local_ports_are_invalid() {
         let (mut m, _, _rx) = manager(Ok(("web-1".into(), 8080)));
         assert_eq!(
-            m.start("Service/ns/web", svc(), "Service web".into(), 80, 80)
-                .await
-                .unwrap_err()
-                .kind,
+            m.start("Service/ns/web", svc(), "Service web".into(), 80, 80).unwrap_err().kind,
             ErrorKind::Invalid
         );
     }
@@ -379,8 +419,9 @@ mod tests {
     async fn without_a_ready_pod_connections_are_closed_and_the_status_says_why() {
         let (mut m, _, _rx) = manager(Err(ConnectError::NoReadyPod));
         let port = free_port();
-        let f = m.start("Service/ns/web", svc(), "Service web".into(), 80, port).await.unwrap();
-        assert_eq!((f.status, f.pod), (ForwardStatus::NoReadyPod, None));
+        let f = m.start("Service/ns/web", svc(), "Service web".into(), 80, port).unwrap();
+        let f = wait_for(&m, f.id, |f| f.status == ForwardStatus::NoReadyPod).await;
+        assert_eq!(f.pod, None);
         let mut c = tokio::time::timeout(WAIT, TcpStream::connect(("127.0.0.1", port)))
             .await
             .expect("connect timed out")
@@ -394,7 +435,8 @@ mod tests {
     async fn each_connection_reselects_the_pod() {
         let (mut m, fake, mut rx) = manager(Ok(("web-1".into(), 8080)));
         let port = free_port();
-        m.start("Service/ns/web", svc(), "Service web".into(), 80, port).await.unwrap();
+        let f = m.start("Service/ns/web", svc(), "Service web".into(), 80, port).unwrap();
+        wait_for(&m, f.id, |f| f.pod.as_deref() == Some("web-1")).await;
         *lock(&fake.next) = Ok(("web-2".into(), 8080));
         assert_eq!(&ping(port).await.unwrap(), b"ping");
         assert_eq!(m.list()[0].pod.as_deref(), Some("web-2"));
@@ -405,19 +447,17 @@ mod tests {
     #[tokio::test]
     async fn errors_carry_their_message() {
         let (mut m, _, _rx) = manager(Err(ConnectError::Failed("forbidden".into())));
-        let f = m
-            .start("Service/ns/web", svc(), "Service web".into(), 80, free_port())
-            .await
-            .unwrap();
-        assert_eq!((f.status, f.message.as_deref()), (ForwardStatus::Error, Some("forbidden")));
+        let f = m.start("Service/ns/web", svc(), "Service web".into(), 80, free_port()).unwrap();
+        let f = wait_for(&m, f.id, |f| f.status == ForwardStatus::Error).await;
+        assert_eq!(f.message.as_deref(), Some("forbidden"));
     }
 
     #[tokio::test]
     async fn stop_closes_the_port_and_stop_all_empties_the_list() {
         let (mut m, _, mut rx) = manager(Ok(("web-1".into(), 8080)));
         let (a, b) = (free_port(), free_port());
-        let fa = m.start("Service/ns/web", svc(), "Service web".into(), 80, a).await.unwrap();
-        m.start("Service/ns/web", svc(), "Service web".into(), 80, b).await.unwrap();
+        let fa = m.start("Service/ns/web", svc(), "Service web".into(), 80, a).unwrap();
+        m.start("Service/ns/web", svc(), "Service web".into(), 80, b).unwrap();
         m.stop(fa.id).await;
         let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
         while matches!(tokio::time::timeout(WAIT, TcpStream::connect(("127.0.0.1", a))).await, Ok(Ok(_))) {
@@ -436,7 +476,7 @@ mod tests {
         let taken = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
         let port = taken.local_addr().unwrap().port();
         let (mut m, _, _rx) = manager(Ok(("web-1".into(), 8080)));
-        let err = m.start("Service/ns/web", svc(), "Service web".into(), 80, port).await.unwrap_err();
+        let err = m.start("Service/ns/web", svc(), "Service web".into(), 80, port).unwrap_err();
         assert_eq!(err.kind, ErrorKind::Conflict);
         assert_eq!(err.message, format!("port {port} is already in use"));
     }
@@ -445,7 +485,7 @@ mod tests {
     async fn stop_closes_a_live_connection() {
         let (mut m, _, _rx) = manager(Ok(("web-1".into(), 8080)));
         let port = free_port();
-        let f = m.start("Service/ns/web", svc(), "Service web".into(), 80, port).await.unwrap();
+        let f = m.start("Service/ns/web", svc(), "Service web".into(), 80, port).unwrap();
         let mut c = tokio::time::timeout(WAIT, TcpStream::connect(("127.0.0.1", port)))
             .await
             .expect("connect timed out")
@@ -470,20 +510,53 @@ mod tests {
     async fn a_port_can_be_reused_right_after_stop() {
         let (mut m, _, _rx) = manager(Ok(("web-1".into(), 8080)));
         let port = free_port();
-        let f = m.start("Service/ns/web", svc(), "Service web".into(), 80, port).await.unwrap();
+        let f = m.start("Service/ns/web", svc(), "Service web".into(), 80, port).unwrap();
         m.stop(f.id).await;
-        m.start("Service/ns/web", svc(), "Service web".into(), 80, port).await.unwrap();
+        m.start("Service/ns/web", svc(), "Service web".into(), 80, port).unwrap();
         assert_eq!(&ping(port).await.unwrap(), b"ping");
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_hanging_resolve_times_out_instead_of_blocking_start() {
+    async fn a_hanging_resolve_times_out_without_blocking_start() {
         let (mut m, fake, _rx) = manager(Ok(("web-1".into(), 8080)));
         fake.hang.store(true, std::sync::atomic::Ordering::SeqCst);
-        let f = m
-            .start("Service/ns/web", svc(), "Service web".into(), 80, free_port())
-            .await
-            .unwrap();
-        assert_eq!((f.status, f.message.as_deref()), (ForwardStatus::Error, Some("timed out")));
+        let f = m.start("Service/ns/web", svc(), "Service web".into(), 80, free_port()).unwrap();
+        assert_eq!(f.status, ForwardStatus::Active);
+        tokio::time::sleep(CONNECT_TIMEOUT + Duration::from_secs(1)).await;
+        let f = wait_for(&m, f.id, |f| f.status == ForwardStatus::Error).await;
+        assert_eq!(f.message.as_deref(), Some("timed out"));
+    }
+
+    #[tokio::test]
+    async fn start_returns_before_the_first_resolve_finishes() {
+        let gate = Arc::new(tokio::sync::Notify::new());
+        let (mut m, _rx) = manager_with(Fake {
+            next: Mutex::new(Ok(("web-1".into(), 8080))),
+            hang: Default::default(),
+            gate: Some(gate.clone()),
+            stream_error: None,
+        });
+        let f = m.start("Service/ns/web", svc(), "Service web".into(), 80, free_port()).unwrap();
+        assert_eq!((f.status, f.pod), (ForwardStatus::Active, None));
+        assert_eq!(m.list()[0].pod, None, "still unresolved while the gate is closed");
+        gate.notify_one();
+        wait_for(&m, f.id, |f| f.pod.as_deref() == Some("web-1")).await;
+    }
+
+    #[tokio::test]
+    async fn a_kubelet_error_on_the_stream_becomes_the_status() {
+        let (mut m, _rx) = manager_with(Fake {
+            next: Mutex::new(Ok(("web-1".into(), 8080))),
+            hang: Default::default(),
+            gate: None,
+            stream_error: Some("connection refused".into()),
+        });
+        let port = free_port();
+        let f = m.start("Service/ns/web", svc(), "Service web".into(), 80, port).unwrap();
+        assert_eq!(&ping(port).await.unwrap(), b"ping");
+        let mut c = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        c.shutdown().await.unwrap();
+        let f = wait_for(&m, f.id, |f| f.status == ForwardStatus::Error).await;
+        assert_eq!(f.message.as_deref(), Some("connection refused"));
     }
 }

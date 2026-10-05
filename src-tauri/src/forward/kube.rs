@@ -7,6 +7,7 @@ use futures::future::BoxFuture;
 use futures::FutureExt;
 use k8s_openapi::api::apps::v1::{DaemonSet, Deployment, StatefulSet};
 use k8s_openapi::api::core::v1::{Pod, Service};
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::LabelSelector;
 use kube::api::{Api, ListParams, Portforwarder};
 use kube::Client;
 
@@ -27,8 +28,29 @@ impl KubeConnector {
     }
 }
 
+const FORBIDDEN: &str = "forbidden (pods/portforward)";
+
+/// A refused websocket upgrade surfaces as `ProtocolSwitch(status)`, not as an API error.
 fn failed(e: kube::Error) -> ConnectError {
-    ConnectError::Failed(AppError::from(&e).message)
+    use kube::client::UpgradeConnectionError::ProtocolSwitch;
+    match &e {
+        kube::Error::UpgradeConnection(ProtocolSwitch(status)) if *status == http::StatusCode::FORBIDDEN => {
+            ConnectError::Failed(FORBIDDEN.into())
+        }
+        kube::Error::UpgradeConnection(ProtocolSwitch(status)) => ConnectError::Failed(format!("port-forward refused: {status}")),
+        kube::Error::Api(resp) if resp.code == 403 => ConnectError::Failed(FORBIDDEN.into()),
+        _ => ConnectError::Failed(AppError::from(&e).message),
+    }
+}
+
+/// The pod labels a workload selects; `matchExpressions` cannot be turned into a simple
+/// label list, and silently ignoring them would report a misleading `noReadyPod`.
+fn workload_labels(selector: LabelSelector) -> Result<BTreeMap<String, String>, ConnectError> {
+    let labels = selector.match_labels.unwrap_or_default();
+    if labels.is_empty() && selector.match_expressions.is_some_and(|e| !e.is_empty()) {
+        return Err(ConnectError::Failed("unsupported selector (matchExpressions)".into()));
+    }
+    Ok(labels)
 }
 
 /// Aborts kube's background forwarding task with the tunnel.
@@ -72,27 +94,38 @@ async fn resolve_live(client: Client, t: ForwardTarget, remote_port: u16) -> Res
             return Ok((pod.metadata.name.clone().unwrap_or_default(), port));
         }
         // Like `kubectl port-forward deploy/x`: the workload's selector picks the pods.
-        Kind::Deployment => Api::<Deployment>::namespaced(client, &t.namespace)
-            .get(&t.name)
-            .await
-            .map_err(failed)?
-            .spec
-            .and_then(|s| s.selector.match_labels),
-        Kind::StatefulSet => Api::<StatefulSet>::namespaced(client, &t.namespace)
-            .get(&t.name)
-            .await
-            .map_err(failed)?
-            .spec
-            .and_then(|s| s.selector.match_labels),
-        Kind::DaemonSet => Api::<DaemonSet>::namespaced(client, &t.namespace)
-            .get(&t.name)
-            .await
-            .map_err(failed)?
-            .spec
-            .and_then(|s| s.selector.match_labels),
+        Kind::Deployment => {
+            let selector = Api::<Deployment>::namespaced(client, &t.namespace)
+                .get(&t.name)
+                .await
+                .map_err(failed)?
+                .spec
+                .map(|s| s.selector)
+                .unwrap_or_default();
+            workload_labels(selector)?
+        }
+        Kind::StatefulSet => {
+            let selector = Api::<StatefulSet>::namespaced(client, &t.namespace)
+                .get(&t.name)
+                .await
+                .map_err(failed)?
+                .spec
+                .map(|s| s.selector)
+                .unwrap_or_default();
+            workload_labels(selector)?
+        }
+        Kind::DaemonSet => {
+            let selector = Api::<DaemonSet>::namespaced(client, &t.namespace)
+                .get(&t.name)
+                .await
+                .map_err(failed)?
+                .spec
+                .map(|s| s.selector)
+                .unwrap_or_default();
+            workload_labels(selector)?
+        }
         other => return Err(ConnectError::Failed(format!("{} cannot be port-forwarded", other.as_str()))),
-    }
-    .unwrap_or_default();
+    };
     let list = list_pods(&pods, &labels).await?;
     let pod = pick_pod(&list).ok_or(ConnectError::NoReadyPod)?;
     Ok((pod.metadata.name.clone().unwrap_or_default(), remote_port))
@@ -111,11 +144,58 @@ impl Connector for KubeConnector {
             let stream = pf
                 .take_stream(port)
                 .ok_or_else(|| ConnectError::Failed(format!("no stream for port {port}")))?;
+            let error = pf.take_error(port).map(|f| Box::pin(f) as BoxFuture<'static, Option<String>>);
             Ok(Tunnel {
+                error,
                 stream: Box::new(stream),
                 keep: Box::new(AbortOnDropPf(pf)),
             })
         }
         .boxed()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use k8s_openapi::apimachinery::pkg::apis::meta::v1::LabelSelectorRequirement;
+
+    fn msg(e: ConnectError) -> String {
+        match e {
+            ConnectError::Failed(m) => m,
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_forbidden_upgrade_names_the_missing_permission() {
+        let e = kube::Error::UpgradeConnection(kube::client::UpgradeConnectionError::ProtocolSwitch(http::StatusCode::FORBIDDEN));
+        assert_eq!(msg(failed(e)), "forbidden (pods/portforward)");
+        let api = kube::Error::Api(Box::new(kube::core::Status::failure("no", "Forbidden").with_code(403)));
+        assert_eq!(msg(failed(api)), "forbidden (pods/portforward)");
+        let other = kube::Error::UpgradeConnection(kube::client::UpgradeConnectionError::ProtocolSwitch(http::StatusCode::BAD_GATEWAY));
+        assert!(msg(failed(other)).contains("502"));
+    }
+
+    #[test]
+    fn match_expressions_only_selectors_are_reported() {
+        let only_exprs = LabelSelector {
+            match_expressions: Some(vec![LabelSelectorRequirement {
+                key: "app".into(),
+                operator: "Exists".into(),
+                values: None,
+            }]),
+            ..Default::default()
+        };
+        assert_eq!(
+            msg(workload_labels(only_exprs).unwrap_err()),
+            "unsupported selector (matchExpressions)"
+        );
+        let labels = LabelSelector {
+            match_labels: Some(BTreeMap::from([("app".to_string(), "x".to_string())])),
+            ..Default::default()
+        };
+        assert_eq!(workload_labels(labels).unwrap().len(), 1);
+        assert!(workload_labels(LabelSelector::default()).unwrap().is_empty());
     }
 }
