@@ -70,6 +70,13 @@ If the object changed on the server while you were editing, you can **Reload** (
 
 **+ Create** in the header starts from a template for any watched kind. The trash icon in the details panel deletes an object after confirmation. On a pod group it deletes every member pod, and the controller recreates them.
 
+**Rollout actions.** **Actions ▾** in the details panel, or a right-click on a graph node or a table row, opens the actions for the object:
+- **Scale…** (Deployments, StatefulSets) sets the replica count. When a HorizontalPodAutoscaler manages the workload, the dialog warns that it will override the value.
+- **Restart** (Deployments, StatefulSets, DaemonSets) replaces the pods the way `kubectl rollout restart` does.
+- **Rollback…** opens the **History** tab. Pick a revision to see its pod template diff, then roll back to it.
+
+While a rollout runs, the node shows `rolling updated/desired`. A Deployment that misses its progress deadline turns red, and Overview shows why.
+
 **Logs.** Pods and workloads (Deployment, StatefulSet, DaemonSet, Job, CronJob and pod groups) get a **Logs** tab:
 - It shows the last 500 lines of each container and then follows live output.
 - A workload's pods are merged into one view, each line prefixed with a coloured `[pod/container]` tag.
