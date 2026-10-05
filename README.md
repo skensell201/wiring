@@ -49,6 +49,7 @@ Wiring reads your kubeconfig from `~/.kube/config`, or from `KUBECONFIG` when it
 - Filter it by kind with the chips under the title, or search it with <kbd>⌘K</kbd> / <kbd>Ctrl+K</kbd>.
 - Pods that belong to the same owner collapse into one group. Double-click a group to expand it.
 - Status dots and badges show what is healthy, degraded or failing.
+- Select a yellow or red object to see why. Overview starts with the reason and the Kubernetes message behind it, followed by the chain of objects that leads to the root cause (for example Deployment → Pod → `ImagePullBackOff`). The same chain is highlighted on the graph.
 
 **Navigator.** The left sidebar lists every kubeconfig context and the resources of the selected namespace by category: Workloads, Config, Network, Storage and Access Control. Each kind shows a live count and the worst status among its objects. Kinds your RBAC role cannot read are struck through instead of failing. The sidebar collapses to an icon rail.
 
