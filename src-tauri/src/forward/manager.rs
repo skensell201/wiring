@@ -48,8 +48,12 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// Snapshot and emit under one lock hold: emitters only queue the event (a channel send or a
+/// Tauri emit), so lists reach the frontend in the order of the states they describe and a stale
+/// one cannot overtake a newer one. Emitters must not call back into the manager.
 fn publish(infos: &Infos, emitter: &dyn Emitter) {
-    let list: Vec<Forward> = lock(infos).values().cloned().collect();
+    let guard = lock(infos);
+    let list: Vec<Forward> = guard.values().cloned().collect();
     emitter.emit(OutEvent::ForwardsChanged(list));
 }
 
@@ -528,6 +532,38 @@ mod tests {
         m.start("Service/ns/web", svc(), "Service web".into(), 80, port).unwrap();
         assert_eq!(&ping(port).await.unwrap(), b"ping");
         drop(c);
+    }
+
+    /// Records the lists it is given in arrival order; a list with a resolved pod takes a while to deliver.
+    struct SlowEmitter(Arc<Mutex<Vec<Vec<Forward>>>>);
+    impl Emitter for SlowEmitter {
+        fn emit(&self, event: OutEvent) {
+            if let OutEvent::ForwardsChanged(list) = event {
+                if list.iter().any(|f| f.pod.is_some()) {
+                    std::thread::sleep(Duration::from_millis(200));
+                }
+                lock(&self.0).push(list);
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_stale_list_is_never_emitted_after_stops() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let fake = Arc::new(Fake {
+            next: Mutex::new(Ok(("web-1".into(), 8080))),
+            hang: Default::default(),
+            gate: None,
+            stream_error: None,
+        });
+        let mut m = ForwardManager::new(fake, Arc::new(SlowEmitter(seen.clone())));
+        let f = m.start("Service/ns/web", svc(), "Service web".into(), 80, free_port()).unwrap();
+        // The first resolve is now mid-delivery of its "pod resolved" list.
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        m.stop(f.id).await;
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        let seen = lock(&seen);
+        assert_eq!(seen.last(), Some(&vec![]), "{seen:?}");
     }
 
     #[tokio::test(start_paused = true)]
