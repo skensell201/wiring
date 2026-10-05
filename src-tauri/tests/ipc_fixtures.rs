@@ -244,3 +244,22 @@ fn revision() {
         },
     );
 }
+
+#[test]
+fn forward_and_port_option() {
+    use wiring_lib::forward::{Forward, ForwardStatus, PortOption};
+    assert_matches(
+        "forward",
+        &Forward {
+            id: 1,
+            node_id: "Service/shop/web".into(),
+            target_label: "Service web".into(),
+            remote_port: 80,
+            local_port: 8080,
+            pod: Some("web-6f8d6c8667-2m5mh".into()),
+            status: ForwardStatus::Active,
+            message: None,
+        },
+    );
+    assert_matches("port_option", &PortOption { port: 8080, label: "8080 → http (web)".into() });
+}

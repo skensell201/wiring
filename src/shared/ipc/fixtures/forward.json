@@ -1,0 +1,10 @@
+{
+  "id": 1,
+  "nodeId": "Service/shop/web",
+  "targetLabel": "Service web",
+  "remotePort": 80,
+  "localPort": 8080,
+  "pod": "web-6f8d6c8667-2m5mh",
+  "status": "active",
+  "message": null
+}
