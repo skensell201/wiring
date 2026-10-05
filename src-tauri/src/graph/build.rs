@@ -315,6 +315,10 @@ fn group_problem(members: &[Node], worst: Status, count: usize) -> Option<Proble
 /// Point each delegating problem at the neighbour to blame: the worst-status (Warn/Err) target of
 /// a workload's `owns` edges or a Service's `selects` edges; ties go to the smallest id.
 fn link_causes(nodes: &mut HashMap<NodeId, Node>, edges: &[Edge]) {
+    let mut outgoing: HashMap<(&str, Relation), Vec<&str>> = HashMap::new();
+    for e in edges {
+        outgoing.entry((e.source.as_str(), e.relation)).or_default().push(e.target.as_str());
+    }
     let links: Vec<(NodeId, NodeId)> = nodes
         .values()
         .filter(|n| n.problem.is_some())
@@ -324,10 +328,10 @@ fn link_causes(nodes: &mut HashMap<NodeId, Node>, edges: &[Edge]) {
                 Kind::Service => Relation::Selects,
                 _ => return None,
             };
-            edges
+            outgoing
+                .get(&(n.id.as_str(), relation))?
                 .iter()
-                .filter(|e| e.source == n.id && e.relation == relation)
-                .filter_map(|e| nodes.get(&e.target))
+                .filter_map(|t| nodes.get(*t))
                 .filter(|t| t.status >= Status::Warn)
                 .max_by(|a, b| a.status.cmp(&b.status).then_with(|| b.id.cmp(&a.id)))
                 .map(|t| (n.id.clone(), t.id.clone()))
@@ -688,5 +692,128 @@ status: { phase: Pending, containerStatuses: [ { name: c, ready: false, restartC
             Some(("1 of 2 pods: Error".into(), Some("y: container c: exit code 2".into())))
         );
         assert_eq!(group_problem(&members, Status::Ok, 6), None);
+    }
+
+    fn failing_pods(n: usize, ns: &str, owner_kind: &str, owner: &str, uid: &str, label: &str) -> String {
+        (0..n)
+            .map(|i| {
+                format!(
+                    r#"---
+apiVersion: v1
+kind: Pod
+metadata: {{ name: {owner}-p{i}, namespace: {ns}, labels: {{ app: {label} }}, ownerReferences: [ {{ apiVersion: apps/v1, kind: {owner_kind}, name: {owner}, uid: {uid}, controller: true }} ] }}
+spec: {{ containers: [ {{ name: c, image: x }} ] }}
+status: {{ phase: Pending, conditions: [ {{ type: Ready, status: "False" }} ], containerStatuses: [ {{ name: c, ready: false, restartCount: 0, image: x, imageID: "", state: {{ waiting: {{ reason: ErrImagePull }} }} }} ] }}
+"#
+                )
+            })
+            .collect()
+    }
+
+    fn deployment_yaml(name: &str, ns: &str, uid: &str, status: &str) -> String {
+        format!(
+            r#"---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {{ name: {name}, namespace: {ns}, uid: {uid} }}
+spec:
+  replicas: 2
+  selector: {{ matchLabels: {{ app: {name} }} }}
+  template: {{ metadata: {{ labels: {{ app: {name} }} }}, spec: {{ containers: [ {{ name: c, image: x }} ] }} }}
+status: {status}
+"#
+        )
+    }
+
+    fn replicaset_yaml(name: &str, ns: &str, uid: &str, dep: &str, dep_uid: &str, ready: u32) -> String {
+        format!(
+            r#"---
+apiVersion: apps/v1
+kind: ReplicaSet
+metadata: {{ name: {name}, namespace: {ns}, uid: {uid}, ownerReferences: [ {{ apiVersion: apps/v1, kind: Deployment, name: {dep}, uid: {dep_uid}, controller: true }} ] }}
+spec:
+  replicas: 2
+  selector: {{ matchLabels: {{ app: {dep} }} }}
+  template: {{ metadata: {{ labels: {{ app: {dep} }} }}, spec: {{ containers: [ {{ name: c, image: x }} ] }} }}
+status: {{ replicas: 2, readyReplicas: {ready} }}
+"#
+        )
+    }
+
+    fn service_yaml(name: &str, ns: &str, label: &str) -> String {
+        format!(
+            "---\napiVersion: v1\nkind: Service\nmetadata: {{ name: {name}, namespace: {ns} }}\nspec: {{ selector: {{ app: {label} }}, ports: [ {{ port: 80 }} ] }}\n"
+        )
+    }
+
+    #[test]
+    fn a_service_points_at_its_worst_unready_pod() {
+        let yaml = format!(
+            "{}{}",
+            service_yaml("svc", "s", "web"),
+            failing_pods(2, "s", "ReplicaSet", "orphan", "u", "web")
+        );
+        let g = build(&Store::from_yaml_docs(&yaml).unwrap(), &BuildOptions::default());
+        let p = problem(&g, "Service/s/svc").expect("service has a problem");
+        assert_eq!(p.cause.as_deref(), Some("Pod/s/orphan-p0"), "ties go to the smallest id");
+    }
+
+    #[test]
+    fn a_service_points_at_the_pod_group_when_pods_collapse() {
+        let yaml = format!(
+            "{}{}{}",
+            service_yaml("svc", "s", "web"),
+            replicaset_yaml("orphan", "s", "u", "nodep", "x", 0),
+            failing_pods(7, "s", "ReplicaSet", "orphan", "u", "web")
+        );
+        let g = build(&Store::from_yaml_docs(&yaml).unwrap(), &BuildOptions::default());
+        let cause = problem(&g, "Service/s/svc").and_then(|p| p.cause.as_deref());
+        assert_eq!(cause, Some("PodGroup/s/ReplicaSet/orphan"));
+        assert!(g.node(cause.unwrap()).is_some());
+    }
+
+    #[test]
+    fn progress_deadline_exceeded_still_points_at_the_failing_pods() {
+        let status = r#"{ replicas: 2, readyReplicas: 0, conditions: [ { type: Progressing, status: "False", reason: ProgressDeadlineExceeded, message: "timed out" } ] }"#;
+        let yaml = format!(
+            "{}{}{}",
+            deployment_yaml("dl", "d", "dep-dl", status),
+            replicaset_yaml("dl-1", "d", "rs-dl", "dl", "dep-dl", 0),
+            failing_pods(2, "d", "ReplicaSet", "dl-1", "rs-dl", "dl")
+        );
+        let g = build(&Store::from_yaml_docs(&yaml).unwrap(), &BuildOptions::default());
+        let p = problem(&g, "Deployment/d/dl").expect("deployment has a problem");
+        assert_eq!(p.reason, "ProgressDeadlineExceeded");
+        assert_eq!(p.cause.as_deref(), Some("Pod/d/dl-1-p0"));
+
+        let yaml = format!(
+            "{}{}{}",
+            deployment_yaml("dl", "d", "dep-dl", status),
+            replicaset_yaml("dl-1", "d", "rs-dl", "dl", "dep-dl", 0),
+            failing_pods(7, "d", "ReplicaSet", "dl-1", "rs-dl", "dl")
+        );
+        let g = build(&Store::from_yaml_docs(&yaml).unwrap(), &BuildOptions::default());
+        let cause = problem(&g, "Deployment/d/dl").and_then(|p| p.cause.as_deref());
+        assert_eq!(cause, Some("PodGroup/d/Deployment/dl"));
+        assert!(g.node(cause.unwrap()).is_some());
+    }
+
+    #[test]
+    fn a_rollout_points_at_the_worse_visible_replicaset() {
+        let yaml = format!(
+            "{}{}{}{}",
+            deployment_yaml("ro", "r", "dep-ro", "{ replicas: 2, readyReplicas: 1 }"),
+            replicaset_yaml("ro-a", "r", "rs-a", "ro", "dep-ro", 2),
+            replicaset_yaml("ro-b", "r", "rs-b", "ro", "dep-ro", 0),
+            failing_pods(2, "r", "ReplicaSet", "ro-b", "rs-b", "ro")
+        );
+        let g = build(&Store::from_yaml_docs(&yaml).unwrap(), &BuildOptions::default());
+        assert!(g.node("ReplicaSet/r/ro-a").is_some() && g.node("ReplicaSet/r/ro-b").is_some());
+        assert!(g.node("ReplicaSet/r/ro-b").unwrap().status >= Status::Warn);
+        assert_eq!(g.node("ReplicaSet/r/ro-a").unwrap().status, Status::Ok);
+        assert_eq!(
+            problem(&g, "Deployment/r/ro").and_then(|p| p.cause.as_deref()),
+            Some("ReplicaSet/r/ro-b")
+        );
     }
 }
