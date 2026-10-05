@@ -5,7 +5,8 @@ use k8s_openapi::jiff;
 use serde::{Deserialize, Serialize};
 
 use super::model::{node_id, NodeId, Status};
-use super::status::describe;
+use super::status::describe_with;
+use crate::metrics::usage::PodIndex;
 use crate::store::{Kind, Object, Store};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -177,12 +178,17 @@ pub fn columns(kind: Kind) -> Vec<TableColumn> {
 /// Build the table for `kind` from the store. Rows sorted by name.
 pub fn table(store: &Store, kind: Kind, now: jiff::Timestamp) -> Table {
     let columns = columns(kind);
+    let pods = if crate::metrics::usage::has_usage(kind) {
+        PodIndex::new(store)
+    } else {
+        PodIndex::default()
+    };
     let mut rows: Vec<TableRow> = store
         .iter_kind(kind)
         .map(|obj| {
-            let (status, badges) = describe(obj, store);
+            let (status, badges) = describe_with(obj, store, &pods);
             let mut cells = vec![plain(obj.name())];
-            cells.extend(kind_cells(obj, store, &badges, status, now));
+            cells.extend(kind_cells(obj, store, &pods, &badges, status, now));
             TableRow {
                 node_id: node_id(kind, obj.namespace(), obj.name()),
                 status,
@@ -204,10 +210,17 @@ fn join<T: ToString>(items: Option<&Vec<T>>) -> String {
         .unwrap_or_default()
 }
 
-fn kind_cells(obj: &Object, store: &Store, badges: &[String], status: Status, now: jiff::Timestamp) -> Vec<TableCell> {
+fn kind_cells<'a>(
+    obj: &'a Object,
+    store: &'a Store,
+    pods: &PodIndex<'a>,
+    badges: &[String],
+    status: Status,
+    now: jiff::Timestamp,
+) -> Vec<TableCell> {
     let created = obj.meta().creation_timestamp.as_ref();
     let age_cell = plain(age(created, now));
-    let (cpu, memory) = crate::metrics::usage::usage_cells(store, obj);
+    let (cpu, memory) = crate::metrics::usage::usage_cells(store, pods, obj);
     let (cpu, memory) = (plain(cpu), plain(memory));
     match obj {
         Object::Pod(p) => {

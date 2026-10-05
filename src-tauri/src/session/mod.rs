@@ -445,7 +445,11 @@ pub fn object_details(store: &Store, graph: &Graph, node_id: &str) -> AppResult<
         .find(kind, ns.as_deref(), &name)
         .ok_or_else(|| AppError::new(ErrorKind::NotFound, format!("{node_id} not in store")))?;
     let mut details = details_of(obj, related)?;
-    details.summary.extend(crate::metrics::usage::usage_rows(store, obj));
+    details.summary.extend(crate::metrics::usage::usage_rows(
+        store,
+        &crate::metrics::usage::PodIndex::new(store),
+        obj,
+    ));
     Ok(details)
 }
 

@@ -10,6 +10,7 @@ use k8s_openapi::api::networking::v1::Ingress;
 
 use super::model::{Problem, Status};
 use super::relations::ingress_backend_names;
+use crate::metrics::usage::PodIndex;
 use crate::store::{Kind, Object, Store};
 
 pub type Badges = Vec<String>;
@@ -18,8 +19,19 @@ pub type SummaryRows = Vec<(String, String)>;
 /// Status + badges shown on the node card. A pod or workload at >= 80 % of a limit gets its usage
 /// badge last, so badges[0] (ready/desired, a pod's reason, an HPA's min-max) keeps its meaning.
 pub fn describe(obj: &Object, store: &Store) -> (Status, Badges) {
+    // A pod stands for itself; only a workload needs the index, so only it pays to build one.
+    let index = if matches!(obj, Object::Pod(_)) {
+        PodIndex::default()
+    } else {
+        PodIndex::new(store)
+    };
+    describe_with(obj, store, &index)
+}
+
+/// `describe` with a pod index shared by the caller, for loops over many objects.
+pub fn describe_with<'a>(obj: &'a Object, store: &'a Store, index: &PodIndex<'a>) -> (Status, Badges) {
     let (status, mut badges) = base_describe(obj, store);
-    if let Some(b) = crate::metrics::usage::usage_badge(store, obj) {
+    if let Some(b) = crate::metrics::usage::usage_badge(store, index, obj) {
         badges.push(b);
     }
     (status, badges)

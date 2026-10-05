@@ -4,7 +4,8 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use super::model::{node_id, Edge, Graph, GroupInfo, Node, NodeId, Problem, Relation, Status};
 use super::relations::all_edges;
-use super::status::{describe, problem as own_problem};
+use super::status::{describe_with, problem as own_problem};
+use crate::metrics::usage::PodIndex;
 use crate::store::{Kind, Object, ObjectKey, Store};
 
 #[derive(Debug, Clone)]
@@ -25,13 +26,14 @@ impl Default for BuildOptions {
 
 pub fn build(store: &Store, opts: &BuildOptions) -> Graph {
     let mut nodes: HashMap<NodeId, Node> = HashMap::new();
+    let pods = PodIndex::new(store);
     for obj in store.iter() {
         // Must run before `hide_single_replicasets`, which counts a Deployment's *remaining*
         // ReplicaSet children: a stale RS has to be excluded from that count, not hidden by it.
         if is_stale_replicaset(obj) {
             continue;
         }
-        let (status, badges) = describe(obj, store);
+        let (status, badges) = describe_with(obj, store, &pods);
         let problem = own_problem(obj, status, store);
         let id = node_id(obj.kind(), obj.namespace(), obj.name());
         nodes.insert(

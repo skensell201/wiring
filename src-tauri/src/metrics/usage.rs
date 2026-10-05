@@ -1,10 +1,12 @@
 //! Usage against requests and limits, for pods and the workloads that own them.
 
+use std::collections::{HashMap, HashSet};
+
 use k8s_openapi::api::core::v1::{Container, Pod};
 
 use super::quantity::{cpu_millis, fmt_cpu, fmt_memory, memory_bytes};
 use super::{MetricsState, PodUsage};
-use crate::graph::build::{is_owned_by, OWNER_CHAIN_DEPTH};
+use crate::graph::build::OWNER_CHAIN_DEPTH;
 use crate::store::{Kind, Object, Store};
 
 /// Usage at or above this share of a limit earns the node a badge.
@@ -15,28 +17,65 @@ pub fn has_usage(kind: Kind) -> bool {
     matches!(kind, Kind::Pod | Kind::Deployment | Kind::StatefulSet | Kind::DaemonSet)
 }
 
-/// The pods `obj` stands for: itself for a Pod, the pods it owns for a workload.
-fn pods_of<'a>(store: &'a Store, obj: &'a Object) -> Vec<&'a Pod> {
-    match obj {
-        Object::Pod(p) => vec![p],
-        Object::Deployment(_) | Object::StatefulSet(_) | Object::DaemonSet(_) => store
-            .iter_kind(Kind::Pod)
-            .filter(|p| is_owned_by(store, p, obj.kind(), obj.name(), OWNER_CHAIN_DEPTH))
-            .filter_map(|p| match p {
-                Object::Pod(p) => Some(p),
-                _ => None,
-            })
-            .collect(),
-        _ => vec![],
+/// Which pods each workload owns, built once per graph build (or table, or details request) so
+/// the per-workload lookups are not a scan of every pod through `is_owned_by`.
+#[derive(Default)]
+pub struct PodIndex<'a> {
+    /// `(namespace, kind, name)` of every controller a pod's ownerReferences chain reaches
+    /// (`OWNER_CHAIN_DEPTH` levels, as `is_owned_by` walks) -> the pods below it.
+    owned: HashMap<(Option<&'a str>, Kind, &'a str), Vec<&'a Pod>>,
+}
+
+impl<'a> PodIndex<'a> {
+    pub fn new(store: &'a Store) -> Self {
+        let mut owned: HashMap<_, Vec<&'a Pod>> = HashMap::new();
+        for obj in store.iter_kind(Kind::Pod) {
+            let Object::Pod(pod) = obj else { continue };
+            let mut owners = HashSet::new();
+            collect_owners(store, obj, OWNER_CHAIN_DEPTH, &mut owners);
+            for (kind, name) in owners {
+                owned.entry((obj.namespace(), kind, name)).or_default().push(pod);
+            }
+        }
+        Self { owned }
+    }
+
+    /// The pods `obj` stands for: itself for a Pod, the pods it owns for a workload.
+    pub fn pods_of(&self, obj: &'a Object) -> Vec<&'a Pod> {
+        match obj {
+            Object::Pod(p) => vec![p],
+            Object::Deployment(_) | Object::StatefulSet(_) | Object::DaemonSet(_) => self
+                .owned
+                .get(&(obj.namespace(), obj.kind(), obj.name()))
+                .cloned()
+                .unwrap_or_default(),
+            _ => vec![],
+        }
+    }
+}
+
+/// Every `(kind, name)` in `obj`'s ownerReferences, and in its parents' up to `depth` levels —
+/// the set `is_owned_by` searches.
+fn collect_owners<'a>(store: &'a Store, obj: &'a Object, depth: usize, out: &mut HashSet<(Kind, &'a str)>) {
+    if depth == 0 {
+        return;
+    }
+    for r in obj.meta().owner_references.as_deref().unwrap_or_default() {
+        let Some(kind) = Kind::parse(&r.kind) else { continue };
+        out.insert((kind, r.name.as_str()));
+        if let Some(parent) = store.find(kind, obj.namespace(), &r.name) {
+            collect_owners(store, parent, depth - 1, out);
+        }
     }
 }
 
 /// The summed usage of `obj`'s pods that have a sample; `None` when none has one.
-pub fn usage(store: &Store, obj: &Object) -> Option<PodUsage> {
+pub fn usage<'a>(store: &'a Store, index: &PodIndex<'a>, obj: &'a Object) -> Option<PodUsage> {
     if store.metrics.state != MetricsState::Available || !has_usage(obj.kind()) {
         return None;
     }
-    pods_of(store, obj)
+    index
+        .pods_of(obj)
         .into_iter()
         .filter_map(|p| p.metadata.name.as_deref().and_then(|n| store.metrics.pods.get(n)))
         .copied()
@@ -68,8 +107,9 @@ fn total(containers: &[&Container], pick: impl Fn(&Container) -> Option<u64>) ->
     containers.iter().map(|c| pick(c)).sum()
 }
 
-pub fn resources(store: &Store, obj: &Object) -> Resources {
-    let containers: Vec<&Container> = pods_of(store, obj)
+pub fn resources<'a>(store: &'a Store, index: &PodIndex<'a>, obj: &'a Object) -> Resources {
+    let containers: Vec<&Container> = index
+        .pods_of(obj)
         .into_iter()
         .filter(|p| p.metadata.name.as_deref().is_some_and(|n| store.metrics.pods.contains_key(n)))
         .filter_map(|p| p.spec.as_ref())
@@ -89,8 +129,8 @@ fn percent(used: u64, of: u64) -> Option<u64> {
 }
 
 /// The table's CPU and Memory cells: `kubectl top` values, `—` without a sample.
-pub fn usage_cells(store: &Store, obj: &Object) -> (String, String) {
-    match usage(store, obj) {
+pub fn usage_cells<'a>(store: &'a Store, index: &PodIndex<'a>, obj: &'a Object) -> (String, String) {
+    match usage(store, index, obj) {
         Some(u) => (fmt_cpu(u.cpu_millis), fmt_memory(u.memory_bytes)),
         None => ("—".into(), "—".into()),
     }
@@ -113,7 +153,7 @@ fn line(used: u64, request: Option<u64>, limit: Option<u64>, fmt: fn(u64) -> Str
 
 /// Overview rows for `obj`'s usage, or one `Usage` row saying why there is none. Empty for kinds
 /// without usage.
-pub fn usage_rows(store: &Store, obj: &Object) -> Vec<(String, String)> {
+pub fn usage_rows<'a>(store: &'a Store, index: &PodIndex<'a>, obj: &'a Object) -> Vec<(String, String)> {
     if !has_usage(obj.kind()) {
         return vec![];
     }
@@ -124,10 +164,10 @@ pub fn usage_rows(store: &Store, obj: &Object) -> Vec<(String, String)> {
         MetricsState::Forbidden => return note("No access to pod metrics (RBAC)"),
         MetricsState::Available => {}
     }
-    let Some(used) = usage(store, obj) else {
+    let Some(used) = usage(store, index, obj) else {
         return note("no sample yet");
     };
-    let r = resources(store, obj);
+    let r = resources(store, index, obj);
     vec![
         ("CPU usage".into(), line(used.cpu_millis, r.cpu_request, r.cpu_limit, fmt_cpu)),
         (
@@ -139,9 +179,9 @@ pub fn usage_rows(store: &Store, obj: &Object) -> Vec<(String, String)> {
 
 /// `mem 92%` / `cpu 85%` once usage reaches 80 % of a limit — the higher of the two, memory on a
 /// tie (an OOM kill hurts more than throttling).
-pub fn usage_badge(store: &Store, obj: &Object) -> Option<String> {
-    let used = usage(store, obj)?;
-    let r = resources(store, obj);
+pub fn usage_badge<'a>(store: &'a Store, index: &PodIndex<'a>, obj: &'a Object) -> Option<String> {
+    let used = usage(store, index, obj)?;
+    let r = resources(store, index, obj);
     let hot = |used: u64, limit: Option<u64>, label: &'static str| {
         let limit = limit.filter(|&l| l > 0 && used * 100 >= l * BADGE_PERCENT)?;
         Some((percent(used, limit)?, label))
@@ -160,6 +200,7 @@ pub fn usage_badge(store: &Store, obj: &Object) -> Option<String> {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::graph::build::is_owned_by;
     use crate::metrics::{MetricsSample, MetricsState, PodUsage};
 
     const MI: u64 = 1 << 20;
@@ -197,28 +238,32 @@ pub(crate) mod tests {
     fn workloads_sum_the_pods_they_own() {
         let s = sampled();
         assert_eq!(
-            usage(&s, obj(&s, Kind::Deployment, "api")),
+            usage(&s, &PodIndex::new(&s), obj(&s, Kind::Deployment, "api")),
             Some(PodUsage {
                 cpu_millis: 200,
                 memory_bytes: 100 * MI
             })
         );
         assert_eq!(
-            usage(&s, obj(&s, Kind::StatefulSet, "db")),
+            usage(&s, &PodIndex::new(&s), obj(&s, Kind::StatefulSet, "db")),
             Some(PodUsage {
                 cpu_millis: 50,
                 memory_bytes: 128 * MI
             })
         );
-        assert_eq!(usage(&s, obj(&s, Kind::Pod, "unsampled")), None);
-        assert_eq!(usage(&s, obj(&s, Kind::ReplicaSet, "api-1")), None, "ReplicaSets carry no usage");
+        assert_eq!(usage(&s, &PodIndex::new(&s), obj(&s, Kind::Pod, "unsampled")), None);
+        assert_eq!(
+            usage(&s, &PodIndex::new(&s), obj(&s, Kind::ReplicaSet, "api-1")),
+            None,
+            "ReplicaSets carry no usage"
+        );
     }
 
     #[test]
     fn requests_and_limits_are_summed_and_absent_when_any_container_lacks_them() {
         let s = sampled();
         assert_eq!(
-            resources(&s, obj(&s, Kind::Deployment, "api")),
+            resources(&s, &PodIndex::new(&s), obj(&s, Kind::Deployment, "api")),
             Resources {
                 cpu_request: Some(200),
                 cpu_limit: Some(1000),
@@ -227,7 +272,7 @@ pub(crate) mod tests {
             }
         );
         assert_eq!(
-            resources(&s, obj(&s, Kind::StatefulSet, "db")),
+            resources(&s, &PodIndex::new(&s), obj(&s, Kind::StatefulSet, "db")),
             Resources {
                 cpu_request: Some(100),
                 cpu_limit: None,
@@ -235,22 +280,31 @@ pub(crate) mod tests {
                 memory_limit: None
             }
         );
-        assert_eq!(resources(&s, obj(&s, Kind::Pod, "free")), Resources::default());
+        assert_eq!(resources(&s, &PodIndex::new(&s), obj(&s, Kind::Pod, "free")), Resources::default());
     }
 
     #[test]
     fn cells_print_like_kubectl_top_or_a_dash() {
         let s = sampled();
-        assert_eq!(usage_cells(&s, obj(&s, Kind::Deployment, "api")), ("200m".into(), "100Mi".into()));
-        assert_eq!(usage_cells(&s, obj(&s, Kind::Pod, "unsampled")), ("—".into(), "—".into()));
+        assert_eq!(
+            usage_cells(&s, &PodIndex::new(&s), obj(&s, Kind::Deployment, "api")),
+            ("200m".into(), "100Mi".into())
+        );
+        assert_eq!(
+            usage_cells(&s, &PodIndex::new(&s), obj(&s, Kind::Pod, "unsampled")),
+            ("—".into(), "—".into())
+        );
         let pending = Store::from_fixture("metrics").unwrap();
-        assert_eq!(usage_cells(&pending, obj(&pending, Kind::Pod, "hot")), ("—".into(), "—".into()));
+        assert_eq!(
+            usage_cells(&pending, &PodIndex::new(&pending), obj(&pending, Kind::Pod, "hot")),
+            ("—".into(), "—".into())
+        );
     }
 
     #[test]
     fn overview_rows_show_usage_against_requests_and_limits() {
         let s = sampled();
-        let rows = |kind, name| usage_rows(&s, obj(&s, kind, name));
+        let rows = |kind, name| usage_rows(&s, &PodIndex::new(&s), obj(&s, kind, name));
         assert_eq!(
             rows(Kind::Deployment, "api"),
             vec![
@@ -276,7 +330,7 @@ pub(crate) mod tests {
             rows(Kind::Pod, "unsampled"),
             vec![("Usage".to_string(), "no sample yet".to_string())]
         );
-        assert!(usage_rows(&s, obj(&s, Kind::ReplicaSet, "api-1")).is_empty());
+        assert!(usage_rows(&s, &PodIndex::new(&s), obj(&s, Kind::ReplicaSet, "api-1")).is_empty());
     }
 
     #[test]
@@ -289,7 +343,7 @@ pub(crate) mod tests {
             let mut s = Store::from_fixture("metrics").unwrap();
             s.metrics.state = state;
             assert_eq!(
-                usage_rows(&s, obj(&s, Kind::Pod, "hot")),
+                usage_rows(&s, &PodIndex::new(&s), obj(&s, Kind::Pod, "hot")),
                 vec![("Usage".to_string(), text.to_string())]
             );
         }
@@ -298,7 +352,7 @@ pub(crate) mod tests {
     #[test]
     fn a_badge_appears_at_80_percent_of_a_limit() {
         let s = sampled();
-        let badge = |kind, name| usage_badge(&s, obj(&s, kind, name));
+        let badge = |kind, name| usage_badge(&s, &PodIndex::new(&s), obj(&s, kind, name));
         assert_eq!(badge(Kind::Pod, "hot"), Some("mem 92%".into()));
         assert_eq!(badge(Kind::Pod, "tie"), Some("mem 90%".into()), "memory wins a tie");
         assert_eq!(badge(Kind::Pod, "cpuhot"), Some("cpu 85%".into()));
@@ -341,7 +395,7 @@ pub(crate) mod tests {
         let s = half_sampled();
         let web = obj(&s, Kind::StatefulSet, "web");
         assert_eq!(
-            resources(&s, web),
+            resources(&s, &PodIndex::new(&s), web),
             Resources {
                 cpu_request: Some(100),
                 cpu_limit: Some(200),
@@ -350,7 +404,44 @@ pub(crate) mod tests {
             },
             "web-1 has no sample, so its resources are left out like its usage"
         );
-        assert_eq!(usage_badge(&s, web), Some("mem 90%".into()));
-        assert_eq!(usage_rows(&s, web)[1].1, "90Mi / req 50Mi / lim 100Mi (90%)");
+        assert_eq!(usage_badge(&s, &PodIndex::new(&s), web), Some("mem 90%".into()));
+        assert_eq!(usage_rows(&s, &PodIndex::new(&s), web)[1].1, "90Mi / req 50Mi / lim 100Mi (90%)");
+    }
+
+    #[test]
+    fn the_pod_index_finds_the_pods_is_owned_by_does() {
+        for fixture in [
+            "metrics",
+            "deployment-basic",
+            "podgroup",
+            "relations",
+            "rolling",
+            "rollout",
+            "statuses",
+            "history",
+        ] {
+            let s = Store::from_fixture(fixture).unwrap();
+            let index = PodIndex::new(&s);
+            for w in s
+                .iter()
+                .filter(|o| matches!(o, Object::Deployment(_) | Object::StatefulSet(_) | Object::DaemonSet(_)))
+            {
+                let mut want: Vec<&str> = s
+                    .iter_kind(Kind::Pod)
+                    .filter(|p| p.namespace() == w.namespace() && is_owned_by(&s, p, w.kind(), w.name(), OWNER_CHAIN_DEPTH))
+                    .map(Object::name)
+                    .collect();
+                let mut got: Vec<&str> = index.pods_of(w).iter().map(|p| p.metadata.name.as_deref().unwrap()).collect();
+                want.sort();
+                got.sort();
+                assert_eq!(got, want, "{fixture}: {:?}/{}", w.kind(), w.name());
+            }
+        }
+        // The chain Deployment -> ReplicaSet -> Pod is among them.
+        let s = Store::from_fixture("metrics").unwrap();
+        let api = s.find(Kind::Deployment, Some("m"), "api").unwrap();
+        assert_eq!(PodIndex::new(&s).pods_of(api).len(), 2);
+        let pod = s.find(Kind::Pod, Some("m"), "hot").unwrap();
+        assert_eq!(PodIndex::new(&s).pods_of(pod).len(), 1, "a pod stands for itself");
     }
 }
