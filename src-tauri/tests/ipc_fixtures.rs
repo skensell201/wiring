@@ -220,3 +220,19 @@ fn log_message_variants_are_tagged() {
     assert_eq!(v["type"], "error");
     assert_eq!(v["sessionId"], 1);
 }
+
+#[test]
+fn revision() {
+    use wiring_lib::session::rollout::Revision;
+    assert_matches(
+        "revision",
+        &Revision {
+            revision: 3,
+            current: true,
+            created_at: Some("2026-10-05T10:00:00Z".into()),
+            change_cause: None,
+            images: vec!["nginx:1.27".into()],
+            template: "metadata:\n  labels:\n    app: web\nspec:\n  containers:\n  - image: nginx:1.27\n    name: web\n".into(),
+        },
+    );
+}

@@ -3,9 +3,13 @@
 
 use k8s_openapi::api::apps::v1::{ControllerRevision, Deployment, ReplicaSet};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{LabelSelector, ObjectMeta};
+use kube::api::{Api, ListParams, Patch, PatchParams};
+use kube::core::DynamicObject;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
+use super::write::{kube_err, resource_for, store_saved};
+use super::{parse_node_id, ObjectDetails, Session};
 use crate::error::{AppError, AppResult, ErrorKind};
 use crate::store::{Kind, Object, Store};
 
@@ -209,6 +213,106 @@ pub fn selector_string(selector: &LabelSelector) -> String {
         .as_ref()
         .map(|l| l.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join(","))
         .unwrap_or_default()
+}
+
+impl Session {
+    /// The watched object `node_id` names, cloned so no lock is held across awaits.
+    fn cached(&self, kind: Kind, namespace: Option<&str>, name: &str, node_id: &str) -> AppResult<Object> {
+        self.shared
+            .store()
+            .find(kind, namespace, name)
+            .cloned()
+            .ok_or_else(|| AppError::new(ErrorKind::NotFound, format!("{node_id} not in store")))
+    }
+
+    /// Store the server's answer and rebuild at once (as `update_object` does), so the returned
+    /// details and the node's badges are fresh before the watch echo.
+    async fn save_patched(&self, node_id: &str, saved: DynamicObject) -> AppResult<ObjectDetails> {
+        let value = serde_json::to_value(saved).map_err(|e| AppError::internal(e.to_string()))?;
+        let obj = Object::from_json_value(value).map_err(AppError::internal)?;
+        let stored = store_saved(&mut self.shared.store(), obj);
+        if stored {
+            self.request_rebuild().await?;
+        }
+        self.get_object(node_id)
+    }
+
+    /// `kubectl scale`: a merge patch on the `/scale` subresource, then the object itself.
+    pub async fn scale_object(&self, node_id: &str, replicas: i64) -> AppResult<ObjectDetails> {
+        let (kind, ns, name) = parse_node_id(node_id)?;
+        check_scale(kind, replicas)?;
+        let api = self.dynamic_api(&resource_for(kind)?, ns.as_deref());
+        api.patch_scale(&name, &PatchParams::default(), &Patch::Merge(scale_patch(replicas)))
+            .await
+            .map_err(kube_err)?;
+        let saved = api.get(&name).await.map_err(kube_err)?;
+        self.save_patched(node_id, saved).await
+    }
+
+    /// `kubectl rollout restart`: stamp the pod template so the controller rolls every pod.
+    pub async fn restart_object(&self, node_id: &str) -> AppResult<ObjectDetails> {
+        let (kind, ns, name) = parse_node_id(node_id)?;
+        check_rollout_kind(kind)?;
+        check_not_paused(&self.cached(kind, ns.as_deref(), &name, node_id)?)?;
+        let now = k8s_openapi::jiff::Timestamp::now().to_string();
+        let api = self.dynamic_api(&resource_for(kind)?, ns.as_deref());
+        let saved = api
+            .patch(&name, &PatchParams::default(), &Patch::Merge(restart_patch(&now)))
+            .await
+            .map_err(kube_err)?;
+        self.save_patched(node_id, saved).await
+    }
+
+    async fn history(&self, node_id: &str) -> AppResult<Vec<HistoryEntry>> {
+        let (kind, ns, name) = parse_node_id(node_id)?;
+        check_rollout_kind(kind)?;
+        let obj = self.cached(kind, ns.as_deref(), &name, node_id)?;
+        let (uid, selector, update_revision) = match &obj {
+            Object::Deployment(d) => return Ok(deployment_history(&self.shared.store(), d)),
+            Object::StatefulSet(s) => (
+                s.metadata.uid.clone(),
+                s.spec.as_ref().map(|sp| selector_string(&sp.selector)),
+                s.status.as_ref().and_then(|st| st.update_revision.clone()),
+            ),
+            Object::DaemonSet(d) => (
+                d.metadata.uid.clone(),
+                d.spec.as_ref().map(|sp| selector_string(&sp.selector)),
+                None,
+            ),
+            _ => return Err(AppError::internal(format!("{node_id} has no rollout"))),
+        };
+        let uid = uid.ok_or_else(|| AppError::internal(format!("{node_id} has no uid")))?;
+        let ns = ns.ok_or_else(|| AppError::internal(format!("{node_id} has no namespace")))?;
+        let api: Api<ControllerRevision> = Api::namespaced(self.client.clone(), &ns);
+        let selector = selector.unwrap_or_default();
+        let params = if selector.is_empty() {
+            ListParams::default()
+        } else {
+            ListParams::default().labels(&selector)
+        };
+        let list = api.list(&params).await.map_err(kube_err)?;
+        Ok(controller_history(&uid, update_revision.as_deref(), &list.items))
+    }
+
+    /// Revisions newest first; a role that cannot list controllerrevisions gets `forbidden`.
+    pub async fn rollout_history(&self, node_id: &str) -> AppResult<Vec<Revision>> {
+        Ok(self.history(node_id).await?.into_iter().map(|e| e.revision).collect())
+    }
+
+    /// `kubectl rollout undo --to-revision`: apply the revision's template as a strategic merge patch.
+    pub async fn rollback_object(&self, node_id: &str, revision: i64) -> AppResult<ObjectDetails> {
+        let (kind, ns, name) = parse_node_id(node_id)?;
+        check_rollout_kind(kind)?;
+        check_not_paused(&self.cached(kind, ns.as_deref(), &name, node_id)?)?;
+        let entries = self.history(node_id).await?;
+        let patch = pick_rollback(&entries, revision)?.clone();
+        let api = self.dynamic_api(&resource_for(kind)?, ns.as_deref());
+        let saved = api
+            .patch(&name, &PatchParams::default(), &Patch::Strategic(patch))
+            .await
+            .map_err(kube_err)?;
+        self.save_patched(node_id, saved).await
+    }
 }
 
 #[cfg(test)]

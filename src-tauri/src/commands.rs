@@ -16,6 +16,7 @@ use crate::kubeconfig::{self, ContextInfo};
 use crate::logs::session::LogRequest;
 use crate::logs::LogMessage;
 use crate::session::emitter::{Emitter, OutEvent};
+use crate::session::rollout::Revision;
 use crate::session::{ConnectInfo, ObjectDetails, Session};
 use crate::store::Kind;
 
@@ -174,6 +175,34 @@ pub async fn delete_object(state: State<'_, AppState>, node_id: String) -> AppRe
     session.delete_object(&node_id).await
 }
 
+#[tauri::command]
+pub async fn scale_object(state: State<'_, AppState>, node_id: String, replicas: i64) -> AppResult<ObjectDetails> {
+    let mut guard = state.session.lock().await;
+    let session = session_mut(&mut guard)?;
+    session.scale_object(&node_id, replicas).await
+}
+
+#[tauri::command]
+pub async fn restart_object(state: State<'_, AppState>, node_id: String) -> AppResult<ObjectDetails> {
+    let mut guard = state.session.lock().await;
+    let session = session_mut(&mut guard)?;
+    session.restart_object(&node_id).await
+}
+
+#[tauri::command]
+pub async fn rollout_history(state: State<'_, AppState>, node_id: String) -> AppResult<Vec<Revision>> {
+    let mut guard = state.session.lock().await;
+    let session = session_mut(&mut guard)?;
+    session.rollout_history(&node_id).await
+}
+
+#[tauri::command]
+pub async fn rollback_object(state: State<'_, AppState>, node_id: String, revision: i64) -> AppResult<ObjectDetails> {
+    let mut guard = state.session.lock().await;
+    let session = session_mut(&mut guard)?;
+    session.rollback_object(&node_id, revision).await
+}
+
 /// Stream container logs for `node_id` into `on_message`; returns the id for `stop_logs`.
 #[tauri::command]
 pub async fn start_logs(
@@ -230,6 +259,10 @@ pub fn register(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wr
         update_object,
         create_object,
         delete_object,
+        scale_object,
+        restart_object,
+        rollout_history,
+        rollback_object,
         start_logs,
         stop_logs,
         save_text,

@@ -31,6 +31,10 @@ Argument names are camelCase on the JS side; Tauri maps them to the Rust snake_c
 | `update_object` | `{ nodeId, yaml, force: boolean }` | `ObjectDetails` — fresh YAML/summary of the saved object (see [Writes](#writes)) |
 | `create_object` | `{ namespace, yaml }` | `NodeId` of the created object; it reaches the graph through the watch |
 | `delete_object` | `{ nodeId }` | `null` — a PodGroup id deletes every member pod |
+| `scale_object` | `{ nodeId, replicas }` | `ObjectDetails` (see [Rollout actions](#rollout-actions)) |
+| `restart_object` | `{ nodeId }` | `ObjectDetails` |
+| `rollout_history` | `{ nodeId }` | `Revision[]`, newest first |
+| `rollback_object` | `{ nodeId, revision }` | `ObjectDetails` |
 
 `ConnectInfo.namespaces` may be **empty** when the user cannot list namespaces (namespace-scoped RBAC); offer a free-text namespace input in that case. If the kubeconfig context has a default namespace it is included.
 
@@ -40,6 +44,14 @@ Argument names are camelCase on the JS side; Tauri maps them to the Rust snake_c
 - `create_object` uses the manifest's own `metadata.namespace` when set, else `namespace`; both are ignored for cluster-scoped kinds (PersistentVolume). A missing `apiVersion` is filled in from the kind. Creating an existing object rejects with `conflict`; a kind outside the watched list with `invalid`.
 - `delete_object` on `Kind/ns/name` is a plain delete (`404` counts as success). On `PodGroup/<ns>/<OwnerKind>/<owner>` the member pods are resolved from the cached store (pods whose ownerReferences chain reaches the owner — the same rule the graph uses) and deleted in parallel; if some fail, the error names them (`failed to delete: a, b (...)`) and carries the first failure's kind. A group with no members rejects with `notFound`.
 - Manifests may contain Secret data: the backend never logs them.
+
+### Rollout actions
+
+- `scale_object` takes a Deployment or StatefulSet and an integer `replicas` in 0 … 10 000; anything else is `invalid` before a request is sent. It patches the `/scale` subresource (as `kubectl scale`), then returns the object's fresh details.
+- `restart_object`, `rollout_history` and `rollback_object` take a Deployment, StatefulSet or DaemonSet (PodGroup and every other kind: `invalid`). Restart sets `spec.template.metadata.annotations["kubectl.kubernetes.io/restartedAt"]` (as `kubectl rollout restart`). Restart and rollback on a paused Deployment are `invalid` ("deployment is paused; resume it first").
+- `Revision = { revision: number, current: boolean, createdAt: string | null, changeCause: string | null, images: string[], template: string }`; `template` is the pod template as YAML. Deployment revisions come from its ReplicaSets in the cached store (`deployment.kubernetes.io/revision`; ReplicaSets without it are skipped, `pod-template-hash` is left out of `template`), the newest being current. StatefulSet/DaemonSet revisions are listed from ControllerRevisions (label selector = `matchLabels`, filtered by ownerReference uid); `current` is a StatefulSet's `status.updateRevision`, else the newest. A role without `list controllerrevisions` gets `forbidden`. Fixture: `revision.json`.
+- `rollback_object` to the current revision is `invalid` ("already at revision N"); an unknown one is `notFound`. Deployments get their old template back with `$patch: replace` (as `kubectl rollout undo`); StatefulSets/DaemonSets get the revision's `data` as a strategic merge patch.
+- Like `update_object`, every successful action stores the server's object and rebuilds the graph at once, so the returned details and the `graph_delta` arrive before the watch echo.
 
 ## Events (`listen`)
 
