@@ -427,6 +427,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
     } catch (e) {
       get().toast(toAppError(e));
     } finally {
+      cancelDetailsRefresh();
       set(disconnectedState(get()));
     }
   },
@@ -438,6 +439,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
       return;
     }
     cancelTableRefresh();
+    cancelDetailsRefresh();
     void get().stopLogs();
     const { expandedGroups, connection } = get();
     const expanded = [...expandedGroups];
@@ -471,6 +473,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
     // The switch is really happening: the logs of the node being left go with it.
     if (get().logs.nodeId !== null && get().logs.nodeId !== id) void get().stopLogs();
     if (id === null) {
+      cancelDetailsRefresh();
       set({ selectedId: null, details: null, detailsMaximized: false });
       await commands.watchEvents(null).catch(() => {});
       return;
@@ -875,14 +878,28 @@ function scheduleDetailsRefresh(): void {
   }
 }
 
+function selectionInDetailsPanel(): boolean {
+  const sel = typeof window !== "undefined" ? window.getSelection() : null;
+  if (!sel || sel.toString() === "") return false;
+  const node = sel.anchorNode;
+  const el = node instanceof Element ? node : node?.parentElement;
+  return !!el?.closest("[data-details-panel]");
+}
+
 async function reloadDetails(): Promise<void> {
   const { selectedId: id, details } = useAppStore.getState();
   if (id === null || !details || details.nodeId !== id || !details.data || details.loading || details.editor.mode !== "view") return;
   detailsRefreshAt = Date.now();
   try {
     const data = await commands.getObject(id);
-    useAppStore.setState((s) => (s.selectedId === id && s.details?.nodeId === id && s.details.editor.mode === "view"
-      ? { details: { ...s.details, data, editor: viewEditor(data.yaml) } } : {}));
+    useAppStore.setState((s) => {
+      if (s.selectedId !== id || s.details?.nodeId !== id || s.details.editor.mode !== "view") return {};
+      // Nothing new: leave the state alone so the YAML tab is not re-rendered every second.
+      if (s.details.data && JSON.stringify(s.details.data) === JSON.stringify(data)) return {};
+      // Do not swap the text out from under a selection being made in the panel; the next change retries.
+      if (selectionInDetailsPanel()) return {};
+      return { details: { ...s.details, data, editor: viewEditor(data.yaml) } };
+    });
   } catch {
     // The next change retries; a failed background refresh is not worth a toast.
   }

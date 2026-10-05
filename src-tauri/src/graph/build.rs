@@ -321,7 +321,12 @@ fn link_causes(nodes: &mut HashMap<NodeId, Node>, edges: &[Edge]) {
     }
     let links: Vec<(NodeId, NodeId)> = nodes
         .values()
-        .filter(|n| n.problem.is_some())
+        // A suspended CronJob is paused on purpose: its own problem, not its Jobs', is what to show.
+        .filter(|n| {
+            n.problem
+                .as_ref()
+                .is_some_and(|p| !(n.kind == Kind::CronJob && p.reason == "Suspended"))
+        })
         .filter_map(|n| {
             let relation = match n.kind {
                 Kind::Deployment | Kind::StatefulSet | Kind::DaemonSet | Kind::ReplicaSet | Kind::Job | Kind::CronJob => Relation::Owns,
@@ -692,6 +697,44 @@ status: { phase: Pending, containerStatuses: [ { name: c, ready: false, restartC
             Some(("1 of 2 pods: Error".into(), Some("y: container c: exit code 2".into())))
         );
         assert_eq!(group_problem(&members, Status::Ok, 6), None);
+    }
+
+    #[test]
+    fn a_suspended_cronjob_has_no_cause_even_with_a_failing_job() {
+        let node = |id: &str, kind: Kind, status: Status, reason: &str| Node {
+            id: id.into(),
+            kind,
+            namespace: Some("c".into()),
+            name: id.rsplit('/').next().unwrap().into(),
+            status,
+            badges: vec![],
+            group: None,
+            problem: Some(Problem {
+                reason: reason.into(),
+                message: None,
+                cause: None,
+            }),
+        };
+        let mut nodes: HashMap<NodeId, Node> = [
+            node("CronJob/c/nightly", Kind::CronJob, Status::Warn, "Suspended"),
+            node("Job/c/nightly-1", Kind::Job, Status::Err, "BackoffLimitExceeded"),
+            node("CronJob/c/live", Kind::CronJob, Status::Warn, "Failing"),
+        ]
+        .into_iter()
+        .map(|n| (n.id.clone(), n))
+        .collect();
+        let edge = |s: &str| Edge {
+            id: format!("{s}->Job/c/nightly-1:owns"),
+            source: s.into(),
+            target: "Job/c/nightly-1".into(),
+            relation: Relation::Owns,
+        };
+        link_causes(&mut nodes, &[edge("CronJob/c/nightly"), edge("CronJob/c/live")]);
+        assert_eq!(nodes["CronJob/c/nightly"].problem.as_ref().unwrap().cause, None);
+        assert_eq!(
+            nodes["CronJob/c/live"].problem.as_ref().unwrap().cause.as_deref(),
+            Some("Job/c/nightly-1")
+        );
     }
 
     fn failing_pods(n: usize, ns: &str, owner_kind: &str, owner: &str, uid: &str, label: &str) -> String {

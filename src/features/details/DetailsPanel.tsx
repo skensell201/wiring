@@ -118,7 +118,7 @@ export function DetailsPanel() {
 
   return (
     // Maximised, the panel fills whatever the column has left under the app header (the view is unmounted by `App`).
-    <section className={`border-t border-border bg-panel ${maximized ? "min-h-0 flex-1" : "shrink-0"}`} style={maximized ? undefined : { height }}>
+    <section data-details-panel className={`border-t border-border bg-panel ${maximized ? "min-h-0 flex-1" : "shrink-0"}`} style={maximized ? undefined : { height }}>
       {maximized ? (
         <div className="h-1.5" />
       ) : (

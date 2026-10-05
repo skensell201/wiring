@@ -125,4 +125,70 @@ describe("details refresh on graph changes", () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(getObjectCalls()).toBe(1);
   });
+
+  it("keeps the details object when the reload brings nothing new", async () => {
+    setup();
+    vi.mocked(invoke).mockResolvedValue({ yaml: "old", summary: [], related: [] });
+    const before = useAppStore.getState().details;
+    useAppStore.getState().applyDelta(delta({ updatedNodes: [node(WEB, "Deployment", 2)] }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(getObjectCalls()).toBe(1);
+    expect(useAppStore.getState().details).toBe(before);
+  });
+
+  describe("with a text selection in the details panel", () => {
+    afterEach(() => { vi.restoreAllMocks(); document.body.innerHTML = ""; });
+    const select = (text: string, inside: boolean) => {
+      const panel = document.createElement("section");
+      panel.setAttribute("data-details-panel", "");
+      const span = document.createElement("span");
+      panel.appendChild(span);
+      const outside = document.createElement("div");
+      document.body.append(panel, outside);
+      vi.spyOn(window, "getSelection").mockReturnValue({ toString: () => text, anchorNode: inside ? span : outside } as unknown as Selection);
+    };
+
+    it("does not apply a changed reload; the next change retries", async () => {
+      setup();
+      select("abc", true);
+      useAppStore.getState().applyDelta(delta({ updatedNodes: [node(WEB, "Deployment", 2)] }));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(getObjectCalls()).toBe(1);
+      expect(useAppStore.getState().details?.data?.yaml).toBe("old");
+      vi.mocked(window.getSelection).mockReturnValue({ toString: () => "", anchorNode: null } as unknown as Selection);
+      await vi.advanceTimersByTimeAsync(1000);
+      useAppStore.getState().applyDelta(delta({ updatedNodes: [node(WEB, "Deployment", 3)] }));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(useAppStore.getState().details?.data?.yaml).toBe("fresh 1");
+    });
+
+    it("applies the reload when the selection is elsewhere", async () => {
+      setup();
+      select("abc", false);
+      useAppStore.getState().applyDelta(delta({ updatedNodes: [node(WEB, "Deployment", 2)] }));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(useAppStore.getState().details?.data?.yaml).toBe("fresh 1");
+    });
+  });
+
+  it("cancels a pending reload on namespace switch, disconnect and deselect", async () => {
+    for (const leave of [
+      () => useAppStore.getState().selectNamespace("q"),
+      () => useAppStore.getState().disconnect(),
+      () => useAppStore.getState().select(null),
+    ]) {
+      cancelDetailsRefresh();
+      vi.mocked(invoke).mockClear();
+      setup();
+      useAppStore.getState().applyDelta(delta({ updatedNodes: [node(WEB, "Deployment", 2)] }));
+      await vi.advanceTimersByTimeAsync(0);
+      useAppStore.getState().applyDelta(delta({ updatedNodes: [node(WEB, "Deployment", 3)] }));
+      await leave();
+      // Back on the same object: a stale timer would swallow this change until it fires.
+      setup();
+      useAppStore.getState().applyDelta(delta({ updatedNodes: [node(WEB, "Deployment", 4)] }));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(getObjectCalls()).toBe(2);
+    }
+  });
 });

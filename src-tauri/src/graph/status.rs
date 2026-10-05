@@ -296,11 +296,13 @@ pub fn selector_matches(selector: &BTreeMap<String, String>, labels: Option<&BTr
     selector.iter().all(|(k, v)| labels.get(k) == Some(v))
 }
 
-/// Ready means a `Ready=True` condition and not being deleted; a pod without a `Ready` condition counts as ready, so hand-written fixtures stay healthy.
+/// Ready means a `Ready=True` condition, a phase of Running when one is known, and not being deleted;
+/// a pod without a `Ready` condition or a phase counts as ready, so hand-written fixtures stay healthy.
 pub(crate) fn pod_ready(p: &Pod) -> bool {
+    let status = p.status.as_ref();
     p.metadata.deletion_timestamp.is_none()
-        && p.status
-            .as_ref()
+        && status.and_then(|s| s.phase.as_deref()).is_none_or(|ph| ph == "Running")
+        && status
             .and_then(|s| s.conditions.as_ref())
             .is_none_or(|cs| cs.iter().all(|c| c.type_ != "Ready" || c.status == "True"))
 }
@@ -855,6 +857,23 @@ mod tests {
         let s = Store::from_fixture("problems").unwrap();
         assert_eq!(problem_of(&s, Kind::Service, "unk"), own("No ready endpoints", None));
         assert_eq!(problem_of(&s, Kind::Service, "goingsvc"), own("No ready endpoints", None));
+    }
+
+    #[test]
+    fn only_running_pods_are_ready_and_a_pod_without_status_still_is() {
+        let pod = |status: serde_json::Value| -> Pod {
+            serde_json::from_value(serde_json::json!({ "metadata": { "name": "p" }, "status": status })).unwrap()
+        };
+        for phase in ["Pending", "Failed", "Succeeded"] {
+            assert!(!pod_ready(&pod(serde_json::json!({ "phase": phase }))), "{phase}");
+        }
+        assert!(pod_ready(&pod(serde_json::json!({ "phase": "Running" }))));
+        assert!(!pod_ready(&pod(
+            serde_json::json!({ "phase": "Running", "conditions": [{ "type": "Ready", "status": "False" }] })
+        )));
+        assert!(pod_ready(&pod(serde_json::json!({}))));
+        let bare: Pod = serde_json::from_value(serde_json::json!({ "metadata": { "name": "p" } })).unwrap();
+        assert!(pod_ready(&bare));
     }
 
     #[test]
