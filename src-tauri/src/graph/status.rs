@@ -15,8 +15,17 @@ use crate::store::{Kind, Object, Store};
 pub type Badges = Vec<String>;
 pub type SummaryRows = Vec<(String, String)>;
 
-/// Status + badges shown on the node card.
+/// Status + badges shown on the node card. A pod or workload at >= 80 % of a limit gets its usage
+/// badge last, so badges[0] (ready/desired, a pod's reason, an HPA's min-max) keeps its meaning.
 pub fn describe(obj: &Object, store: &Store) -> (Status, Badges) {
+    let (status, mut badges) = base_describe(obj, store);
+    if let Some(b) = crate::metrics::usage::usage_badge(store, obj) {
+        badges.push(b);
+    }
+    (status, badges)
+}
+
+fn base_describe(obj: &Object, store: &Store) -> (Status, Badges) {
     match obj {
         Object::Deployment(d) => deployment(d),
         Object::StatefulSet(s) => statefulset(s),
@@ -718,6 +727,24 @@ pub fn summary(obj: &Object) -> SummaryRows {
 mod tests {
     use super::*;
     use crate::store::{Kind, Store};
+
+    #[test]
+    fn a_usage_badge_is_appended_without_touching_the_status() {
+        let s = crate::metrics::usage::tests::sampled();
+        let plain = Store::from_fixture("metrics").unwrap();
+        let hot = s.find(Kind::Pod, Some("m"), "hot").unwrap();
+        let (status, badges) = describe(hot, &s);
+        let (plain_status, plain_badges) = describe(plain.find(Kind::Pod, Some("m"), "hot").unwrap(), &plain);
+        assert_eq!(status, plain_status, "usage never changes the status");
+        assert_eq!(badges.last().map(String::as_str), Some("mem 92%"));
+        assert_eq!(badges[..badges.len() - 1], plain_badges[..]);
+        let api = s.find(Kind::Deployment, Some("m"), "api").unwrap();
+        assert_eq!(
+            describe(api, &s).1,
+            describe(plain.find(Kind::Deployment, Some("m"), "api").unwrap(), &plain).1,
+            "20%/39%: no badge"
+        );
+    }
 
     fn problem_of(store: &Store, kind: Kind, name: &str) -> Option<Problem> {
         let obj = store.find(kind, Some("p"), name).unwrap();
