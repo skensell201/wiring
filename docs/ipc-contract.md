@@ -63,6 +63,7 @@ Argument names are camelCase on the JS side; Tauri maps them to the Rust snake_c
 | `graph_delta` | `GraphDelta` | Apply `addedNodes`/`updatedNodes` (full node objects) / `removedNodes` (ids) / `addedEdges` / `removedEdges` (ids). Only sent when non-empty. |
 | `object_events` | `ObjectEvents` | Full list, newest first, for the node passed to `watch_events`. Ignore payloads whose `nodeId` is not the current selection. |
 | `forwards_changed` | `Forward[]` | Every running forward, ordered by id, after each start, stop and status change (see [Port-forward](#port-forward)). Empty after a disconnect. |
+| `metrics_updated` | `{ state: "pending" \| "available" \| "unavailable" \| "forbidden" }` | After each metrics-server sample of the selected namespace (every 15 s), and once when the Metrics API turns out to be missing (404 → `unavailable`) or forbidden (403 → `forbidden`), after which polling stops for that namespace session. Refetch the open Pod / Deployment / StatefulSet / DaemonSet table and the selected details. Usage badges arrive as an ordinary `graph_delta`. |
 
 ### Ordering rules the frontend must follow
 
@@ -93,6 +94,13 @@ A node whose `status` is `warn` or `err` may carry `problem: { reason, message, 
 - `TableCell { text, status: Status | null }` — `status` colours the cell (e.g. the Pod `status` cell, or a workload's `ready` cell) and is `null` for plain cells.
 - `PodGroup` is not a table kind (`columns` is empty, `rows` is always empty) — `list_rows({ kind: "Pod" })` always lists individual pods; collapsing pods into groups is a graph-only concern.
 - Requesting a kind the session could not watch (see `denied_kinds`) returns an empty table, not an error — the frontend shows the RBAC empty state itself.
+
+## Metrics
+
+- Source: `metrics.k8s.io/v1beta1` `PodMetrics` in the selected namespace, polled every 15 s while the namespace session lives.
+- Tables: Pod, Deployment, StatefulSet and DaemonSet gain numeric `cpu` (`CPU`) and `memory` (`Memory`) columns. Values are `kubectl top` style — CPU always in millicores (`120m`), memory always in whole MiB (`64Mi`) — so the leading number sorts correctly; `—` without a sample. Workloads sum the pods they own.
+- `get_object` summary for those kinds ends with `CPU usage` and `Memory usage` rows (`120m / req 100m / lim 500m (24%)`: requests and limits summed over containers, a total omitted when any container lacks it; the percentage is of the limit, else of the request), or a single `Usage` row: `waiting for the first metrics sample`, `Metrics API not available (install metrics-server)`, `No access to pod metrics (RBAC)` or `no sample yet`.
+- Graph: a pod or workload at ≥ 80 % of a CPU or memory limit gets a last badge `mem 92%` / `cpu 85%` (the higher; memory on a tie). Usage never changes `status`.
 
 ## Timestamps
 

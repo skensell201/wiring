@@ -87,6 +87,11 @@ export interface Revision {
   template: string;
 }
 
+export const METRICS_STATES = ["pending", "available", "unavailable", "forbidden"] as const;
+export type MetricsState = (typeof METRICS_STATES)[number];
+/** Payload of `metrics_updated`: a new metrics-server sample (or the API's absence) for the namespace. */
+export interface MetricsUpdate { state: MetricsState }
+
 export const FORWARD_STATUSES = ["active", "noReadyPod", "podGone", "error"] as const;
 export type ForwardStatus = (typeof FORWARD_STATUSES)[number];
 
@@ -179,6 +184,10 @@ export function isRevision(v: unknown): v is Revision {
   return isObj(v) && typeof v.revision === "number" && typeof v.current === "boolean" && isStrOrNull(v.createdAt)
     && isStrOrNull(v.changeCause) && arrayOf(v.images, isStr) && isStr(v.template);
 }
+export function isMetricsUpdate(v: unknown): v is MetricsUpdate {
+  return isObj(v) && oneOf(METRICS_STATES, v.state);
+}
+
 export function isForward(v: unknown): v is Forward {
   return isObj(v) && typeof v.id === "number" && isStr(v.nodeId) && isStr(v.targetLabel) && typeof v.remotePort === "number"
     && typeof v.localPort === "number" && isStrOrNull(v.pod) && oneOf(FORWARD_STATUSES, v.status) && isStrOrNull(v.message);

@@ -269,3 +269,24 @@ fn forward_and_port_option() {
         },
     );
 }
+
+#[test]
+fn metrics_updated() {
+    use wiring_lib::metrics::{MetricsState, MetricsUpdate};
+    assert_matches(
+        "metrics_updated",
+        &MetricsUpdate {
+            state: MetricsState::Available,
+        },
+    );
+    for (state, json) in [
+        (MetricsState::Pending, "pending"),
+        (MetricsState::Unavailable, "unavailable"),
+        (MetricsState::Forbidden, "forbidden"),
+    ] {
+        assert_eq!(
+            serde_json::to_value(MetricsUpdate { state }).unwrap(),
+            serde_json::json!({ "state": json })
+        );
+    }
+}
