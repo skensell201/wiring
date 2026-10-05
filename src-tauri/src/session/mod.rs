@@ -22,6 +22,9 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use crate::error::{AppError, AppResult, ErrorKind};
+use crate::forward::kube::KubeConnector;
+use crate::forward::manager::ForwardManager;
+use crate::forward::{self, Forward, PortOption};
 use crate::graph::rows::Table;
 use crate::graph::{status::summary, Graph, NodeId};
 use crate::logs::session::{spawn_log_session, LogRequest, LogSession};
@@ -110,6 +113,8 @@ pub struct Session {
     /// Live log sessions by id; dropping one aborts its streams.
     logs: HashMap<u32, LogSession>,
     next_log_id: u32,
+    /// Port-forwards outlive namespace switches; they end with the connection.
+    forwards: ForwardManager,
 }
 
 impl Session {
@@ -150,6 +155,7 @@ impl Session {
     }
 
     fn new(client: Client, emitter: Arc<dyn Emitter>) -> Session {
+        let forwards = ForwardManager::new(Arc::new(KubeConnector::new(client.clone())), emitter.clone());
         Session {
             client,
             shared: Shared::default(),
@@ -160,6 +166,7 @@ impl Session {
             events_task: None,
             logs: HashMap::new(),
             next_log_id: 1,
+            forwards,
         }
     }
 
@@ -281,6 +288,26 @@ impl Session {
         }
     }
 
+    /// The remote ports the Port-forward dialog offers for `node_id`.
+    pub fn forward_ports(&self, node_id: &str) -> AppResult<Vec<PortOption>> {
+        let target = forward::resolve::target(node_id)?;
+        forward::resolve::ports(&self.shared.store(), &target)
+    }
+
+    pub async fn start_forward(&mut self, node_id: &str, remote_port: u16, local_port: u16) -> AppResult<Forward> {
+        let target = forward::resolve::target(node_id)?;
+        let label = format!("{} {}", target.kind.as_str(), target.name);
+        self.forwards.start(node_id, target, label, remote_port, local_port).await
+    }
+
+    pub async fn stop_forward(&mut self, id: u32) {
+        self.forwards.stop(id).await;
+    }
+
+    pub fn forward_local_port(&self, id: u32) -> Option<u16> {
+        self.forwards.local_port(id)
+    }
+
     fn stop_watchers(&mut self) {
         // A namespace switch, disconnect or drop must end every log stream of the session;
         // close each sink first so no batch slips out before the aborts land.
@@ -300,8 +327,10 @@ impl Session {
         self.reducer_tx = None;
     }
 
-    pub fn shutdown(&mut self) {
+    /// Ends watchers, logs and forwards (awaited, so the ports are free), then announces the disconnect.
+    pub async fn shutdown(&mut self) {
         self.stop_watchers();
+        self.forwards.stop_all().await;
         self.emitter.emit(OutEvent::ConnectionState(emitter::ConnectionState::Disconnected));
     }
 }

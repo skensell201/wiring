@@ -425,6 +425,6 @@ async fn graph_snapshot_reflects_applied_fixture() {
     exercise_rollout(&session, &mut rx, &mut graph, &context).await;
     exercise_logs(&mut session, &context).await;
 
-    session.shutdown();
+    session.shutdown().await;
     kubectl(&context, &["delete", "namespace", NAMESPACE, "--wait=false"]);
 }
