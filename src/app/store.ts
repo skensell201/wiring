@@ -44,7 +44,7 @@ export type ActionDialog =
   | { type: "restart"; nodeId: NodeId }
   | { type: "rollback"; nodeId: NodeId; revision: number }
   | { type: "forward"; nodeId: NodeId };
-export type DetailsTab = "overview" | "yaml" | "events" | "logs" | "history";
+export type DetailsTab = "overview" | "yaml" | "events" | "logs" | "terminal" | "history";
 
 export function viewEditor(original = ""): EditorState {
   return { mode: "view", buffer: "", original, error: null, saving: false };

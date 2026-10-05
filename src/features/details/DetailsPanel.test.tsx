@@ -8,6 +8,7 @@ vi.mock("../../shared/ipc/tauri", () => ({ invoke: vi.fn(async () => null), list
 vi.mock("../../shared/settings", () => ({
   settings: { get: vi.fn(async () => null), set: vi.fn(async () => {}), getLastNamespace: vi.fn(async () => null), setLastNamespace: vi.fn(async () => {}), getSidebarCollapsed: vi.fn(async () => false), setSidebarCollapsed: vi.fn(async () => {}), getDetailsHeight: vi.fn(async () => null), setDetailsHeight: vi.fn(async () => {}) },
 }));
+vi.mock("../exec/TerminalTab", () => ({ TerminalTab: () => <div>terminal</div> }));
 vi.mock("./yaml", () => ({ highlightYaml: vi.fn(async (src: string) => `<pre class="shiki"><code>${src}</code></pre>`) }));
 
 const node = { id: "Pod/p/web-1", kind: "Pod" as const, namespace: "p", name: "web-1", status: "ok" as const, badges: [], group: null };
@@ -90,6 +91,25 @@ describe("DetailsPanel", () => {
     useAppStore.setState((s) => ({ selectedId: "Pod/p/web-9", details: { ...s.details!, nodeId: "Pod/p/web-9" } }));
     render(<DetailsPanel />);
     expect(logsTab()).toBeInTheDocument();
+  });
+
+  it("offers a Terminal tab for pods and pod-running workloads only", () => {
+    const termTab = () => screen.queryByRole("tab", { name: "Terminal" });
+    const select = (id: string, kind: string) => {
+      const n = { ...node, id, kind: kind as typeof node.kind, name: id.split("/").pop()! };
+      useAppStore.setState((s) => ({ nodes: new Map([...s.nodes, [n.id, n]]), selectedId: n.id, details: { ...s.details!, nodeId: n.id } }));
+    };
+    for (const kind of ["Pod", "Deployment", "StatefulSet", "DaemonSet", "Job", "PodGroup", "Service", "CronJob", "ConfigMap"]) {
+      select(`${kind}/p/x`, kind);
+      const { unmount } = render(<DetailsPanel />);
+      if (["Service", "CronJob", "ConfigMap"].includes(kind)) expect(termTab(), kind).not.toBeInTheDocument();
+      else expect(termTab(), kind).toBeInTheDocument();
+      unmount();
+    }
+    select("Deployment/p/x", "Deployment");
+    render(<DetailsPanel />);
+    fireEvent.click(termTab()!);
+    expect(screen.getByText("terminal")).toBeInTheDocument();
   });
 
   it("shows a hint when nothing is selected", () => {

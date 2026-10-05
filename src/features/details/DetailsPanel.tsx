@@ -7,6 +7,7 @@ import { settings } from "../../shared/settings";
 import { ConfirmDialog } from "../../shared/ui/ConfirmDialog";
 import { actionsFor, kindOf, ROLLOUT_KINDS } from "../actions/actionKinds";
 import { KIND_META } from "../graph/kindMeta";
+import { TerminalTab } from "../exec/TerminalTab";
 import { LogsTab } from "../logs/LogsTab";
 import { EventsTab } from "./EventsTab";
 import { HistoryTab } from "./HistoryTab";
@@ -20,6 +21,8 @@ const maxHeight = () => Math.max(MIN, window.innerHeight - 200);
 const clampHeight = (h: number) => Math.min(maxHeight(), Math.max(MIN, Math.round(h)));
 /** Arrow-key step on the separator; Shift multiplies it. */
 const KEY_STEP = 16, KEY_STEP_SHIFT = 64;
+/** Kinds with running containers to open a shell in (spec §3 "Open"). */
+const EXEC_KINDS: ReadonlySet<Kind> = new Set<Kind>(["Pod", "Deployment", "StatefulSet", "DaemonSet", "Job", "PodGroup"]);
 /** Kinds with container logs to stream: a Pod's own, or the merged logs of a workload's pods. */
 const LOG_KINDS: ReadonlySet<Kind> = new Set<Kind>(["Pod", "Deployment", "StatefulSet", "DaemonSet", "Job", "CronJob", "PodGroup"]);
 
@@ -114,6 +117,7 @@ export function DetailsPanel() {
   const heading = node ? { name: node.name, kind: node.kind, namespace: node.namespace } : selectedId ? headingFromId(selectedId) : null;
   const tabs: { id: Tab; label: string }[] = [{ id: "overview", label: "Overview" }, { id: "yaml", label: "YAML" }, { id: "events", label: "Events" }];
   if (heading?.kind && LOG_KINDS.has(heading.kind)) tabs.push({ id: "logs", label: "Logs" });
+  if (heading?.kind && EXEC_KINDS.has(heading.kind)) tabs.push({ id: "terminal", label: "Terminal" });
   if (heading?.kind && ROLLOUT_KINDS.has(heading.kind)) tabs.push({ id: "history", label: "History" });
 
   return (
@@ -170,6 +174,8 @@ export function DetailsPanel() {
           <YamlTab />
         ) : tab === "logs" ? (
           <LogsTab />
+        ) : tab === "terminal" ? (
+          <TerminalTab key={details.nodeId} nodeId={details.nodeId} />
         ) : tab === "history" ? (
           <HistoryTab key={details.nodeId} nodeId={details.nodeId} />
         ) : (
