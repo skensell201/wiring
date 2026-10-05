@@ -470,26 +470,20 @@ pub fn summary(obj: &Object) -> SummaryRows {
         Object::HorizontalPodAutoscaler(h) => {
             if let Some(cs) = h.status.as_ref().and_then(|s| s.conditions.as_ref()) {
                 rows.extend(cs.iter().map(|c| {
-                    let mut text = format!("{} {}", c.status, c.reason.clone().unwrap_or_default());
-                    // The message says why a rollout is stuck (which ReplicaSet, which deadline).
-                    if let Some(m) = c.message.as_deref().filter(|m| !m.is_empty()) {
-                        text.push_str(" — ");
-                        text.push_str(m);
-                    }
-                    (format!("Condition {}", c.type_), text)
+                    (
+                        format!("Condition {}", c.type_),
+                        format!("{} {}", c.status, c.reason.clone().unwrap_or_default()),
+                    )
                 }));
             }
         }
         Object::Job(j) => {
             if let Some(cs) = j.status.as_ref().and_then(|s| s.conditions.as_ref()) {
                 rows.extend(cs.iter().map(|c| {
-                    let mut text = format!("{} {}", c.status, c.reason.clone().unwrap_or_default());
-                    // The message says why a rollout is stuck (which ReplicaSet, which deadline).
-                    if let Some(m) = c.message.as_deref().filter(|m| !m.is_empty()) {
-                        text.push_str(" — ");
-                        text.push_str(m);
-                    }
-                    (format!("Condition {}", c.type_), text)
+                    (
+                        format!("Condition {}", c.type_),
+                        format!("{} {}", c.status, c.reason.clone().unwrap_or_default()),
+                    )
                 }));
             }
         }
