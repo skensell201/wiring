@@ -1,11 +1,16 @@
 import type { Edge, Node } from "@xyflow/react";
 import type { GraphEdge, GraphNode, Kind, NodeId } from "../../shared/ipc/types";
+import { problemPath } from "./problemPath";
 import { layout, NODE_HEIGHT, NODE_WIDTH, type Position } from "./layout";
+
+/** Status colour of the selected node's problem path. */
+export type PathTone = "err" | "warn";
 
 export interface ResourceNodeData extends Record<string, unknown> {
   node: GraphNode;
   dimmed: boolean;
   expanded: boolean;
+  pathTone?: PathTone;
 }
 export interface RelationEdgeData extends Record<string, unknown> {
   edge: GraphEdge;
@@ -13,6 +18,7 @@ export interface RelationEdgeData extends Record<string, unknown> {
   dimmed: boolean;
   /** Dummy-slot centres the edge is routed through (only for edges spanning several columns). */
   waypoints?: Position[];
+  pathTone?: PathTone;
 }
 export type ResourceFlowNode = Node<ResourceNodeData, "resource">;
 // @xyflow/react's `Edge` has an optional `data` field; toFlow always sets it, so this
@@ -34,10 +40,10 @@ export interface ToFlowInput {
 // and only replacing it when the derived fields actually change — lets `memo(ResourceNode)` /
 // `memo(RelationEdge)` skip re-rendering nodes/edges the current toFlow() call didn't affect.
 const nodeDataCache = new WeakMap<GraphNode, ResourceNodeData>();
-function nodeData(node: GraphNode, dimmed: boolean, expanded: boolean): ResourceNodeData {
+function nodeData(node: GraphNode, dimmed: boolean, expanded: boolean, pathTone: PathTone | undefined): ResourceNodeData {
   const cached = nodeDataCache.get(node);
-  if (cached && cached.dimmed === dimmed && cached.expanded === expanded) return cached;
-  const data: ResourceNodeData = { node, dimmed, expanded };
+  if (cached && cached.dimmed === dimmed && cached.expanded === expanded && cached.pathTone === pathTone) return cached;
+  const data: ResourceNodeData = pathTone ? { node, dimmed, expanded, pathTone } : { node, dimmed, expanded };
   nodeDataCache.set(node, data);
   return data;
 }
@@ -46,10 +52,10 @@ const sameWaypoints = (a: Position[] | undefined, b: Position[] | undefined): bo
   a === b || (a !== undefined && b !== undefined && a.length === b.length && a.every((p, i) => p.x === b[i].x && p.y === b[i].y));
 
 const edgeDataCache = new WeakMap<GraphEdge, RelationEdgeData>();
-function edgeData(edge: GraphEdge, highlighted: boolean, dimmed: boolean, waypoints: Position[] | undefined): RelationEdgeData {
+function edgeData(edge: GraphEdge, highlighted: boolean, dimmed: boolean, waypoints: Position[] | undefined, pathTone: PathTone | undefined): RelationEdgeData {
   const cached = edgeDataCache.get(edge);
-  if (cached && cached.highlighted === highlighted && cached.dimmed === dimmed && sameWaypoints(cached.waypoints, waypoints)) return cached;
-  const data: RelationEdgeData = waypoints ? { edge, highlighted, dimmed, waypoints } : { edge, highlighted, dimmed };
+  if (cached && cached.highlighted === highlighted && cached.dimmed === dimmed && cached.pathTone === pathTone && sameWaypoints(cached.waypoints, waypoints)) return cached;
+  const data: RelationEdgeData = { edge, highlighted, dimmed, ...(waypoints ? { waypoints } : {}), ...(pathTone ? { pathTone } : {}) };
   edgeDataCache.set(edge, data);
   return data;
 }
@@ -63,6 +69,14 @@ export function toFlow(input: ToFlowInput): { nodes: ResourceFlowNode[]; edges: 
   const q = input.search.trim().toLowerCase();
   const matches = (n: GraphNode) => q === "" || n.name.toLowerCase().includes(q) || n.kind.toLowerCase().includes(q);
 
+  // The selected node's problem chain (only when it leads somewhere): its nodes and the edges
+  // between consecutive steps (either direction) are tinted in the selected node's status colour.
+  const selected = input.selectedId !== null ? input.nodes.get(input.selectedId) : undefined;
+  const tone: PathTone | undefined = selected?.status === "err" || selected?.status === "warn" ? selected.status : undefined;
+  const path = tone && selected ? problemPath(selected.id, input.nodes) : [];
+  const onPath = new Set(path.length > 1 ? path : []);
+  const pathLinks = new Set(onPath.size > 0 ? path.slice(1).flatMap((to, i) => [`${path[i]}\n${to}`, `${to}\n${path[i]}`]) : []);
+
   const nodes: ResourceFlowNode[] = visible.map((node) => ({
     id: node.id,
     type: "resource",
@@ -73,7 +87,7 @@ export function toFlow(input: ToFlowInput): { nodes: ResourceFlowNode[]; edges: 
     width: NODE_WIDTH,
     height: NODE_HEIGHT,
     selected: node.id === input.selectedId,
-    data: nodeData(node, !matches(node), input.expandedGroups.has(node.id)),
+    data: nodeData(node, !matches(node), input.expandedGroups.has(node.id), onPath.has(node.id) ? tone : undefined),
   }));
 
   // hoveredId can outlive its node (a delta removed it before the mouse moved), and a hover that
@@ -81,12 +95,13 @@ export function toFlow(input: ToFlowInput): { nodes: ResourceFlowNode[]; edges: 
   const hover = input.hoveredId !== null && visibleIds.has(input.hoveredId) ? input.hoveredId : null;
   const edges: RelationFlowEdge[] = visibleEdges.map((edge) => {
     const touches = hover !== null && (edge.source === hover || edge.target === hover);
+    const pathTone = pathLinks.has(`${edge.source}\n${edge.target}`) ? tone : undefined;
     return {
       id: edge.id,
       type: "relation",
       source: edge.source,
       target: edge.target,
-      data: edgeData(edge, touches, hover !== null && !touches, waypoints.get(edge.id)),
+      data: edgeData(edge, touches, hover !== null && !touches, waypoints.get(edge.id), pathTone),
     };
   });
 

@@ -11,14 +11,16 @@ export const RelationEdge = memo(function RelationEdge(props: EdgeProps<Relation
     ? pathThrough([{ x: sourceX, y: sourceY }, ...data.waypoints, { x: targetX, y: targetY }])
     : getBezierPath({ sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition })[0];
   const solid = data?.edge.relation === "owns";
-  const opacity = data?.dimmed ? 0.15 : data?.highlighted ? 1 : 0.7;
+  const tone = data?.pathTone;
+  const opacity = tone ? 1 : data?.dimmed ? 0.15 : data?.highlighted ? 1 : 0.7;
   return (
     <BaseEdge
       path={path}
       style={{
-        // Iron Edge at rest; the selection's wiring lights up in Lavender Spark.
-        stroke: data?.highlighted ? "var(--color-accent)" : "var(--color-border-strong)",
-        strokeWidth: data?.highlighted ? 2 : 1.5,
+        // Iron Edge at rest; the selection's wiring lights up in Lavender Spark; a problem path
+        // takes the status colour.
+        stroke: tone ? `var(--color-status-${tone})` : data?.highlighted ? "var(--color-accent)" : "var(--color-border-strong)",
+        strokeWidth: tone || data?.highlighted ? 2 : 1.5,
         strokeDasharray: solid ? undefined : "6 4",
         opacity,
         transition: "opacity 150ms, stroke-width 150ms",

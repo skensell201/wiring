@@ -10,6 +10,34 @@ const nodes = new Map([n("Service/p/web", "Service"), n("Pod/p/a", "Pod"), n("Co
 const edges = new Map([e("Service/p/web", "Pod/p/a", "selects"), e("ConfigMap/p/cfg", "Pod/p/a", "envFrom")].map((x) => [x.id, x]));
 
 describe("toFlow", () => {
+  it("tints the selected node's problem path in its status colour", () => {
+    const dep: GraphNode = { ...n("Deployment/p/bad", "Deployment"), status: "warn", problem: { reason: "1 of 1 not ready", message: null, cause: "Pod/p/bad-1" } };
+    const pod: GraphNode = { ...n("Pod/p/bad-1", "Pod"), status: "err", problem: { reason: "ImagePullBackOff", message: null, cause: null } };
+    const svc = n("Service/p/bad", "Service");
+    const owns = e(dep.id, pod.id, "owns");
+    const sel = e(svc.id, pod.id, "selects");
+    const input = {
+      nodes: new Map([dep, pod, svc].map((x) => [x.id, x])), edges: new Map([owns, sel].map((x) => [x.id, x])),
+      hiddenKinds: new Set<GraphNode["kind"]>(), search: "", hoveredId: null, expandedGroups: new Set<string>(),
+    };
+    const f = toFlow({ ...input, selectedId: dep.id });
+    const node = Object.fromEntries(f.nodes.map((x) => [x.id, x.data]));
+    const edge = Object.fromEntries(f.edges.map((x) => [x.id, x.data]));
+    expect(node[dep.id].pathTone).toBe("warn");
+    expect(node[pod.id].pathTone).toBe("warn");
+    expect(node[svc.id].pathTone).toBeUndefined();
+    expect(edge[owns.id].pathTone).toBe("warn");
+    expect(edge[sel.id].pathTone).toBeUndefined();
+
+    const none = toFlow({ ...input, selectedId: svc.id });
+    expect(none.edges.every((x) => x.data.pathTone === undefined)).toBe(true);
+
+    // Unchanged nodes keep their data identity; tinted ones are replaced when the tint goes away.
+    const other = toFlow({ ...input, selectedId: svc.id });
+    expect(other.nodes.find((x) => x.id === svc.id)!.data).toBe(f.nodes.find((x) => x.id === svc.id)!.data);
+    expect(other.nodes.find((x) => x.id === pod.id)!.data.pathTone).toBeUndefined();
+  });
+
   it("hides filtered kinds and their edges", () => {
     const f = toFlow({ nodes, edges, hiddenKinds: new Set(["ConfigMap"]), search: "", hoveredId: null, selectedId: null, expandedGroups: new Set() });
     expect(f.nodes.map((x) => x.id).sort()).toEqual(["Pod/p/a", "Service/p/web"]);

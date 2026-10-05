@@ -4,9 +4,15 @@ import type { GraphNode } from "../../shared/ipc/types";
 import { Dot } from "../../shared/ui/Dot";
 import { GRADIENT_KINDS, KIND_META } from "./kindMeta";
 import { NODE_HEIGHT, NODE_WIDTH } from "./layout";
-import type { ResourceFlowNode } from "./toFlow";
+import type { PathTone, ResourceFlowNode } from "./toFlow";
 
-export function ResourceCard({ node, dimmed, expanded, selected }: { node: GraphNode; dimmed: boolean; expanded: boolean; selected: boolean }) {
+// Static class names: Tailwind only generates classes it can see in the source.
+const PATH_RING: Record<PathTone, string> = {
+  err: "border-status-err shadow-[0_0_0_1px_var(--color-status-err)]",
+  warn: "border-status-warn shadow-[0_0_0_1px_var(--color-status-warn)]",
+};
+
+export function ResourceCard({ node, dimmed, expanded, selected, pathTone }: { node: GraphNode; dimmed: boolean; expanded: boolean; selected: boolean; pathTone?: PathTone }) {
   const meta = KIND_META[node.kind];
   const isGroup = node.kind === "PodGroup";
   const isPod = node.kind === "Pod";
@@ -17,7 +23,7 @@ export function ResourceCard({ node, dimmed, expanded, selected }: { node: Graph
       title={isGroup ? "Double-click to expand" : undefined}
       style={{ width: NODE_WIDTH, height: NODE_HEIGHT }}
       className={`flex items-center gap-3 rounded-node border bg-surface px-3 transition-opacity ${
-        selected ? "border-accent shadow-[0_0_0_1px_var(--color-accent)]" : "inset-hairline border-border"
+        selected ? "border-accent shadow-[0_0_0_1px_var(--color-accent)]" : pathTone ? PATH_RING[pathTone] : "inset-hairline border-border"
       } ${dimmed ? "opacity-30" : "opacity-100"}`}
     >
       {isPod || isGroup ? (
@@ -50,7 +56,7 @@ export const ResourceNode = memo(function ResourceNode({ data, selected }: NodeP
   return (
     <>
       <Handle type="target" position={Position.Left} className="!size-2 !border-space !bg-accent" />
-      <ResourceCard node={data.node} dimmed={data.dimmed} expanded={data.expanded} selected={!!selected} />
+      <ResourceCard node={data.node} dimmed={data.dimmed} expanded={data.expanded} selected={!!selected} pathTone={data.pathTone} />
       <Handle type="source" position={Position.Right} className="!size-2 !border-space !bg-accent" />
     </>
   );

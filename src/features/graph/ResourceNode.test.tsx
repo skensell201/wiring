@@ -27,4 +27,9 @@ describe("ResourceCard", () => {
     render(<ResourceCard node={node} dimmed expanded={false} selected={false} />);
     expect(screen.getByTestId("resource-card")).toHaveAttribute("data-dimmed", "true");
   });
+
+  it("outlines a node on the selected problem path in its status colour", () => {
+    render(<ResourceCard node={node} dimmed={false} expanded={false} selected={false} pathTone="err" />);
+    expect(screen.getByTestId("resource-card").className).toContain("border-status-err");
+  });
 });
