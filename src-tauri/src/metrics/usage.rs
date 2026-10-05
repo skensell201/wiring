@@ -113,7 +113,15 @@ pub fn resources<'a>(store: &'a Store, index: &PodIndex<'a>, obj: &'a Object) ->
         .into_iter()
         .filter(|p| p.metadata.name.as_deref().is_some_and(|n| store.metrics.pods.contains_key(n)))
         .filter_map(|p| p.spec.as_ref())
-        .flat_map(|s| s.containers.iter())
+        .flat_map(|s| {
+            // Native sidecars (init containers that keep running) are in the pod's usage too.
+            let sidecars = s
+                .init_containers
+                .iter()
+                .flatten()
+                .filter(|c| c.restart_policy.as_deref() == Some("Always"));
+            s.containers.iter().chain(sidecars)
+        })
         .collect();
     Resources {
         cpu_request: total(&containers, |c| quantity(c, false, "cpu").and_then(cpu_millis)),
@@ -443,5 +451,24 @@ pub(crate) mod tests {
         assert_eq!(PodIndex::new(&s).pods_of(api).len(), 2);
         let pod = s.find(Kind::Pod, Some("m"), "hot").unwrap();
         assert_eq!(PodIndex::new(&s).pods_of(pod).len(), 1, "a pod stands for itself");
+    }
+
+    #[test]
+    fn native_sidecars_count_but_ordinary_init_containers_do_not() {
+        let yaml = "apiVersion: v1\nkind: Pod\nmetadata: { name: p, namespace: m }\nspec:\n  initContainers:\n    - { name: setup, image: x, resources: { requests: { cpu: 1, memory: 1Gi }, limits: { cpu: 1, memory: 1Gi } } }\n    - { name: side, restartPolicy: Always, image: x, resources: { requests: { cpu: 50m, memory: 10Mi }, limits: { cpu: 100m, memory: 20Mi } } }\n  containers: [ { name: c, image: x, resources: { requests: { cpu: 100m, memory: 50Mi }, limits: { cpu: 200m, memory: 100Mi } } } ]\n";
+        let mut s = Store::from_yaml_docs(yaml).unwrap();
+        s.metrics = MetricsSample {
+            state: MetricsState::Available,
+            pods: [("p".to_string(), PodUsage::default())].into_iter().collect(),
+        };
+        assert_eq!(
+            resources(&s, &PodIndex::new(&s), obj(&s, Kind::Pod, "p")),
+            Resources {
+                cpu_request: Some(150),
+                cpu_limit: Some(300),
+                memory_request: Some(60 * MI),
+                memory_limit: Some(120 * MI)
+            }
+        );
     }
 }
