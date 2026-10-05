@@ -20,7 +20,9 @@ pub fn run() {
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_updater::Builder::new().build());
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .menu(updates::build_menu)
+        .on_menu_event(updates::on_menu_event);
 
     commands::register(builder)
         .run(tauri::generate_context!())

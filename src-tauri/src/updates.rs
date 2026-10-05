@@ -4,7 +4,8 @@
 use std::sync::Mutex;
 
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, State};
+use tauri::menu::{Menu, MenuEvent, MenuItem, MenuItemKind};
+use tauri::{AppHandle, Emitter, Runtime, State};
 use tauri_plugin_updater::{Update, UpdaterExt};
 
 use crate::error::{AppError, AppResult, ErrorKind};
@@ -110,6 +111,33 @@ pub async fn install_update(app: AppHandle, state: State<'_, UpdateState>) -> Ap
     app.restart()
 }
 
+pub const MENU_CHECK_UPDATES: &str = "check-updates";
+pub const EVENT_MENU_CHECK: &str = "menu_check_updates";
+
+/// Tauri's default menu plus "Check for Updates…": in the app menu on macOS (after About), in
+/// Help elsewhere.
+pub fn build_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
+    let menu = Menu::default(app)?;
+    let item = MenuItem::with_id(app, MENU_CHECK_UPDATES, "Check for Updates…", true, None::<&str>)?;
+    // On macOS the default menu's first entry is the app submenu (About, services, hide, quit);
+    // it has no fixed id, so it is found by position (tauri 2.11 `Menu::default`).
+    #[cfg(target_os = "macos")]
+    if let Some(MenuItemKind::Submenu(app_menu)) = menu.items()?.into_iter().next() {
+        app_menu.insert(&item, 1)?;
+    }
+    #[cfg(not(target_os = "macos"))]
+    if let Some(MenuItemKind::Submenu(help)) = menu.get(tauri::menu::HELP_SUBMENU_ID) {
+        help.append(&item)?;
+    }
+    Ok(menu)
+}
+
+pub fn on_menu_event<R: Runtime>(app: &AppHandle<R>, event: MenuEvent) {
+    if event.id().0 == MENU_CHECK_UPDATES {
+        let _ = app.emit(EVENT_MENU_CHECK, ());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -159,5 +187,12 @@ mod tests {
             .unwrap(),
             serde_json::json!({ "downloaded": 5, "total": null })
         );
+    }
+
+    #[test]
+    fn the_menu_item_id_is_stable() {
+        // The frontend listens for the event this id triggers; renaming it silently breaks the item.
+        assert_eq!(MENU_CHECK_UPDATES, "check-updates");
+        assert_eq!(EVENT_MENU_CHECK, "menu_check_updates");
     }
 }
