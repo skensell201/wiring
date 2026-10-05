@@ -8,6 +8,7 @@ pub mod manifest;
 pub mod metrics;
 pub mod session;
 pub mod store;
+pub mod updates;
 
 pub fn run() {
     let default_filter = if cfg!(debug_assertions) { "info,wiring_lib=debug" } else { "info" };

@@ -17,7 +17,10 @@ fn updater_trusts_the_wiring_key_and_the_latest_published_release() {
     );
     let pubkey = u["pubkey"].as_str().expect("pubkey");
     // The minisign public key file, base64 as `tauri signer generate` writes it.
-    assert!(pubkey.starts_with("dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6"), "{pubkey}");
+    assert!(
+        pubkey.starts_with("dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6"),
+        "{pubkey}"
+    );
     assert_eq!(u["windows"]["installMode"], "passive");
 }
 
