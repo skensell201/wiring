@@ -2,6 +2,7 @@ import { commands } from "../shared/ipc/commands";
 import { listenAll } from "../shared/ipc/events";
 import type { GraphDelta, Kind } from "../shared/ipc/types";
 import { kindOf, USAGE_KINDS } from "../features/actions/actionKinds";
+import { useUpdateStore } from "../features/update/updateStore";
 import { disconnectedState, requestDetailsRefresh, useAppStore } from "./store";
 import { cancelTableRefresh, scheduleTableRefresh } from "./tableRefresh";
 
@@ -36,6 +37,8 @@ export function wireEvents(): Promise<() => void> {
     },
     object_events: ({ nodeId, events }) => s().setObjectEvents(nodeId, events),
     forwards_changed: (forwards) => s().setForwards(forwards),
+    update_progress: (p) => useUpdateStore.getState().setProgress(p),
+    menu_check_updates: () => void useUpdateStore.getState().check(true),
     metrics_updated: () => {
       const view = s().view;
       if (view.name === "table" && USAGE_KINDS.has(view.kind)) {

@@ -268,3 +268,17 @@ describe("metrics_updated", () => {
     expect(vi.mocked(invoke).mock.calls.filter(([c]) => c === "get_object")).toEqual([]);
   });
 });
+
+describe("update events", () => {
+  it("routes download progress into the update store and the menu item into a manual check", async () => {
+    const { initialUpdateState, useUpdateStore } = await import("../features/update/updateStore");
+    useUpdateStore.setState(initialUpdateState());
+    const stop = await wireEvents();
+    hoisted.handlers!.update_progress({ downloaded: 10, total: 100 });
+    expect(useUpdateStore.getState().progress).toEqual({ downloaded: 10, total: 100 });
+    vi.mocked(invoke).mockResolvedValueOnce({ current: "0.2.0", update: null });
+    hoisted.handlers!.menu_check_updates(null);
+    await vi.waitFor(() => expect(useAppStore.getState().toasts.at(-1)?.message).toBe("Wiring 0.2.0 is up to date"));
+    stop();
+  });
+});
