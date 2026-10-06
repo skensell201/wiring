@@ -30,6 +30,9 @@ export function Header() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
+  // While a connect is in flight the old session (if any) is going away: its namespaces and Create don't apply.
+  const session = connection.context !== null && connection.connecting === null;
+
   // The Navigator normally hosts the macOS traffic lights; its 48 px rail is too narrow for them.
   const inset = isMac && sidebarCollapsed ? "pl-12" : "";
 
@@ -46,8 +49,8 @@ export function Header() {
           ? <span role="img" aria-label="Connecting" className="ml-2 inline-flex align-middle"><LoaderCircle aria-hidden className="size-3.5 text-text-muted motion-safe:animate-spin" /></span>
           : connection.serverVersion ? <span className="ml-2 text-xs font-normal text-text-muted">{connection.serverVersion}</span> : null}
       </button>
-      {connection.context && <NamespacePicker />}
-      {connection.context && (
+      {session && <NamespacePicker />}
+      {session && (
         <Button className="flex items-center gap-1.5" disabled={connection.scope === null} onClick={() => openCreate()}
           title={connection.scope === null ? "Select a namespace first" : "Create an object in this namespace"}>
           <Plus className="size-4" /> Create

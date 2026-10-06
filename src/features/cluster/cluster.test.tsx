@@ -227,6 +227,14 @@ describe("Header", () => {
     expect(screen.queryByRole("button", { name: /create/i })).not.toBeInTheDocument();
   });
 
+  it("hides the old session's namespace picker and Create while switching clusters", () => {
+    useAppStore.setState({ connection: { ...initialState().connection, context: "prod", namespaces: ["shop"], scope: ["shop"], connecting: "staging", busy: true } });
+    render(<Header />);
+    expect(screen.getByRole("button", { name: /staging/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Namespace" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /create/i })).not.toBeInTheDocument();
+  });
+
   it("search box updates the store", () => {
     useAppStore.setState({ connection: { ...initialState().connection, context: "prod" } });
     render(<Header />);
