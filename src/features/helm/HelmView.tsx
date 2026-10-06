@@ -22,9 +22,10 @@ const when = (t: string | null) => {
 
 /** Helm releases of the scope (read-only, from Helm 3 storage Secrets) and the selected one's tabs. */
 export function HelmView() {
-  const { releases, selected, details, search, scope, namespaces, selectRelease, clearRelease, select } = useAppStore(
+  const { releases, selected, details, search, scope, namespaces, denied, partial, selectRelease, clearRelease, select } = useAppStore(
     useShallow((s) => ({
       releases: s.helmReleases, selected: s.helmSelected, details: s.helmDetails, search: s.search,
+      denied: s.deniedKinds.has("Secret"), partial: s.partialKinds.has("Secret"),
       scope: s.connection.scope, namespaces: s.connection.namespaces,
       selectRelease: s.selectRelease, clearRelease: s.clearRelease, select: s.select,
     })),
@@ -39,13 +40,17 @@ export function HelmView() {
 
   let message: string | null = null;
   if (!scope) message = "Select a namespace to see its releases.";
+  else if (denied) message = "No access to Helm releases: they are read from Secrets (RBAC)";
   else if (releases === null) message = "Loading Helm releases…";
   else if (releases.length === 0) message = `No Helm releases in ${scopeLabel(scope, namespaces)}`;
   else if (rows.length === 0) message = `No releases match “${search.trim()}”`;
 
   return (
     <div className="flex h-full w-full flex-col gap-4 overflow-auto bg-space px-8 py-6">
-      {rows.length > 0 && (
+      {scope && !denied && partial && (
+        <p className="text-xs text-text-muted">Some namespaces' Secrets are not readable (RBAC); their releases are missing.</p>
+      )}
+      {rows.length > 0 && !denied && (
         <table role="grid" aria-label="Helm releases" className="w-full border-separate border-spacing-0 rounded-card border border-border bg-surface text-sm">
           <thead className="sticky top-0 z-10 bg-surface">
             <tr>{["Name", "Namespace", "Chart", "App version", "Revision", "Status", "Updated"].map((h) => <th key={h} scope="col" className={HEAD}>{h}</th>)}</tr>

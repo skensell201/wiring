@@ -30,6 +30,20 @@ beforeEach(() => {
 });
 
 describe("HelmView", () => {
+  it("says releases are unreadable when Secrets are denied, not that there are none", () => {
+    useAppStore.setState({ helmReleases: [], deniedKinds: new Set(["Secret"]) });
+    render(<HelmView />);
+    expect(screen.getByText("No access to Helm releases: they are read from Secrets (RBAC)")).toBeInTheDocument();
+    expect(screen.queryByText(/No Helm releases/)).toBeNull();
+  });
+
+  it("notes that releases are missing where Secrets are partly unreadable", () => {
+    useAppStore.setState({ partialKinds: new Set(["Secret"]) });
+    render(<HelmView />);
+    expect(screen.getByRole("grid", { name: "Helm releases" })).toBeInTheDocument();
+    expect(screen.getByText("Some namespaces' Secrets are not readable (RBAC); their releases are missing.")).toBeInTheDocument();
+  });
+
   it("lists releases with chart, revision and a coloured status", () => {
     render(<HelmView />);
     const grid = screen.getByRole("grid", { name: "Helm releases" });

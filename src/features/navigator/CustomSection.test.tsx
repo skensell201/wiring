@@ -185,4 +185,13 @@ describe("Helm section", () => {
     fireEvent.click(row);
     expect(useAppStore.getState().view).toEqual({ name: "helm" });
   });
+
+  it("shows no release count when Secrets are denied", async () => {
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => (cmd === "helm_releases" ? [] : null));
+    useAppStore.setState({ connection: connected(), graphReady: true, helmReleases: [], deniedKinds: new Set(["Secret"]) });
+    render(<HelmSection />);
+    const row = screen.getByRole("button", { name: /^Releases/ });
+    expect(row).toHaveAccessibleName("Releases");
+    expect(row).toHaveAttribute("title", "No access to Secrets (RBAC)");
+  });
 });
