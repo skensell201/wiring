@@ -31,7 +31,7 @@ const FOCUS_SETTLE_FALLBACK_MS = 150;
 function CanvasInner() {
   const s = useAppStore(
     useShallow((s) => ({
-      nodes: s.nodes, edges: s.edges, graphReady: s.graphReady, hiddenKinds: s.hiddenKinds,
+      nodes: s.nodes, edges: s.edges, tooLarge: s.tooLarge, graphReady: s.graphReady, hiddenKinds: s.hiddenKinds,
       search: s.search, hoveredId: s.hoveredId, selectedId: s.selectedId, expandedGroups: s.expandedGroups,
       scope: s.connection.scope, namespaces: s.connection.namespaces, context: s.connection.context, focusRequest: s.focusRequest,
       select: s.select, openActionsMenu: s.openActionsMenu, setHovered: s.setHovered, toggleGroup: s.toggleGroup,
@@ -105,6 +105,7 @@ function CanvasInner() {
   if (!s.context) overlay = "Connect to a cluster to see its graph.";
   else if (!s.scope) overlay = "Select a namespace to see its graph.";
   else if (!s.graphReady) overlay = `Loading ${scopeLabel(s.scope, s.namespaces)}…`;
+  else if (s.tooLarge) overlay = `${s.tooLarge.nodes.toLocaleString("en-US")} objects — too many for the graph. Use the tables, or pick fewer namespaces.`;
   else if (s.nodes.size === 0) overlay = isMulti(s.scope) ? "These namespaces are empty." : "Namespace is empty.";
 
   return (

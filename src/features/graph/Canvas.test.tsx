@@ -90,5 +90,14 @@ describe("Canvas", () => {
     fireEvent.contextMenu(screen.getByText("web-1"), { clientX: 10, clientY: 20 });
     expect(useAppStore.getState().actionsMenu).toEqual({ nodeId: "Pod/shop/web-1", x: 10, y: 20 });
   });
-});
 
+  it("says when the selection is too large for the graph", () => {
+    useAppStore.setState({
+      ...applySnapshot(initialState(), { nodes: [], edges: [] }),
+      tooLarge: { nodes: 1873, kinds: [] },
+      connection: { ...initialState().connection, context: "prod", state: "connected", scope: "all" },
+    });
+    render(<Canvas />);
+    expect(screen.getByText("1,873 objects — too many for the graph. Use the tables, or pick fewer namespaces.")).toBeInTheDocument();
+  });
+});
