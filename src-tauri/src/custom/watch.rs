@@ -14,7 +14,7 @@ use serde_json::Value;
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
-use super::ops::{Source, WatchStream};
+use super::ops::{self, Source, WatchStream};
 use super::{table, CustomTable};
 use crate::discovery::CustomKind;
 use crate::error::{AppError, ErrorKind};
@@ -38,16 +38,31 @@ pub fn spawn(
 
 /// Errors that retrying cannot fix: permission denied, rejected credentials, and a kind
 /// that is not (or no longer) served. A 404 mid-watch is only a re-list trigger.
-fn is_fatal(e: &watcher::Error) -> bool {
-    let kind = match e {
-        watcher::Error::InitialListFailed(k) => {
-            return matches!(AppError::from(k).kind, ErrorKind::Forbidden | ErrorKind::Auth | ErrorKind::NotFound)
-        }
-        watcher::Error::WatchStartFailed(k) | watcher::Error::WatchFailed(k) => AppError::from(k).kind,
-        watcher::Error::WatchError(resp) => crate::error::from_status(resp.code, &resp.message).kind,
-        _ => return false,
+fn fatal_error(e: &watcher::Error) -> Option<AppError> {
+    let (error, initial) = match e {
+        watcher::Error::InitialListFailed(k) => (AppError::from(k), true),
+        watcher::Error::WatchStartFailed(k) | watcher::Error::WatchFailed(k) => (AppError::from(k), false),
+        watcher::Error::WatchError(resp) => (crate::error::from_status(resp.code, &resp.message), false),
+        _ => return None,
     };
-    matches!(kind, ErrorKind::Forbidden | ErrorKind::Auth)
+    match error.kind {
+        ErrorKind::Forbidden | ErrorKind::Auth => Some(error),
+        ErrorKind::NotFound if initial => Some(error),
+        _ => None,
+    }
+}
+
+fn is_fatal(e: &watcher::Error) -> bool {
+    fatal_error(e).is_some()
+}
+
+/// What the final `custom_table` event says about a watch whose streams all ended on `error`.
+fn ended_message(kind: &CustomKind, error: &AppError) -> String {
+    match error.kind {
+        ErrorKind::Forbidden => ops::no_access(&kind.resource).message,
+        ErrorKind::NotFound => format!("{} is no longer served", kind.resource.kind),
+        _ => error.message.clone(),
+    }
 }
 
 /// `stream`, ending right after its first fatal error. The inner watcher is dropped there,
@@ -92,12 +107,12 @@ impl StreamState {
             }
             Ok(Event::InitApply(obj)) => match self.relist.as_mut() {
                 Some(pending) => {
-                    pending.insert(key(&obj), obj);
+                    pending.insert(key(&obj), ops::slim(obj));
                     false
                 }
                 None => {
                     // No `Init` seen (a watcher always sends one first): apply it directly.
-                    self.objects.insert(key(&obj), obj);
+                    self.objects.insert(key(&obj), ops::slim(obj));
                     true
                 }
             },
@@ -106,7 +121,7 @@ impl StreamState {
                 true
             }
             Ok(Event::Apply(obj)) => {
-                self.objects.insert(key(&obj), obj);
+                self.objects.insert(key(&obj), ops::slim(obj));
                 true
             }
             Ok(Event::Delete(obj)) => self.objects.remove(&key(&obj)).is_some(),
@@ -131,12 +146,15 @@ pub(crate) async fn run(kind: CustomKind, streams: Vec<WatchStream>, multi: bool
     );
     // When the gathered changes are due to be emitted; `None` while nothing changed.
     let mut due: Option<Instant> = None;
-    let emit = |states: &[StreamState]| {
-        let all: Vec<Value> = states.iter().flat_map(|s| s.objects.values().cloned()).collect();
-        let table = table::table(&kind, &all, multi, jiff::Timestamp::now());
+    // The latest fatal error; once every stream has ended, the final event carries it.
+    let mut ended: Option<AppError> = None;
+    let emit = |states: &[StreamState], error: Option<String>| {
+        let all = states.iter().flat_map(|s| s.objects.values());
+        let table = table::table(&kind, all, multi, jiff::Timestamp::now());
         emitter.emit(OutEvent::CustomTable(CustomTable {
             resource: kind.resource.clone(),
             table,
+            error,
         }));
     };
     loop {
@@ -144,7 +162,9 @@ pub(crate) async fn run(kind: CustomKind, streams: Vec<WatchStream>, multi: bool
             item = events.next() => {
                 let Some((i, item)) = item else { break };
                 if let Err(e) = &item {
-                    tracing::warn!(kind = %kind.resource.kind, fatal = is_fatal(e), error = %e, "custom resource watch error");
+                    let fatal = fatal_error(e);
+                    tracing::warn!(kind = %kind.resource.kind, fatal = fatal.is_some(), error = %e, "custom resource watch error");
+                    ended = fatal.or(ended);
                 }
                 if states[i].apply(item) && due.is_none() {
                     due = Some(Instant::now() + DEBOUNCE);
@@ -153,13 +173,14 @@ pub(crate) async fn run(kind: CustomKind, streams: Vec<WatchStream>, multi: bool
             // The deadline expression is evaluated even while the branch is disabled.
             _ = tokio::time::sleep_until(due.unwrap_or_else(Instant::now)), if due.is_some() => {
                 due = None;
-                emit(&states);
+                emit(&states, None);
             }
         }
     }
-    // Every stream ended: show the final state before going quiet.
-    if due.is_some() {
-        emit(&states);
+    // Every stream ended: show the final state, and why, before going quiet.
+    let error = ended.map(|e| ended_message(&kind, &e));
+    if due.is_some() || error.is_some() {
+        emit(&states, error);
     }
 }
 
@@ -227,7 +248,7 @@ mod tests {
     }
 
     /// The names (`ns/name`) of the next emitted table.
-    async fn next_names(rx: &mut UnboundedReceiver<OutEvent>) -> Vec<String> {
+    async fn next_table(rx: &mut UnboundedReceiver<OutEvent>) -> CustomTable {
         let ev = tokio::time::timeout(Duration::from_secs(10), rx.recv())
             .await
             .expect("a custom_table event")
@@ -236,6 +257,12 @@ mod tests {
             panic!("expected CustomTable, got {ev:?}")
         };
         assert_eq!(t.resource.kind, "Widget");
+        t
+    }
+
+    async fn next_names(rx: &mut UnboundedReceiver<OutEvent>) -> Vec<String> {
+        let t = next_table(rx).await;
+        assert_eq!(t.error, None, "a live table has no error");
         t.table
             .rows
             .iter()
@@ -319,8 +346,78 @@ mod tests {
         txs[0]
             .unbounded_send(Err(watcher::Error::InitialListFailed(api_error(401))))
             .unwrap();
-        // The last state is still flushed before the task returns.
-        assert_eq!(next_names(&mut rx).await, Vec::<String>::new());
+        // The last state is still flushed before the task returns, saying why it ended.
+        let t = next_table(&mut rx).await;
+        assert!(t.table.rows.is_empty());
+        assert!(t.error.is_some());
         tokio::time::timeout(Duration::from_secs(10), task).await.unwrap().unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn losing_access_everywhere_ends_with_an_rbac_error_state() {
+        let (txs, mut rx, task) = start(2);
+        list(&txs[0], &[obj("a", "x")]);
+        list(&txs[1], &[obj("b", "y")]);
+        assert_eq!(next_names(&mut rx).await, vec!["a/x", "b/y"]);
+        for tx in &txs {
+            tx.unbounded_send(Err(watcher::Error::WatchFailed(api_error(403)))).unwrap();
+        }
+        let t = next_table(&mut rx).await;
+        assert!(t.table.rows.is_empty());
+        assert_eq!(t.error.as_deref(), Some("No access to Widget (RBAC)"));
+        tokio::time::timeout(Duration::from_secs(10), task).await.unwrap().unwrap();
+        assert!(rx.try_recv().is_err(), "one final event");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_kind_that_is_no_longer_served_ends_with_that_error_state() {
+        let (txs, mut rx, task) = start(1);
+        // Nothing listed yet, so nothing changed: the error state is still emitted.
+        txs[0]
+            .unbounded_send(Err(watcher::Error::InitialListFailed(api_error(404))))
+            .unwrap();
+        let t = next_table(&mut rx).await;
+        assert_eq!(t.error.as_deref(), Some("Widget is no longer served"));
+        tokio::time::timeout(Duration::from_secs(10), task).await.unwrap().unwrap();
+    }
+
+    fn heavy(ns: &str, name: &str) -> Value {
+        json!({
+            "metadata": {
+                "namespace": ns, "name": name,
+                "creationTimestamp": "2026-10-03T12:00:00Z",
+                "managedFields": [{ "manager": "kubectl", "fieldsV1": { "f:spec": {} } }],
+                "annotations": {
+                    "kubectl.kubernetes.io/last-applied-configuration": "{\"huge\":true}",
+                    "team": "web"
+                }
+            },
+            "spec": { "size": 3 },
+            "status": { "conditions": [{ "type": "Ready", "status": "True" }] }
+        })
+    }
+
+    #[test]
+    fn stored_objects_drop_managed_fields_and_the_last_applied_annotation() {
+        let mut state = StreamState::default();
+        state.apply(Ok(Event::Init));
+        state.apply(Ok(Event::InitApply(heavy("a", "x"))));
+        state.apply(Ok(Event::InitDone));
+        state.apply(Ok(Event::Apply(heavy("a", "y"))));
+        assert_eq!(state.objects.len(), 2);
+        for stored in state.objects.values() {
+            assert!(stored["metadata"].get("managedFields").is_none(), "{stored}");
+            let annotations = stored["metadata"]["annotations"].as_object().unwrap();
+            assert!(!annotations.contains_key("kubectl.kubernetes.io/last-applied-configuration"));
+            assert_eq!(annotations["team"], "web", "other annotations stay");
+            assert_eq!(stored["spec"]["size"], 3);
+        }
+        // The rows are what the full objects give.
+        let now = "2026-10-06T12:00:00Z".parse().unwrap();
+        let full = [heavy("a", "x"), heavy("a", "y")];
+        assert_eq!(
+            table::table(&kind(), state.objects.values(), true, now),
+            table::table(&kind(), &full, true, now)
+        );
     }
 }

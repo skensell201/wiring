@@ -159,11 +159,13 @@ mod tests {
                 columns: vec![],
                 rows: vec![],
             },
+            error: None,
         });
         let (name, payload) = ev.into_parts();
         assert_eq!(name, "custom_table");
         assert_eq!(payload["resource"]["plural"], "ts");
         assert_eq!(payload["table"]["kind"], "Custom");
+        assert!(payload["error"].is_null(), "error is always present, null when live");
     }
 
     #[test]

@@ -49,6 +49,20 @@ pub fn api(client: &Client, r: &ResourceRef, namespace: Option<&str>) -> Api<Dyn
     }
 }
 
+const LAST_APPLIED: &str = "kubectl.kubernetes.io/last-applied-configuration";
+
+/// `obj` without what a table never shows but can dwarf the rest of the object:
+/// `metadata.managedFields` and kubectl's last-applied-configuration annotation.
+pub(crate) fn slim(mut obj: Value) -> Value {
+    if let Some(meta) = obj.get_mut("metadata").and_then(Value::as_object_mut) {
+        meta.remove("managedFields");
+        if let Some(annotations) = meta.get_mut("annotations").and_then(Value::as_object_mut) {
+            annotations.remove(LAST_APPLIED);
+        }
+    }
+    obj
+}
+
 pub(crate) fn to_value(obj: &DynamicObject) -> AppResult<Value> {
     serde_json::to_value(obj).map_err(|e| AppError::internal(e.to_string()))
 }
@@ -74,6 +88,11 @@ impl Source for KubeSource {
         .boxed()
     }
 
+    // Every watch starts with its own list rather than from the resourceVersion of the
+    // `list_custom` list that preceded it: kube 4.2's `watcher` always begins in its private
+    // `Empty` state (a LIST), with no way to seed `InitListed { resource_version }`. Starting
+    // from that version would take a hand-rolled `Api::watch` that hands over to `watcher`
+    // when it ends, and `watcher` would then list anyway, so the list would only move, not go.
     fn watch(&self, r: &ResourceRef, namespace: Option<&str>) -> WatchStream {
         watcher(api(&self.client, r, namespace), watcher::Config::default())
             .default_backoff()
@@ -130,7 +149,7 @@ async fn list_targets(source: &dyn Source, r: &ResourceRef, targets: Vec<Option<
     for (target, answer) in targets.into_iter().zip(answers) {
         match answer {
             Ok(objects) => {
-                listed.objects.extend(objects);
+                listed.objects.extend(objects.into_iter().map(slim));
                 listed.targets.push(target);
             }
             Err(e) if e.kind == ErrorKind::Forbidden => {
@@ -577,6 +596,19 @@ mod tests {
         src.fail("Certificate", None, ErrorKind::Forbidden);
         let err = list(&src, &cert_ref(false), &NamespaceScope::All, &fallback).await.unwrap_err();
         assert_eq!(err.message, "No access to Certificate (RBAC)");
+    }
+
+    #[tokio::test]
+    async fn listed_objects_drop_managed_fields_and_the_last_applied_annotation() {
+        let src = FakeSource::default();
+        let mut heavy = obj("a", "x");
+        heavy["metadata"]["managedFields"] = json!([{ "manager": "kubectl" }]);
+        heavy["metadata"]["annotations"] = json!({ "kubectl.kubernetes.io/last-applied-configuration": "{}" });
+        src.answer("Certificate", Some("a"), vec![heavy]);
+        let listed = list(&src, &cert_ref(true), &set(&["a"]), &[]).await.unwrap();
+        let mut expected = obj("a", "x");
+        expected["metadata"]["annotations"] = json!({});
+        assert_eq!(listed.objects, vec![expected]);
     }
 
     #[tokio::test]

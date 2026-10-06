@@ -34,7 +34,8 @@ fn row_status(obj: &Value) -> Status {
     }
 }
 
-pub fn table(kind: &CustomKind, objects: &[Value], multi: bool, now: jiff::Timestamp) -> Table {
+/// The table of `objects`, borrowed so a live table is built without copying them.
+pub fn table<'a>(kind: &CustomKind, objects: impl IntoIterator<Item = &'a Value>, multi: bool, now: jiff::Timestamp) -> Table {
     let r = &kind.resource;
     let with_namespace = multi && r.namespaced;
     let printer: Vec<_> = kind.columns.iter().filter(|c| c.json_path.trim() != CREATION).collect();
@@ -49,7 +50,7 @@ pub fn table(kind: &CustomKind, objects: &[Value], multi: bool, now: jiff::Times
     columns.push(col("age", "Age", true)); // numeric, like the built-in tables' Age
 
     let mut rows: Vec<(String, String, TableRow)> = objects
-        .iter()
+        .into_iter()
         .map(|obj| {
             let name = str_at(obj, &["metadata", "name"]).unwrap_or_default().to_string();
             let ns = if r.namespaced {

@@ -153,6 +153,7 @@ where
     Ok(CustomTable {
         resource: kind.resource,
         table,
+        error: None,
     })
 }
 
@@ -457,6 +458,7 @@ mod tests {
         late.emit(OutEvent::CustomTable(CustomTable {
             resource: kind().resource,
             table: crate::custom::table::table(&kind(), &[], false, k8s_openapi::jiff::Timestamp::now()),
+            error: None,
         }));
         assert!(tokio::time::timeout(Duration::from_secs(10), rx.recv()).await.is_err());
     }
