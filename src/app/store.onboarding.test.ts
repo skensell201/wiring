@@ -79,6 +79,16 @@ describe("connecting and the last error", () => {
     expect(useAppStore.getState().connection).toMatchObject({ state: "disconnected", context: null, lastError: { context: "prod" } });
   });
 
+  it("a connect in flight when the user disconnects does not land afterwards", async () => {
+    let resolve!: (v: typeof INFO) => void;
+    vi.mocked(invoke).mockReturnValueOnce(new Promise((r) => { resolve = r as typeof resolve; }));
+    const pending = useAppStore.getState().connect("prod");
+    await useAppStore.getState().disconnect();
+    resolve(INFO);
+    expect(await pending).toBe(false);
+    expect(useAppStore.getState().connection).toEqual(initialState().connection);
+  });
+
   it("disconnect clears the last error", async () => {
     useAppStore.setState({ connection: { ...initialState().connection, lastError: { context: "prod", error: { kind: "auth", message: "no" } } } });
     await useAppStore.getState().disconnect();

@@ -563,6 +563,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
   },
 
   disconnect: async () => {
+    connectSeq++; // a connect still in flight must not land after the user left the session
     try {
       await commands.disconnect();
     } catch (e) {
