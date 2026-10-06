@@ -182,8 +182,8 @@ These are the implementation plans behind each feature:
 To release, push a tag that starts with `v`:
 
 ```bash
-git tag -a v0.3.0 -m "Wiring v0.3.0"
-git push origin v0.3.0
+git tag -a v0.4.0 -m "Wiring v0.4.0"
+git push origin v0.4.0
 ```
 
 The [release workflow](.github/workflows/release.yml) builds a universal macOS `.dmg` and the Windows `.msi` and `.exe` installers, then attaches them to a **draft** GitHub release. Review the draft and publish it. Bump the version in `package.json`, `src-tauri/tauri.conf.json` and `src-tauri/Cargo.toml` before tagging.
