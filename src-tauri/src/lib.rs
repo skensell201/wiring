@@ -11,6 +11,8 @@ pub mod logs;
 pub mod manifest;
 pub mod metrics;
 pub mod session;
+#[cfg(unix)]
+pub mod shell_path;
 pub mod store;
 pub mod updates;
 
@@ -19,6 +21,11 @@ pub fn run() {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| default_filter.into()))
         .init();
+
+    // Before any kubeconfig is read: exec plugins (gke-gcloud-auth-plugin, aws, kubelogin) must
+    // be found on the login shell's PATH even when the app was started from the Dock.
+    #[cfg(unix)]
+    shell_path::apply_login_shell_path();
 
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_store::Builder::new().build())
