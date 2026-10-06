@@ -55,7 +55,11 @@ pub fn run_with_timeout(mut cmd: Command, timeout: Duration) -> Option<String> {
     let deadline = Instant::now() + timeout;
     loop {
         match child.try_wait() {
-            Ok(Some(status)) if status.success() => break,
+            Ok(Some(status)) if status.success() => {
+                // Background jobs of the rc files must not keep stdout open; what the shell wrote stays in the pipe.
+                kill_group(child.id());
+                break;
+            }
             Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
             _ => {
                 kill_group(child.id());
@@ -216,6 +220,31 @@ mod tests {
         let mut cmd = Command::new("/bin/sh");
         cmd.args(["-c", &format!("sleep 30 & echo $! > {}; sleep 10", pid_file.display())]);
         assert_eq!(run_with_timeout(cmd, Duration::from_millis(500)), None);
+        let pid = std::fs::read_to_string(&pid_file).unwrap().trim().to_string();
+        let alive = || {
+            Command::new("kill")
+                .args(["-0", &pid])
+                .stderr(Stdio::null())
+                .status()
+                .unwrap()
+                .success()
+        };
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while alive() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(!alive(), "child {pid} survived");
+    }
+
+    #[test]
+    fn run_with_timeout_does_not_wait_for_background_children_of_a_successful_command() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid_file = dir.path().join("child.pid");
+        let mut cmd = Command::new("/bin/sh");
+        cmd.args(["-c", &format!("printf hello; sleep 30 & echo $! > {}", pid_file.display())]);
+        let started = Instant::now();
+        assert_eq!(run_with_timeout(cmd, Duration::from_secs(5)).as_deref(), Some("hello"));
+        assert!(started.elapsed() < Duration::from_secs(1), "{:?}", started.elapsed());
         let pid = std::fs::read_to_string(&pid_file).unwrap().trim().to_string();
         let alive = || {
             Command::new("kill")
