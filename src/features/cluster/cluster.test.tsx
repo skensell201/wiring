@@ -264,3 +264,25 @@ describe("NamespacePicker on request", () => {
     expect(screen.queryByRole("dialog", { name: "Namespaces" })).toBeNull();
   });
 });
+
+describe("Header status", () => {
+  it("shows the context being dialled with a spinner", () => {
+    useAppStore.setState({ connection: { ...initialState().connection, connecting: "staging", busy: true } });
+    render(<Header />);
+    expect(screen.getByText("staging")).toBeInTheDocument();
+    expect(screen.getByLabelText("Connecting")).toBeInTheDocument();
+  });
+
+  it("says Reconnecting… while the connection is degraded", () => {
+    useAppStore.setState({ connection: { ...initialState().connection, context: "prod", state: "degraded" } });
+    render(<Header />);
+    expect(screen.getByText("Reconnecting…")).toHaveAttribute("title", "Some resources can't be watched right now; Wiring keeps retrying.");
+  });
+
+  it("says nothing extra while connected", () => {
+    useAppStore.setState({ connection: { ...initialState().connection, context: "prod", state: "connected" } });
+    render(<Header />);
+    expect(screen.queryByText("Reconnecting…")).toBeNull();
+    expect(screen.queryByLabelText("Connecting")).toBeNull();
+  });
+});

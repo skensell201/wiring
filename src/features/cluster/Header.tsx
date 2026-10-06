@@ -1,5 +1,5 @@
 import mark from "../../assets/mark.svg";
-import { Plus, Search } from "lucide-react";
+import { LoaderCircle, Plus, Search } from "lucide-react";
 import { useEffect, useRef } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { useAppStore } from "../../app/store";
@@ -41,7 +41,10 @@ export function Header() {
       </span>
       <button type="button" className="no-drag rounded-xl border border-border-strong bg-surface px-4 py-1.5 text-sm font-medium text-text-hi hover:bg-muted" onClick={() => void toggleSidebar()}
         title="Toggle navigator" aria-expanded={!sidebarCollapsed}>
-        ⎈ <span>{connection.context ?? "choose cluster"}</span>{connection.serverVersion ? <span className="ml-2 text-xs font-normal text-text-muted">{connection.serverVersion}</span> : null}
+        ⎈ <span>{connection.connecting ?? connection.context ?? "choose cluster"}</span>
+        {connection.connecting !== null
+          ? <span role="img" aria-label="Connecting" className="ml-2 inline-flex align-middle"><LoaderCircle aria-hidden className="size-3.5 text-text-muted motion-safe:animate-spin" /></span>
+          : connection.serverVersion ? <span className="ml-2 text-xs font-normal text-text-muted">{connection.serverVersion}</span> : null}
       </button>
       {connection.context && <NamespacePicker />}
       {connection.context && (
@@ -58,6 +61,9 @@ export function Header() {
       <UpdatePill />
       <ForwardsIndicator />
       <Dot status={connection.state} className="mx-1 size-2.5" />
+      {connection.context && connection.state === "degraded" && (
+        <span className="text-xs text-status-warn" title="Some resources can't be watched right now; Wiring keeps retrying.">Reconnecting…</span>
+      )}
       {connection.context && (
         <Button disabled={connection.busy} onClick={() => void reconnect()}>Reconnect</Button>
       )}
