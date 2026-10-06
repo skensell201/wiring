@@ -7,7 +7,7 @@ use serde_json::Value;
 #[derive(Debug, Clone, PartialEq)]
 enum Step {
     Field(String),
-    Index(usize),
+    Index(i64),
     All,
     /// `[?(@.a.b=="v")]`: the array items whose `a.b` renders as `v`.
     Filter {
@@ -94,7 +94,14 @@ fn eval<'a>(steps: &[Step], root: &'a Value) -> Vec<&'a Value> {
         for v in current {
             match step {
                 Step::Field(k) => next.extend(v.get(k.as_str())),
-                Step::Index(n) => next.extend(v.get(*n)),
+                Step::Index(n) => {
+                    let at = if *n < 0 {
+                        v.as_array().and_then(|a| a.len().checked_sub(n.unsigned_abs() as usize))
+                    } else {
+                        usize::try_from(*n).ok()
+                    };
+                    next.extend(at.and_then(|i| v.get(i)));
+                }
                 Step::All => match v {
                     Value::Array(items) => next.extend(items.iter()),
                     Value::Object(map) => next.extend(map.values()),
@@ -126,11 +133,12 @@ fn text(v: &Value) -> String {
     }
 }
 
-/// The column text for `path` on `obj`, matches joined with `,` (empty when nothing matches);
+/// The column text for `path` on `obj`: the first match, as the apiserver's table converter
+/// shows it (empty when nothing matches);
 /// `None` when the path is outside the supported subset.
 pub fn render(path: &str, obj: &Value) -> Option<String> {
     let steps = parse(path)?;
-    Some(eval(&steps, obj).into_iter().map(text).collect::<Vec<_>>().join(","))
+    Some(eval(&steps, obj).into_iter().next().map(text).unwrap_or_default())
 }
 
 #[cfg(test)]
@@ -158,8 +166,8 @@ mod tests {
         assert_eq!(render(".spec.paused", &o).as_deref(), Some("false"));
         assert_eq!(render(".spec.hosts[0]", &o).as_deref(), Some("a.example.com"));
         assert_eq!(render(".spec.rules[1].port", &o).as_deref(), Some("443"));
-        assert_eq!(render(".spec.rules[*].port", &o).as_deref(), Some("80,443"));
-        assert_eq!(render(".spec.hosts[*]", &o).as_deref(), Some("a.example.com,b.example.com"));
+        assert_eq!(render(".spec.rules[*].port", &o).as_deref(), Some("80"));
+        assert_eq!(render(".spec.hosts[*]", &o).as_deref(), Some("a.example.com"));
     }
 
     #[test]
@@ -193,12 +201,28 @@ mod tests {
     }
 
     #[test]
+    fn negative_index_counts_from_the_end() {
+        let o = obj();
+        assert_eq!(render(".spec.hosts[-1]", &o).as_deref(), Some("b.example.com"));
+        assert_eq!(render(".spec.hosts[-2]", &o).as_deref(), Some("a.example.com"));
+        assert_eq!(render(".spec.hosts[-3]", &o).as_deref(), Some(""));
+    }
+
+    #[test]
+    fn several_matches_show_only_the_first() {
+        let o = obj();
+        assert_eq!(render(".spec.rules[*].port", &o).as_deref(), Some("80"));
+        assert_eq!(render(".status.conditions[*].type", &o).as_deref(), Some("Ready"));
+    }
+
+    #[test]
     fn unsupported_paths_are_none() {
         let o = obj();
         for path in [
             "..name",
             ".spec.hosts[0:1]",
-            ".spec.hosts[-1]",
+            ".spec.hosts[-]",
+            ".spec.hosts[--1]",
             "spec.replicas",
             ".spec[?(@.x>1)]",
             "",

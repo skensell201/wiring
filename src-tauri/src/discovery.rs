@@ -175,42 +175,108 @@ pub fn crd_infos(crds: &[CustomResourceDefinition]) -> Vec<CrdInfo> {
         .collect()
 }
 
-/// Discover the custom kinds the user can list. Uses aggregated discovery (two requests) and
-/// falls back to per-group discovery on servers without it. The CRDs supply printer columns
-/// when the user may list them; without that access, kinds get Name/Age only and every
-/// non-built-in group counts as custom.
-pub async fn discover(client: Client) -> AppResult<Vec<CustomKind>> {
-    let discovery = match Discovery::new(client.clone()).exclude(BUILTIN_GROUPS).run_aggregated().await {
-        Ok(d) => d,
-        Err(_) => Discovery::new(client.clone())
-            .exclude(BUILTIN_GROUPS)
-            .run()
-            .await
-            .map_err(|e| AppError::from(&e))?,
-    };
+/// The custom kinds the CRDs define, with no group discovery: the storage version when it is
+/// served (else the first served one), the CRD's plural, scope and kind, and the printer
+/// columns of that version. CRDs with no served version are skipped.
+pub fn kinds_from_crds(crds: &[CustomResourceDefinition]) -> Vec<CustomKind> {
+    let found: Vec<Discovered> = crds
+        .iter()
+        .filter_map(|crd| {
+            let served = || crd.spec.versions.iter().filter(|v| v.served);
+            let version = served().find(|v| v.storage).or_else(|| served().next())?;
+            Some(Discovered {
+                group: crd.spec.group.clone(),
+                version: version.name.clone(),
+                kind: crd.spec.names.kind.clone(),
+                plural: crd.spec.names.plural.clone(),
+                namespaced: crd.spec.scope == "Namespaced",
+                verbs: vec!["list".to_string()],
+            })
+        })
+        .collect();
+    classify(&found, Some(&crd_infos(crds)))
+}
+
+/// Flatten per-group discovery results, skipping the groups that failed (an unavailable
+/// APIService must not hide every other group).
+pub fn collect_groups<E: std::fmt::Display>(groups: Vec<(String, Result<Vec<Discovered>, E>)>) -> Vec<Discovered> {
     let mut found = Vec::new();
-    for group in discovery.groups() {
-        for (ar, caps) in group.recommended_resources() {
-            found.push(Discovered {
-                group: ar.group.clone(),
-                version: ar.version.clone(),
-                kind: ar.kind.clone(),
-                plural: ar.plural.clone(),
-                namespaced: caps.scope == Scope::Namespaced,
-                verbs: if caps.supports_operation(verbs::LIST) {
-                    caps.operations.clone()
-                } else {
-                    Vec::new()
-                },
-            });
+    for (group, result) in groups {
+        match result {
+            Ok(mut d) => found.append(&mut d),
+            Err(e) => tracing::debug!("discovery of group {group} failed, skipping: {e}"),
         }
     }
-    let crds = Api::<CustomResourceDefinition>::all(client)
+    found
+}
+
+/// Whether a failed aggregated discovery request means "not supported or unparseable" (so
+/// per-group discovery may work) rather than an auth, authorization, network or server error,
+/// which would fail the fallback too.
+pub fn aggregated_unsupported(e: &kube::Error) -> bool {
+    match e {
+        kube::Error::Api(status) => matches!(status.code, 400 | 404 | 405 | 406 | 415),
+        kube::Error::SerdeError(_) => true,
+        _ => false,
+    }
+}
+
+fn discovered_in(group: &kube::discovery::ApiGroup) -> Vec<Discovered> {
+    group
+        .recommended_resources()
+        .into_iter()
+        .map(|(ar, caps)| Discovered {
+            group: ar.group.clone(),
+            version: ar.version.clone(),
+            kind: ar.kind.clone(),
+            plural: ar.plural.clone(),
+            namespaced: caps.scope == Scope::Namespaced,
+            verbs: if caps.supports_operation(verbs::LIST) {
+                caps.operations.clone()
+            } else {
+                Vec::new()
+            },
+        })
+        .collect()
+}
+
+/// Discover the custom kinds the user can list. The CRDs alone are enough when the user may
+/// list them. Otherwise (no CRD access) kinds come from group discovery, which gets Name/Age
+/// only: aggregated discovery (two requests), or on servers without it one request per group,
+/// skipping groups that fail. Auth, authorization and network errors are returned.
+pub async fn discover(client: Client) -> AppResult<Vec<CustomKind>> {
+    match Api::<CustomResourceDefinition>::all(client.clone())
         .list(&ListParams::default())
         .await
-        .ok()
-        .map(|list| crd_infos(&list.items));
-    Ok(classify(&found, crds.as_deref()))
+    {
+        Ok(list) => return Ok(kinds_from_crds(&list.items)),
+        Err(e @ (kube::Error::Auth(_) | kube::Error::HyperError(_) | kube::Error::Service(_))) => return Err(AppError::from(&e)),
+        Err(kube::Error::Api(s)) if s.code == 401 => return Err(AppError::from(&kube::Error::Api(s))),
+        Err(_) => {}
+    }
+    let mut found = Vec::new();
+    match Discovery::new(client.clone()).exclude(BUILTIN_GROUPS).run_aggregated().await {
+        Ok(d) => d.groups().for_each(|g| found.extend(discovered_in(g))),
+        Err(e) if aggregated_unsupported(&e) => {
+            let names: Vec<String> = client
+                .list_api_groups()
+                .await
+                .map_err(|e| AppError::from(&e))?
+                .groups
+                .into_iter()
+                .map(|g| g.name)
+                .filter(|n| !BUILTIN_GROUPS.contains(&n.as_str()))
+                .collect();
+            let mut results = Vec::new();
+            for name in names {
+                let r = kube::discovery::oneshot::group(&client, &name).await.map(|g| discovered_in(&g));
+                results.push((name, r));
+            }
+            found = collect_groups(results);
+        }
+        Err(e) => return Err(AppError::from(&e)),
+    }
+    Ok(classify(&found, None))
 }
 
 #[cfg(test)]
@@ -381,5 +447,83 @@ mod tests {
         assert_eq!(v1, vec!["Ready", "Secret", "Age"], "priority 1 is a wide-only column");
         assert_eq!(infos[0].columns["v1"][2].type_, "date");
         assert!(infos[0].columns["v1beta1"].is_empty());
+    }
+
+    fn crd_json(group: &str, plural: &str, kind: &str, scope: &str, versions: serde_json::Value) -> CustomResourceDefinition {
+        serde_json::from_value(serde_json::json!({
+            "apiVersion": "apiextensions.k8s.io/v1",
+            "kind": "CustomResourceDefinition",
+            "metadata": { "name": format!("{plural}.{group}") },
+            "spec": { "group": group, "scope": scope,
+                      "names": { "plural": plural, "singular": plural, "kind": kind },
+                      "versions": versions }
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn kinds_are_built_from_crds_alone() {
+        let crds = [
+            crd_json(
+                "example.com",
+                "widgets",
+                "Widget",
+                "Namespaced",
+                serde_json::json!([
+                    { "name": "v1alpha1", "served": true, "storage": false },
+                    { "name": "v1", "served": true, "storage": true,
+                      "additionalPrinterColumns": [{ "name": "Size", "type": "string", "jsonPath": ".spec.size" }] },
+                    { "name": "v0", "served": false, "storage": false }
+                ]),
+            ),
+            crd_json(
+                "example.com",
+                "clusterthings",
+                "ClusterThing",
+                "Cluster",
+                serde_json::json!([{ "name": "v2", "served": true, "storage": false }, { "name": "v1", "served": true, "storage": true }]),
+            ),
+            crd_json(
+                "example.com",
+                "gone",
+                "Gone",
+                "Namespaced",
+                serde_json::json!([{ "name": "v1", "served": false, "storage": true }]),
+            ),
+        ];
+        let kinds = kinds_from_crds(&crds);
+        let names: Vec<(&str, &str, bool)> = kinds
+            .iter()
+            .map(|k| (k.resource.kind.as_str(), k.resource.version.as_str(), k.resource.namespaced))
+            .collect();
+        assert_eq!(
+            names,
+            vec![("ClusterThing", "v1", false), ("Widget", "v1", true)],
+            "storage version wins; unserved CRDs are skipped"
+        );
+        assert_eq!(kinds[1].resource.plural, "widgets");
+        assert_eq!(kinds[1].columns[0].name, "Size");
+    }
+
+    #[test]
+    fn a_failing_group_does_not_hide_the_others() {
+        let ok = |kind: &str| Ok(vec![found("a.example.com", "v1", kind, "things", true, LW)]);
+        let groups: Vec<(String, Result<Vec<Discovered>, String>)> = vec![
+            ("a.example.com".into(), ok("Alpha")),
+            ("custom.metrics.k8s.io".into(), Err("503 service unavailable".into())),
+            ("b.example.com".into(), ok("Beta")),
+        ];
+        let all = collect_groups(groups);
+        assert_eq!(all.iter().map(|d| d.kind.as_str()).collect::<Vec<_>>(), vec!["Alpha", "Beta"]);
+    }
+
+    #[test]
+    fn only_an_unsupported_aggregated_reply_falls_back() {
+        let api = |code: u16| kube::Error::Api(kube::core::Status::failure("x", "y").with_code(code).boxed());
+        assert!(aggregated_unsupported(&api(404)));
+        assert!(aggregated_unsupported(&api(406)));
+        assert!(!aggregated_unsupported(&api(401)));
+        assert!(!aggregated_unsupported(&api(403)));
+        assert!(!aggregated_unsupported(&api(500)));
     }
 }
