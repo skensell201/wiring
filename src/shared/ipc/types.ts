@@ -5,6 +5,7 @@
 export const KINDS = [
   "Deployment", "StatefulSet", "DaemonSet", "ReplicaSet", "Job", "CronJob", "Pod", "Service", "Ingress",
   "ConfigMap", "Secret", "PersistentVolumeClaim", "PersistentVolume", "ServiceAccount", "HorizontalPodAutoscaler",
+  "NetworkPolicy", "Role", "RoleBinding", "ClusterRole", "ClusterRoleBinding", "Node",
   "PodGroup",
 ] as const;
 export type Kind = (typeof KINDS)[number];
@@ -12,7 +13,7 @@ export type Kind = (typeof KINDS)[number];
 export const STATUSES = ["ok", "warn", "err", "unknown"] as const;
 export type Status = (typeof STATUSES)[number];
 
-export const RELATIONS = ["owns", "selects", "routes", "mounts", "envFrom", "claims", "binds", "usesSA", "scales"] as const;
+export const RELATIONS = ["owns", "selects", "routes", "mounts", "envFrom", "claims", "binds", "usesSA", "scales", "applies", "allows", "grants", "subject", "runsOn"] as const;
 export type Relation = (typeof RELATIONS)[number];
 
 export const ERROR_KINDS = ["auth", "network", "forbidden", "notFound", "conflict", "invalid", "internal"] as const;

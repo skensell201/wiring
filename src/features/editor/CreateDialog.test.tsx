@@ -41,7 +41,7 @@ describe("CreateDialog", () => {
     const options = Array.from((screen.getByLabelText("Kind") as HTMLSelectElement).options).map((o) => o.value);
     expect(options).toContain("PersistentVolume");
     expect(options).not.toContain("PodGroup");
-    expect(options).toHaveLength(15);
+    expect(options).toHaveLength(18);
   });
 
   it("typing edits the buffer; Create submits; Cancel closes", () => {

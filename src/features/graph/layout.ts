@@ -26,6 +26,9 @@ const LAYERS: Record<Kind, number> = {
   ReplicaSet: 4, Job: 4, PersistentVolume: 4,
   ConfigMap: 5, Secret: 5, PersistentVolumeClaim: 5, ServiceAccount: 5,
   Pod: 6, PodGroup: 6,
+  // Bindings sit left of roles and SAs, policies left of pods and nodes right of them, so
+  // `applies`, `grants`, `subject` and `runsOn` are forward edges.
+  RoleBinding: 3, ClusterRoleBinding: 3, Role: 4, ClusterRole: 4, NetworkPolicy: 5, Node: 7,
 };
 
 export function layerOf(kind: Kind): number {

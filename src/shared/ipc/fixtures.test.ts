@@ -7,6 +7,7 @@ import execMessage from "./fixtures/exec_message.json";
 import execPod from "./fixtures/exec_pod.json";
 import forward from "./fixtures/forward.json";
 import graph from "./fixtures/graph.json";
+import graphExtras from "./fixtures/graph_extras.json";
 import graphTooLarge from "./fixtures/graph_too_large.json";
 import graphDelta from "./fixtures/graph_delta.json";
 import logMessage from "./fixtures/log_message.json";
@@ -29,7 +30,8 @@ describe("IPC fixtures match the TypeScript types", () => {
   it("context_info", () => expect(isContextInfo(contextInfo)).toBe(true));
   it("connect_info", () => expect(isConnectInfo(connectInfo)).toBe(true));
   it("graph", () => expect(isGraph(graph)).toBe(true));
-  it("graph_too_large", () => expect(isGraph(graphTooLarge)).toBe(true));
+  it("accepts a graph with policies, RBAC and nodes", () => expect(isGraph(graphExtras)).toBe(true));
+it("graph_too_large", () => expect(isGraph(graphTooLarge)).toBe(true));
   it("rejects a graph with a broken tooLarge", () => expect(isGraph({ nodes: [], edges: [], tooLarge: { nodes: "many", kinds: [] } })).toBe(false));
   it("graph_delta", () => expect(isGraphDelta(graphDelta)).toBe(true));
   it("object_details", () => expect(isObjectDetails(objectDetails)).toBe(true));
@@ -62,10 +64,10 @@ describe("IPC fixtures match the TypeScript types", () => {
   });
 
   it("enum lists match docs/ipc-contract.md", () => {
-    expect(KINDS).toHaveLength(16);
+    expect(KINDS).toHaveLength(22);
     expect(KINDS).toContain("PodGroup");
     expect(STATUSES).toEqual(["ok", "warn", "err", "unknown"]);
-    expect(RELATIONS).toEqual(["owns", "selects", "routes", "mounts", "envFrom", "claims", "binds", "usesSA", "scales"]);
+    expect(RELATIONS).toEqual(["owns", "selects", "routes", "mounts", "envFrom", "claims", "binds", "usesSA", "scales", "applies", "allows", "grants", "subject", "runsOn"]);
     expect(ERROR_KINDS).toEqual(["auth", "network", "forbidden", "notFound", "conflict", "invalid", "internal"]);
     expect(CONNECTION_STATES).toEqual(["connected", "degraded", "disconnected"]);
   });

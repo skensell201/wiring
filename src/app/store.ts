@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { template, type CreatableKind } from "../features/editor/templates";
+import { isCreatable, template, type CreatableKind } from "../features/editor/templates";
 import { KIND_META } from "../features/graph/kindMeta";
 import { logBuffer } from "../features/logs/logBuffer";
 import { applyLogMessage, initialLogs, type LogsState } from "../features/logs/logsState";
@@ -688,7 +688,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
   openCreate: (requested) =>
     set((s) => {
       // Creating from a kind's table most likely means "one more of these".
-      const tableKind = s.view.name === "table" && s.view.kind !== "PodGroup" ? s.view.kind : null;
+      const tableKind = s.view.name === "table" && isCreatable(s.view.kind) ? s.view.kind : null;
       const kind = requested ?? tableKind ?? "Deployment";
       const namespace = firstNamespace(s.connection.scope, s.connection.namespaces) ?? "default";
       return { createDialog: { open: true, kind, buffer: template(kind, namespace), namespace, error: null, submitting: false } };
