@@ -503,8 +503,11 @@ export const useAppStore = create<AppState>()((set, get) => ({
   },
 
   retryConnect: async () => {
-    const last = get().connection.lastError;
-    if (last) await connectContext(last.context);
+    const { lastError: last, connecting } = get().connection;
+    if (!last || connecting !== null) return;
+    // A context gone since the failure (removed before a rescan) has nothing to dial: back to the list.
+    if (!get().contexts.some((c) => c.name === last.context)) return get().dismissConnectError();
+    await connectContext(last.context);
   },
 
   dismissConnectError: async () => {
@@ -563,7 +566,9 @@ export const useAppStore = create<AppState>()((set, get) => ({
   },
 
   disconnect: async () => {
-    connectSeq++; // a connect still in flight must not land after the user left the session
+    // A connect still in flight must not land after the user left the session. The backend agrees:
+    // `connect` holds the session lock across Session::connect, so this disconnect tears it down after.
+    connectSeq++;
     try {
       await commands.disconnect();
     } catch (e) {

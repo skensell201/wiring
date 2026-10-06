@@ -103,6 +103,20 @@ describe("connecting and the last error", () => {
     expect(useAppStore.getState().connection).toMatchObject({ context: "prod", lastError: null });
   });
 
+  it("retryConnect does nothing while a connect is in flight", async () => {
+    useAppStore.setState({ contexts: [PROD], connection: { ...initialState().connection, connecting: "prod", lastError: { context: "prod", error: { kind: "auth", message: "no" } } } });
+    await useAppStore.getState().retryConnect();
+    expect(called()).not.toContain("connect");
+  });
+
+  it("retryConnect leaves the failure pane when the failed context is gone", async () => {
+    useAppStore.setState({ contexts: [], sidebarCollapsed: true, connection: { ...initialState().connection, lastError: { context: "prod", error: { kind: "auth", message: "no" } } } });
+    await useAppStore.getState().retryConnect();
+    expect(called()).not.toContain("connect");
+    expect(useAppStore.getState().connection.lastError).toBeNull();
+    expect(useAppStore.getState().sidebarCollapsed).toBe(false);
+  });
+
   it("dismissConnectError clears the error and opens a collapsed navigator", async () => {
     useAppStore.setState({ sidebarCollapsed: true, connection: { ...initialState().connection, lastError: { context: "prod", error: { kind: "auth", message: "no" } } } });
     await useAppStore.getState().dismissConnectError();
