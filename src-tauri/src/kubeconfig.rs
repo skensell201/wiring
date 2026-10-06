@@ -345,6 +345,46 @@ mod tests {
     }
 
     #[test]
+    fn invalid_source_errors_never_echo_file_values() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut sources = vec![];
+        for (name, body) in [
+            ("a", "apiVersion: v1\nkind: Config\ncontexts: SECRET-abc123\n"),
+            ("b", "apiVersion: v1\nkind: Config\nusers: { token: SECRET-xyz }\n"),
+            ("c", "apiVersion: v1\nkind: Config\nclusters: SECRET-q\n"),
+            (
+                "d",
+                "apiVersion: v1\nkind: Config\ncontexts:\n  - name: SECRET-n\n    context: SECRET-ctx\n",
+            ),
+            (
+                "e",
+                "apiVersion: v1\nkind: Config\nusers:\n  - name: u\n    user: { token: [SECRET-t] }\n",
+            ),
+            (
+                "g",
+                "apiVersion: v1\nkind: Config\nclusters:\n  - name: c\n    cluster: { server: x, insecure-skip-tls-verify: SECRET-b }\n",
+            ),
+            (
+                "h",
+                "apiVersion: v1\nkind: Config\nusers:\n  - name: u\n    user: { exec: { command: x, env: SECRET-e, apiVersion: y } }\n",
+            ),
+            ("i", "{\"apiVersion\": \"v1\", \"contexts\": \"SECRET-j\"}"),
+            ("f", "apiVersion: SECRET-v\nkind: Config\ncurrent-context: [SECRET-c]\n"),
+        ] {
+            let path = dir.path().join(name);
+            std::fs::write(&path, body).unwrap();
+            sources.push((path, SourceOrigin::Added));
+        }
+        for r in scan(&sources) {
+            assert_eq!(r.state, SourceState::Invalid, "{r:?}");
+            let err = r.error.unwrap();
+            assert!(!err.contains("SECRET") && !err.contains('\n'), "{err}");
+        }
+        let v = validate_file(&dir.path().join("a")).unwrap_err();
+        assert!(!v.message.contains("SECRET"), "{}", v.message);
+    }
+
+    #[test]
     fn validate_file_reports_first_line_only() {
         let dir = tempfile::tempdir().unwrap();
         let bad = unparseable_file(dir.path());
