@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use kube::config::Kubeconfig;
+use kube::config::{Kubeconfig, KubeconfigError};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{AppError, AppResult, ErrorKind};
@@ -58,6 +58,20 @@ fn first_line(e: &impl std::fmt::Display) -> String {
     e.to_string().lines().next().unwrap_or_default().to_string()
 }
 
+/// A description of a kubeconfig read/parse failure built from the error's
+/// kind and location only — never the parser's own text, which can echo
+/// values (tokens, keys) from the file.
+fn describe_read_error(e: &KubeconfigError) -> String {
+    match e {
+        KubeconfigError::ReadConfig(io, _) => io.kind().to_string(),
+        KubeconfigError::Parse(parse) => match parse.location() {
+            Some(at) => format!("not a valid kubeconfig (line {}, column {})", at.line(), at.column()),
+            None => "not a valid kubeconfig".to_string(),
+        },
+        _ => "not a valid kubeconfig".to_string(),
+    }
+}
+
 pub fn split_env_paths(value: &str) -> Vec<PathBuf> {
     std::env::split_paths(value).filter(|p| !p.as_os_str().is_empty()).collect()
 }
@@ -97,7 +111,7 @@ fn read_one(path: &Path) -> Read {
     }
     match Kubeconfig::read_from(path) {
         Ok(cfg) => Read::Parsed(Box::new(cfg)),
-        Err(e) => Read::Invalid(first_line(&e)),
+        Err(e) => Read::Invalid(describe_read_error(&e)),
     }
 }
 
@@ -188,7 +202,7 @@ pub fn validate_file(path: &Path) -> AppResult<()> {
     if let Err(e) = Kubeconfig::read_from(path) {
         return Err(AppError::new(
             ErrorKind::Internal,
-            format!("{}: invalid kubeconfig ({})", path.display(), first_line(&e)),
+            format!("{}: invalid kubeconfig ({})", path.display(), describe_read_error(&e)),
         ));
     }
     Ok(())
@@ -369,6 +383,10 @@ mod tests {
                 "apiVersion: v1\nkind: Config\nusers:\n  - name: u\n    user: { exec: { command: x, env: SECRET-e, apiVersion: y } }\n",
             ),
             ("i", "{\"apiVersion\": \"v1\", \"contexts\": \"SECRET-j\"}"),
+            ("j", "apiVersion: v1\nkind: Config\nSECRET-k: 1\nSECRET-k: 2\n"),
+            ("k", "apiVersion: v1\nkind: Config\nclusters:\n  - name: c\n    cluster: { server: x }\n    SECRET-dup: 1\n    name: SECRET-dup2\n    name: SECRET-dup3\n"),
+            ("l", "apiVersion: v1\nkind: Config\nusers:\n  - name: u\n    user: { exec: { command: x, apiVersion: y, interactiveMode: SECRET-v } }\n"),
+            ("m", "apiVersion: v1\nkind: Config\ncontexts: { SECRET-map: 1 }\n"),
             ("f", "apiVersion: SECRET-v\nkind: Config\ncurrent-context: [SECRET-c]\n"),
         ] {
             let path = dir.path().join(name);
@@ -379,9 +397,24 @@ mod tests {
             assert_eq!(r.state, SourceState::Invalid, "{r:?}");
             let err = r.error.unwrap();
             assert!(!err.contains("SECRET") && !err.contains('\n'), "{err}");
+            assert!(err.starts_with("not a valid kubeconfig"), "{err}");
         }
+        let located = scan(&sources[..1])[0].error.clone().unwrap();
+        assert_eq!(located, "not a valid kubeconfig (line 3, column 11)");
         let v = validate_file(&dir.path().join("a")).unwrap_err();
         assert!(!v.message.contains("SECRET"), "{}", v.message);
+    }
+
+    #[test]
+    fn a_directory_is_invalid_with_the_io_reason() {
+        let dir = tempfile::tempdir().unwrap();
+        let r = scan(&[(dir.path().to_path_buf(), SourceOrigin::Added)]);
+        assert_eq!(r[0].state, SourceState::Invalid);
+        let err = r[0].error.as_deref().unwrap();
+        assert!(
+            !err.is_empty() && !err.contains("not a valid kubeconfig") && !err.contains('\n'),
+            "{err}"
+        );
     }
 
     #[test]
