@@ -203,3 +203,44 @@ describe("too-large switch notice", () => {
     expect(notices()[0].message).toContain("Pick fewer namespaces to see the graph.");
   });
 });
+
+describe("adding a kubeconfig", () => {
+  it("says how many contexts the file brought, from its source report", async () => {
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      if (cmd === "add_kubeconfig") return [PROD];
+      if (cmd === "kubeconfig_sources") return [...SOURCES, { path: "/Users/me/team.yaml", origin: "added", state: "ok", contexts: 2, error: null }];
+      return null;
+    });
+    await useAppStore.getState().addKubeconfig("/Users/me/team.yaml");
+    expect(useAppStore.getState().contexts).toEqual([PROD]);
+    expect(useAppStore.getState().kubeconfigSources).toHaveLength(2);
+    expect(useAppStore.getState().toasts.at(-1)).toMatchObject({ kind: "info", message: "Added team.yaml: 2 contexts" });
+  });
+
+  it("says one context in the singular", async () => {
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      if (cmd === "add_kubeconfig") return [PROD];
+      if (cmd === "kubeconfig_sources") return [{ path: "C:\\Users\\me\\one.yaml", origin: "added", state: "ok", contexts: 1, error: null }];
+      return null;
+    });
+    await useAppStore.getState().addKubeconfig("C:\\Users\\me\\one.yaml");
+    expect(useAppStore.getState().toasts.at(-1)).toMatchObject({ message: "Added one.yaml: 1 context" });
+  });
+
+  it("says just the file name when its count is unknown", async () => {
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      if (cmd === "add_kubeconfig") return [PROD];
+      if (cmd === "kubeconfig_sources") return [];
+      return null;
+    });
+    await useAppStore.getState().addKubeconfig("/Users/me/team.yaml");
+    expect(useAppStore.getState().toasts.at(-1)).toMatchObject({ kind: "info", message: "Added team.yaml" });
+  });
+
+  it("toasts a refused file and saves nothing", async () => {
+    vi.mocked(invoke).mockRejectedValueOnce({ kind: "invalid", message: "empty.yaml has no contexts" });
+    await useAppStore.getState().addKubeconfig("/tmp/empty.yaml");
+    expect(useAppStore.getState().toasts.at(-1)).toMatchObject({ kind: "invalid", message: "empty.yaml has no contexts" });
+    expect(called()).not.toContain("kubeconfig_sources");
+  });
+});

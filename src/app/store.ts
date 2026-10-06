@@ -454,6 +454,9 @@ let customKindsGen = 0;
 /** Connect generations: a connect superseded by a later one neither lands its result nor its error. */
 let connectSeq = 0;
 
+/** `team.yaml` from `/Users/me/team.yaml` (or a Windows path). */
+const fileName = (path: string) => path.split(/[\\/]/).pop() || path;
+
 export const useAppStore = create<AppState>()((set, get) => ({
   ...initialState(),
 
@@ -539,8 +542,16 @@ export const useAppStore = create<AppState>()((set, get) => ({
     try {
       set({ contexts: await commands.addKubeconfig(path) });
     } catch (e) {
+      // Missing, unparseable or without contexts: the backend refused it and saved nothing.
       get().toast(toAppError(e));
+      return;
     }
+    await get().loadKubeconfigSources();
+    // The file's own count: the merged context list is first-file-wins and would undercount.
+    // The backend stores the path as given, so it matches; if the report lacks it, name the file only.
+    const n = get().kubeconfigSources?.find((s) => s.path === path)?.contexts;
+    const what = n === undefined ? "" : `: ${n} ${n === 1 ? "context" : "contexts"}`;
+    get().toast({ kind: "info", message: `Added ${fileName(path)}${what}` });
   },
 
   connect: async (context) => {
