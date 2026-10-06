@@ -12,6 +12,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { useAppStore } from "../../app/store";
+import { isMulti, scopeLabel } from "../../shared/scope";
 import { RelationEdge } from "./RelationEdge";
 import { ResourceNode } from "./ResourceNode";
 import { toFlow, type ResourceFlowNode } from "./toFlow";
@@ -27,7 +28,7 @@ function CanvasInner() {
     useShallow((s) => ({
       nodes: s.nodes, edges: s.edges, graphReady: s.graphReady, hiddenKinds: s.hiddenKinds,
       search: s.search, hoveredId: s.hoveredId, selectedId: s.selectedId, expandedGroups: s.expandedGroups,
-      namespace: s.connection.namespace, context: s.connection.context, focusRequest: s.focusRequest,
+      scope: s.connection.scope, namespaces: s.connection.namespaces, context: s.connection.context, focusRequest: s.focusRequest,
       select: s.select, openActionsMenu: s.openActionsMenu, setHovered: s.setHovered, toggleGroup: s.toggleGroup,
       clearFocusRequest: s.clearFocusRequest,
     })),
@@ -51,7 +52,7 @@ function CanvasInner() {
     fitView({ padding: 0.2, maxZoom: 1 });
     const timeout = setTimeout(() => { if (!focusPending.current) void fitView({ padding: 0.2, maxZoom: 1 }); }, 50);
     return () => clearTimeout(timeout);
-  }, [s.graphReady, s.namespace, fitView]);
+  }, [s.graphReady, s.scope, fitView]);
 
   // "Show in graph": centre on the requested node every time the request is bumped. Coming from a
   // table the canvas has just mounted, so the node is unmeasured: focus once now, and once more
@@ -87,9 +88,9 @@ function CanvasInner() {
 
   let overlay: string | null = null;
   if (!s.context) overlay = "Connect to a cluster to see its graph.";
-  else if (!s.namespace) overlay = "Select a namespace to see its graph.";
-  else if (!s.graphReady) overlay = `Loading ${s.namespace}…`;
-  else if (s.nodes.size === 0) overlay = "Namespace is empty.";
+  else if (!s.scope) overlay = "Select a namespace to see its graph.";
+  else if (!s.graphReady) overlay = `Loading ${scopeLabel(s.scope, s.namespaces)}…`;
+  else if (s.nodes.size === 0) overlay = isMulti(s.scope) ? "These namespaces are empty." : "Namespace is empty.";
 
   return (
     <div className="relative h-full w-full bg-space">

@@ -35,12 +35,6 @@ export const settings = {
       /* settings are a convenience; never block the UI */
     }
   },
-  async getLastNamespace(context: string): Promise<string | null> {
-    return (await readNamespaces())[context] ?? null;
-  },
-  async setLastNamespace(context: string, namespace: string): Promise<void> {
-    await settings.set("lastNamespace", { ...(await readNamespaces()), [context]: namespace });
-  },
   /** The context's remembered scope; a pre-scope `lastNamespace` string counts as a one-namespace scope. */
   async getLastScope(context: string): Promise<NamespaceScope | null> {
     const scopes = await settings.get<unknown>("lastScope");

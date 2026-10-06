@@ -8,6 +8,7 @@ const { baseInvoke, POD_YAML } = vi.hoisted(() => {
   const baseInvoke = async (cmd: string): Promise<unknown> => {
     if (cmd === "get_object") return { yaml: POD_YAML, summary: [["Name", "web-1"]], related: [] };
     if (cmd === "denied_kinds") return ["Secret"];
+    if (cmd === "partial_kinds") return ["Pod"];
     if (cmd === "connect") return { context: "prod", serverVersion: "v1.33.0", namespaces: ["default", "payments"] };
     if (cmd === "start_logs") return 42;
     return null;
@@ -24,8 +25,8 @@ vi.mock("../shared/settings", () => ({
   settings: {
     get: vi.fn(async () => null),
     set: vi.fn(async () => {}),
-    getLastNamespace: vi.fn(async () => null),
-    setLastNamespace: vi.fn(async () => {}),
+    getLastScope: vi.fn(async () => null),
+    setLastScope: vi.fn(async () => {}),
     getSidebarCollapsed: vi.fn(async () => false),
     setSidebarCollapsed: vi.fn(async () => {}),
     getDetailsHeight: vi.fn(async () => null),
@@ -34,6 +35,7 @@ vi.mock("../shared/settings", () => ({
 }));
 
 import { invoke } from "../shared/ipc/tauri";
+import { settings } from "../shared/settings";
 import { template } from "../features/editor/templates";
 import { logBuffer } from "../features/logs/logBuffer";
 import { initialLogs } from "../features/logs/logsState";
@@ -138,7 +140,7 @@ describe("actions", () => {
   });
 
   it("the store ignores a snapshot from a namespace that is no longer selected", () => {
-    useAppStore.setState({ connection: { ...initialState().connection, context: "prod", namespace: "b" } });
+    useAppStore.setState({ connection: { ...initialState().connection, context: "prod", scope: ["b"] } });
     useAppStore.getState().applySnapshot({ nodes: [node("Pod/a/x", { namespace: "a" })], edges: [] });
     expect(useAppStore.getState().nodes.size).toBe(0);
     expect(useAppStore.getState().graphReady).toBe(false);
@@ -154,7 +156,7 @@ describe("actions", () => {
     useAppStore.setState({ connection: { ...initialState().connection, context: "prod" } });
     const first = useAppStore.getState().selectNamespace("a");
     // A newer selection lands while the first one is still talking to the backend.
-    useAppStore.setState((s) => ({ connection: { ...s.connection, namespace: "b" } }));
+    useAppStore.setState((s) => ({ connection: { ...s.connection, scope: ["b"] } }));
     await first;
     expect(useAppStore.getState().deniedKinds.size).toBe(0);
   });
@@ -165,9 +167,57 @@ describe("actions", () => {
     const s = useAppStore.getState();
     expect(s.nodes.size).toBe(0);
     expect(s.graphReady).toBe(false);
-    expect(s.connection.namespace).toBe("payments");
-    expect(invoke).toHaveBeenCalledWith("select_namespace", { namespace: "payments", expandedGroups: [] });
+    expect(s.connection.scope).toEqual(["payments"]);
+    expect(invoke).toHaveBeenCalledWith("select_namespaces", { namespaces: ["payments"], expandedGroups: [] });
     expect([...s.deniedKinds]).toEqual(["Secret"]);
+    expect([...s.partialKinds]).toEqual(["Pod"]);
+  });
+
+  it("selectScope watches several namespaces and remembers them", async () => {
+    useAppStore.setState({ connection: { ...initialState().connection, context: "prod", namespaces: ["a", "b"] } });
+    await useAppStore.getState().selectScope(["a", "b"]);
+    expect(invoke).toHaveBeenCalledWith("select_namespaces", { namespaces: ["a", "b"], expandedGroups: [] });
+    expect(useAppStore.getState().connection.scope).toEqual(["a", "b"]);
+    expect(settings.setLastScope).toHaveBeenCalledWith("prod", ["a", "b"]);
+  });
+
+  it("selectScope('all') sends null", async () => {
+    await useAppStore.getState().selectScope("all");
+    expect(invoke).toHaveBeenCalledWith("select_namespaces", { namespaces: null, expandedGroups: [] });
+  });
+
+  it("a snapshot with nodes outside the scope is ignored", () => {
+    useAppStore.setState({ connection: { ...initialState().connection, scope: ["a", "b"] } });
+    useAppStore.getState().applySnapshot({ nodes: [node("Pod/c/x", { namespace: "c" })], edges: [] });
+    expect(useAppStore.getState().graphReady).toBe(false);
+    useAppStore.getState().applySnapshot({ nodes: [node("Pod/a/x", { namespace: "a" }), node("Pod/b/y", { namespace: "b" })], edges: [] });
+    expect(useAppStore.getState().nodes.size).toBe(2);
+  });
+
+  it("a too-large snapshot keeps the counts and switches to a table", () => {
+    useAppStore.setState({ connection: { ...initialState().connection, scope: "all" }, view: { name: "graph" }, lastTableKind: null });
+    useAppStore.getState().applySnapshot({ nodes: [], edges: [], tooLarge: { nodes: 1873, kinds: [{ kind: "Pod", count: 1500, worst: "err" }] } });
+    const s = useAppStore.getState();
+    expect(s.tooLarge?.nodes).toBe(1873);
+    expect(s.view).toEqual({ name: "table", kind: "Deployment" });
+  });
+
+  it("a normal snapshot clears tooLarge", () => {
+    useAppStore.setState({ connection: { ...initialState().connection, scope: ["p"] }, tooLarge: { nodes: 2000, kinds: [] } });
+    useAppStore.getState().applySnapshot({ nodes: [node("Pod/p/a")], edges: [] });
+    expect(useAppStore.getState().tooLarge).toBeNull();
+  });
+
+  it("Create defaults to the first namespace of the scope and creates there", async () => {
+    useAppStore.setState({ connection: { ...initialState().connection, scope: ["b", "a"], namespaces: ["a", "b"] } });
+    useAppStore.getState().openCreate();
+    expect(useAppStore.getState().createDialog.namespace).toBe("b");
+    useAppStore.getState().setCreateNamespace("a");
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => (cmd === "create_object" ? "Deployment/a/my-deployment" : cmd === "get_object" ? { yaml: "", summary: [], related: [] } : null));
+    expect(useAppStore.getState().createDialog.buffer).toBe(template("Deployment", "a"));
+    await useAppStore.getState().submitCreate();
+    expect(invoke).toHaveBeenCalledWith("create_object", { namespace: "a", yaml: template("Deployment", "a") });
+    vi.mocked(invoke).mockImplementation(baseInvoke);
   });
 
   it("selectNamespace drops a pending focus request", async () => {
@@ -204,7 +254,7 @@ describe("actions", () => {
     // connect from a connected state must not pretend the old connection is still alive.
     useAppStore.setState({
       ...applySnapshot(initialState(), { nodes: [node("Pod/p/a")], edges: [] }),
-      connection: { ...initialState().connection, state: "connected", context: "staging", namespace: "payments" },
+      connection: { ...initialState().connection, state: "connected", context: "staging", scope: ["payments"] },
       toasts: [{ id: 1, kind: "info", message: "earlier" }],
     });
     vi.mocked(invoke).mockRejectedValueOnce({ kind: "auth", message: "exec plugin missing" });
@@ -249,21 +299,21 @@ describe("actions", () => {
 
   it("reconnect reconnects and re-selects the remembered namespace", async () => {
     useAppStore.setState({
-      connection: { ...initialState().connection, context: "prod", namespace: "payments" },
+      connection: { ...initialState().connection, context: "prod", scope: ["payments"] },
     });
     await useAppStore.getState().reconnect();
     expect(invoke).toHaveBeenCalledWith("connect", { context: "prod" });
-    expect(invoke).toHaveBeenCalledWith("select_namespace", { namespace: "payments", expandedGroups: [] });
+    expect(invoke).toHaveBeenCalledWith("select_namespaces", { namespaces: ["payments"], expandedGroups: [] });
   });
 
   it("reconnect does not re-select the namespace when connect fails", async () => {
     useAppStore.setState({
-      connection: { ...initialState().connection, context: "prod", namespace: "payments" },
+      connection: { ...initialState().connection, context: "prod", scope: ["payments"] },
     });
     vi.mocked(invoke).mockRejectedValueOnce({ kind: "auth", message: "exec plugin missing" });
     await useAppStore.getState().reconnect();
     expect(invoke).toHaveBeenCalledWith("connect", { context: "prod" });
-    expect(invoke).not.toHaveBeenCalledWith("select_namespace", expect.anything());
+    expect(invoke).not.toHaveBeenCalledWith("select_namespaces", expect.anything());
   });
 
   it("toggleKind hides and shows kinds; setSearch stores the query", () => {
@@ -278,7 +328,7 @@ describe("actions", () => {
 
 describe("views", () => {
   it("starts on the graph and switches to a table, fetching rows", async () => {
-    useAppStore.setState({ connection: { ...initialState().connection, context: "prod", namespace: "payments" } });
+    useAppStore.setState({ connection: { ...initialState().connection, context: "prod", scope: ["payments"] } });
     vi.mocked(invoke).mockImplementation(async (cmd: string, args?: any) =>
       cmd === "list_rows" ? { kind: args.kind, columns: [{ key: "name", label: "Name", numeric: false }], rows: [] } : null);
     expect(useAppStore.getState().view).toEqual({ name: "graph" });
@@ -291,14 +341,14 @@ describe("views", () => {
   });
 
   it("showTable opens a denied kind without asking the backend for rows", async () => {
-    useAppStore.setState({ connection: { ...initialState().connection, context: "prod", namespace: "payments" }, deniedKinds: new Set(["Secret"]) });
+    useAppStore.setState({ connection: { ...initialState().connection, context: "prod", scope: ["payments"] }, deniedKinds: new Set(["Secret"]) });
     await useAppStore.getState().showTable("Secret");
     expect(useAppStore.getState().view).toEqual({ name: "table", kind: "Secret" });
     expect(invoke).not.toHaveBeenCalledWith("list_rows", expect.anything());
   });
 
   it("remembers the last table kind so the Table switch can reopen it from Overview", async () => {
-    useAppStore.setState({ connection: { ...initialState().connection, context: "prod", namespace: "payments" } });
+    useAppStore.setState({ connection: { ...initialState().connection, context: "prod", scope: ["payments"] } });
     vi.mocked(invoke).mockImplementation(async (cmd: string, args?: any) =>
       cmd === "list_rows" ? { kind: args.kind, columns: [], rows: [] } : null);
     expect(useAppStore.getState().lastTableKind).toBeNull();
@@ -322,10 +372,10 @@ describe("views", () => {
       if (cmd === "list_rows") return new Promise((resolve) => { resolveListRows = resolve; });
       return Promise.resolve(null);
     });
-    useAppStore.setState({ connection: { ...initialState().connection, context: "prod", namespace: "a" }, tables: new Map() });
+    useAppStore.setState({ connection: { ...initialState().connection, context: "prod", scope: ["a"] }, tables: new Map() });
     const refresh = useAppStore.getState().refreshTable("Pod");
     // The namespace changes while the fetch for the old one is still in flight.
-    useAppStore.setState((s) => ({ connection: { ...s.connection, namespace: "b" } }));
+    useAppStore.setState((s) => ({ connection: { ...s.connection, scope: ["b"] } }));
     resolveListRows({ kind: "Pod", columns: [], rows: [] });
     await refresh;
     expect(useAppStore.getState().tables.has("Pod")).toBe(false);
@@ -335,7 +385,7 @@ describe("views", () => {
     vi.mocked(invoke).mockImplementation(async (cmd: string, args?: any) =>
       cmd === "list_rows" ? { kind: args.kind, columns: [{ key: "name", label: "Name", numeric: false }], rows: [{ nodeId: "Pod/payments/b", status: "ok", cells: [{ text: "b", status: null }] }] } : null);
     useAppStore.setState({
-      connection: { ...initialState().connection, context: "prod", namespace: "payments" },
+      connection: { ...initialState().connection, context: "prod", scope: ["payments"] },
       view: { name: "table", kind: "Pod" },
       selectedId: "Pod/payments/a", details: { nodeId: "Pod/payments/a", data: null, events: [], loading: false, editor: viewEditor() },
     });
@@ -348,7 +398,7 @@ describe("views", () => {
     vi.mocked(invoke).mockImplementation(async (cmd: string, args?: any) =>
       cmd === "list_rows" ? { kind: args.kind, columns: [{ key: "name", label: "Name", numeric: false }], rows: [{ nodeId: "Pod/payments/a", status: "ok", cells: [{ text: "a", status: null }] }] } : null);
     useAppStore.setState({
-      connection: { ...initialState().connection, context: "prod", namespace: "payments" },
+      connection: { ...initialState().connection, context: "prod", scope: ["payments"] },
       view: { name: "table", kind: "Pod" },
       selectedId: "Pod/payments/a", details: { nodeId: "Pod/payments/a", data: null, events: [], loading: false, editor: viewEditor() },
     });
@@ -460,7 +510,7 @@ async function selectPod(): Promise<void> {
   vi.mocked(invoke).mockImplementation(baseInvoke);
   useAppStore.setState({
     ...applySnapshot(initialState(), { nodes: [node("Pod/p/a"), node("Pod/p/b")], edges: [] }),
-    connection: { ...initialState().connection, context: "prod", namespace: "p" },
+    connection: { ...initialState().connection, context: "prod", scope: ["p"] },
   });
   await useAppStore.getState().select("Pod/p/a");
   vi.mocked(invoke).mockClear();
@@ -621,7 +671,7 @@ describe("editor", () => {
     useAppStore.getState().startEdit();
     useAppStore.getState().setBuffer(EDITED_YAML);
     useAppStore.getState().cancelEdit();
-    expect(useAppStore.getState().discardDialog).toEqual({ open: true, pendingSelect: null, pendingDeselect: false, pendingNamespace: null });
+    expect(useAppStore.getState().discardDialog).toEqual({ open: true, pendingSelect: null, pendingDeselect: false, pendingScope: null });
     expect(editor().mode).toBe("edit");
     useAppStore.getState().cancelDiscard();
     expect(useAppStore.getState().discardDialog.open).toBe(false);
@@ -639,7 +689,7 @@ describe("editor", () => {
     useAppStore.getState().setBuffer(EDITED_YAML);
     await useAppStore.getState().select("Pod/p/b");
     expect(useAppStore.getState().selectedId).toBe("Pod/p/a");
-    expect(useAppStore.getState().discardDialog).toEqual({ open: true, pendingSelect: "Pod/p/b", pendingDeselect: false, pendingNamespace: null });
+    expect(useAppStore.getState().discardDialog).toEqual({ open: true, pendingSelect: "Pod/p/b", pendingDeselect: false, pendingScope: null });
     expect(invoke).not.toHaveBeenCalledWith("get_object", expect.anything());
     useAppStore.getState().confirmDiscard();
     await vi.waitFor(() => expect(useAppStore.getState().details?.data).not.toBeNull());
@@ -654,7 +704,7 @@ describe("editor", () => {
     useAppStore.getState().setBuffer(EDITED_YAML);
     await useAppStore.getState().select(null);
     expect(useAppStore.getState().selectedId).toBe("Pod/p/a");
-    expect(useAppStore.getState().discardDialog).toEqual({ open: true, pendingSelect: null, pendingDeselect: true, pendingNamespace: null });
+    expect(useAppStore.getState().discardDialog).toEqual({ open: true, pendingSelect: null, pendingDeselect: true, pendingScope: null });
     useAppStore.getState().confirmDiscard();
     await vi.waitFor(() => expect(useAppStore.getState().selectedId).toBeNull());
     expect(useAppStore.getState().details).toBeNull();
@@ -821,28 +871,28 @@ describe("editor", () => {
   it("selectNamespace while dirty asks first; cancelDiscard keeps everything, confirmDiscard switches", async () => {
     await selectPod();
     const { settings } = await import("../shared/settings");
-    vi.mocked(settings.setLastNamespace).mockClear();
+    vi.mocked(settings.setLastScope).mockClear();
     useAppStore.getState().startEdit();
     useAppStore.getState().setBuffer(EDITED_YAML);
     await useAppStore.getState().selectNamespace("q");
-    expect(useAppStore.getState().discardDialog).toEqual({ open: true, pendingSelect: null, pendingDeselect: false, pendingNamespace: "q" });
-    expect(useAppStore.getState().connection.namespace).toBe("p");
+    expect(useAppStore.getState().discardDialog).toEqual({ open: true, pendingSelect: null, pendingDeselect: false, pendingScope: ["q"] });
+    expect(useAppStore.getState().connection.scope).toEqual(["p"]);
     expect(useAppStore.getState().nodes.size).toBe(2);
-    expect(invoke).not.toHaveBeenCalledWith("select_namespace", expect.anything());
+    expect(invoke).not.toHaveBeenCalledWith("select_namespaces", expect.anything());
     // A switch the user may still cancel must not become the remembered namespace.
-    expect(settings.setLastNamespace).not.toHaveBeenCalled();
+    expect(settings.setLastScope).not.toHaveBeenCalled();
     useAppStore.getState().cancelDiscard();
     expect(useAppStore.getState().discardDialog.open).toBe(false);
     expect(editor()).toMatchObject({ mode: "edit", buffer: EDITED_YAML });
-    expect(useAppStore.getState().connection.namespace).toBe("p");
+    expect(useAppStore.getState().connection.scope).toEqual(["p"]);
     await useAppStore.getState().selectNamespace("q");
     useAppStore.getState().confirmDiscard();
-    await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith("select_namespace", { namespace: "q", expandedGroups: [] }));
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith("select_namespaces", { namespaces: ["q"], expandedGroups: [] }));
     const s = useAppStore.getState();
-    expect(s.connection.namespace).toBe("q");
+    expect(s.connection.scope).toEqual(["q"]);
     expect(s.details).toBeNull();
     expect(s.discardDialog.open).toBe(false);
-    expect(settings.setLastNamespace).toHaveBeenCalledWith("prod", "q");
+    expect(settings.setLastScope).toHaveBeenCalledWith("prod", ["q"]);
   });
 
   it("disconnectedState toasts the edits it discards", async () => {
@@ -869,7 +919,7 @@ describe("editor", () => {
 });
 
 describe("create dialog", () => {
-  const withNamespace = () => useAppStore.setState({ connection: { ...initialState().connection, context: "prod", namespace: "shop" } });
+  const withNamespace = () => useAppStore.setState({ connection: { ...initialState().connection, context: "prod", scope: ["shop"] } });
 
   it("openCreate defaults to a Deployment template in the current namespace", () => {
     withNamespace();
@@ -956,7 +1006,7 @@ describe("create dialog", () => {
     expect(s.toasts.map((t) => t.message)).toEqual(["Created ConfigMap my-configmap"]);
     expect(s.selectedId).toBe("Pod/p/a");
     expect(editor()).toMatchObject({ mode: "edit", buffer: EDITED_YAML });
-    expect(s.discardDialog).toEqual({ open: true, pendingSelect: "ConfigMap/p/my-configmap", pendingDeselect: false, pendingNamespace: null });
+    expect(s.discardDialog).toEqual({ open: true, pendingSelect: "ConfigMap/p/my-configmap", pendingDeselect: false, pendingScope: null });
     expect(invoke).not.toHaveBeenCalledWith("get_object", expect.anything());
     useAppStore.getState().confirmDiscard();
     await vi.waitFor(() => expect(useAppStore.getState().details).toMatchObject({ nodeId: "ConfigMap/p/my-configmap", data: null, loading: false }));

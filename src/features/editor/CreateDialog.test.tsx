@@ -12,7 +12,7 @@ vi.mock("./LazyYamlEditor", () => ({
 }));
 
 beforeEach(() => {
-  useAppStore.setState({ ...initialState(), connection: { ...initialState().connection, context: "prod", namespace: "shop" } });
+  useAppStore.setState({ ...initialState(), connection: { ...initialState().connection, context: "prod", scope: ["shop"] } });
 });
 
 describe("CreateDialog", () => {

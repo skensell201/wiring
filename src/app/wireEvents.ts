@@ -66,7 +66,9 @@ export function wireEvents(): Promise<() => void> {
     connection_error: (err) => {
       s().toast(err);
       if (err.kind === "forbidden" || err.kind === "notFound") {
-        void commands.deniedKinds().then((kinds) => useAppStore.setState({ deniedKinds: new Set(kinds) })).catch(() => {});
+        void Promise.all([commands.deniedKinds(), commands.partialKinds()])
+          .then(([denied, partial]) => useAppStore.setState({ deniedKinds: new Set(denied), partialKinds: new Set(partial) }))
+          .catch(() => {});
       }
     },
   });

@@ -3,9 +3,11 @@ import { useShallow } from "zustand/react/shallow";
 import { useAppStore } from "../../app/store";
 
 export function NamespacePicker() {
-  const { namespaces, namespace, selectNamespace } = useAppStore(
-    useShallow((s) => ({ namespaces: s.connection.namespaces, namespace: s.connection.namespace, selectNamespace: s.selectNamespace })),
+  const { namespaces, scope, selectNamespace } = useAppStore(
+    useShallow((s) => ({ namespaces: s.connection.namespaces, scope: s.connection.scope, selectNamespace: s.selectNamespace })),
   );
+  // Task 12 turns this into a multi-select; until then it shows a one-namespace scope.
+  const namespace = Array.isArray(scope) && scope.length === 1 ? scope[0] : null;
   const [draft, setDraft] = useState("");
   const choose = (ns: string) => {
     if (!ns) return;

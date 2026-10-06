@@ -7,8 +7,8 @@ import { CREATABLE_KINDS, type CreatableKind } from "./templates";
 
 /** The **+ Create** modal: a kind picker, a templated manifest to edit and **Create**. */
 export function CreateDialog() {
-  const { dialog, namespace, setCreateKind, setCreateBuffer, submitCreate, closeCreate } = useAppStore(useShallow((s) => ({
-    dialog: s.createDialog, namespace: s.connection.namespace,
+  const { dialog, setCreateKind, setCreateBuffer, submitCreate, closeCreate } = useAppStore(useShallow((s) => ({
+    dialog: s.createDialog,
     setCreateKind: s.setCreateKind, setCreateBuffer: s.setCreateBuffer, submitCreate: s.submitCreate, closeCreate: s.closeCreate,
   })));
 
@@ -27,7 +27,7 @@ export function CreateDialog() {
               {CREATABLE_KINDS.map((k) => <option key={k} value={k}>{KIND_META[k].label}</option>)}
             </select>
           </label>
-          {namespace && <span className="text-xs text-text-muted">in {namespace}</span>}
+          {dialog.namespace && <span className="text-xs text-text-muted">in {dialog.namespace}</span>}
         </div>
         {dialog.error && (
           <div role="alert" className="mb-3 shrink-0 rounded-lg border border-status-err/40 bg-status-err/10 px-3 py-2 text-xs">

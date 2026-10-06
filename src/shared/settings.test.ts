@@ -13,28 +13,13 @@ import { settings } from "./settings";
 beforeEach(() => mem.clear());
 
 describe("settings", () => {
-  it("remembers the last namespace per context", async () => {
-    await settings.setLastNamespace("prod", "payments");
-    await settings.setLastNamespace("staging", "default");
-    expect(await settings.getLastNamespace("prod")).toBe("payments");
-    expect(await settings.getLastNamespace("staging")).toBe("default");
-    expect(await settings.getLastNamespace("dev")).toBeNull();
-    expect(mem.get("lastNamespace")).toEqual({ prod: "payments", staging: "default" });
-  });
-
-  it("ignores a legacy single-string value", async () => {
-    mem.set("lastNamespace", "payments");
-    expect(await settings.getLastNamespace("prod")).toBeNull();
-    await settings.setLastNamespace("prod", "shop");
-    expect(mem.get("lastNamespace")).toEqual({ prod: "shop" });
-  });
-
   it("remembers the last scope per context", async () => {
     await settings.setLastScope("ctx", ["a", "b"]);
     expect(await settings.getLastScope("ctx")).toEqual(["a", "b"]);
     await settings.setLastScope("ctx", "all");
     expect(await settings.getLastScope("ctx")).toBe("all");
     expect(await settings.getLastScope("other")).toBeNull();
+    expect(mem.get("lastScope")).toEqual({ ctx: "all" });
   });
 
   it("reads a legacy lastNamespace as a one-namespace scope", async () => {

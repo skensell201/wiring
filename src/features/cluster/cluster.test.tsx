@@ -8,7 +8,7 @@ import { NamespacePicker } from "./NamespacePicker";
 vi.mock("../../shared/ipc/tauri", () => ({ invoke: vi.fn(async () => null), listen: vi.fn(async () => () => {}), Channel: class { onmessage: (m: unknown) => void = () => {}; } }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn(async () => "/tmp/extra.kubeconfig") }));
 vi.mock("../../shared/settings", () => ({
-  settings: { get: vi.fn(async () => null), set: vi.fn(async () => {}), getLastNamespace: vi.fn(async () => null), setLastNamespace: vi.fn(async () => {}), getSidebarCollapsed: vi.fn(async () => false), setSidebarCollapsed: vi.fn(async () => {}), getDetailsHeight: vi.fn(async () => null), setDetailsHeight: vi.fn(async () => {}) },
+  settings: { get: vi.fn(async () => null), set: vi.fn(async () => {}), getLastScope: vi.fn(async () => null), setLastScope: vi.fn(async () => {}), getSidebarCollapsed: vi.fn(async () => false), setSidebarCollapsed: vi.fn(async () => {}), getDetailsHeight: vi.fn(async () => null), setDetailsHeight: vi.fn(async () => {}) },
 }));
 
 beforeEach(() => useAppStore.setState(initialState()));
@@ -126,12 +126,12 @@ describe("Header", () => {
 
   it("+ Create opens the create dialog, and is disabled until a namespace is selected", () => {
     const openCreate = vi.fn();
-    useAppStore.setState({ connection: { ...initialState().connection, context: "prod", namespace: null }, openCreate });
+    useAppStore.setState({ connection: { ...initialState().connection, context: "prod", scope: null }, openCreate });
     const { unmount } = render(<Header />);
     expect(screen.getByRole("button", { name: /create/i })).toBeDisabled();
     unmount();
 
-    useAppStore.setState({ connection: { ...initialState().connection, context: "prod", namespace: "shop" }, openCreate });
+    useAppStore.setState({ connection: { ...initialState().connection, context: "prod", scope: ["shop"] }, openCreate });
     render(<Header />);
     fireEvent.click(screen.getByRole("button", { name: /create/i }));
     expect(openCreate).toHaveBeenCalled();

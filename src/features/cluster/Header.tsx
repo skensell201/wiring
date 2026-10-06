@@ -47,8 +47,8 @@ export function Header() {
       </button>
       {connection.context && <NamespacePicker />}
       {connection.context && (
-        <Button className="flex items-center gap-1.5" disabled={connection.namespace === null} onClick={() => openCreate()}
-          title={connection.namespace === null ? "Select a namespace first" : "Create an object in this namespace"}>
+        <Button className="flex items-center gap-1.5" disabled={connection.scope === null} onClick={() => openCreate()}
+          title={connection.scope === null ? "Select a namespace first" : "Create an object in this namespace"}>
           <Plus className="size-4" /> Create
         </Button>
       )}

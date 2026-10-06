@@ -15,7 +15,7 @@ describe("Canvas", () => {
   });
 
   it("shows the loading state after selecting a namespace until the snapshot arrives", () => {
-    useAppStore.setState({ connection: { ...initialState().connection, context: "prod", state: "connected", namespace: "payments" } });
+    useAppStore.setState({ connection: { ...initialState().connection, context: "prod", state: "connected", scope: ["payments"] } });
     render(<Canvas />);
     expect(screen.getByText(/loading payments/i)).toBeInTheDocument();
   });
@@ -23,7 +23,7 @@ describe("Canvas", () => {
   it("shows the empty-namespace state for an empty snapshot", () => {
     useAppStore.setState({
       ...applySnapshot(initialState(), { nodes: [], edges: [] }),
-      connection: { ...initialState().connection, context: "prod", state: "connected", namespace: "payments" },
+      connection: { ...initialState().connection, context: "prod", state: "connected", scope: ["payments"] },
     });
     render(<Canvas />);
     expect(screen.getByText(/namespace is empty/i)).toBeInTheDocument();
@@ -34,7 +34,7 @@ describe("Canvas", () => {
     // and fight the whole-graph fit; the canvas clears it after its settling pass.
     const base = applySnapshot(initialState(), { nodes: [{ id: "Pod/p/web-1", kind: "Pod", namespace: "p", name: "web-1", status: "ok", badges: ["Running"], group: null }], edges: [] });
     useAppStore.setState({
-      ...base, connection: { ...initialState().connection, context: "prod", state: "connected", namespace: "p" },
+      ...base, connection: { ...initialState().connection, context: "prod", state: "connected", scope: ["p"] },
       selectedId: "Pod/p/web-1", focusRequest: { nodeId: "Pod/p/web-1", seq: 1 },
     });
     render(<Canvas />);
@@ -48,7 +48,7 @@ describe("Canvas", () => {
   it("renders nodes from the store", () => {
     useAppStore.setState({
       ...applySnapshot(initialState(), { nodes: [{ id: "Pod/p/web-1", kind: "Pod", namespace: "p", name: "web-1", status: "ok", badges: ["Running"], group: null }], edges: [] }),
-      connection: { ...initialState().connection, context: "prod", state: "connected", namespace: "p" },
+      connection: { ...initialState().connection, context: "prod", state: "connected", scope: ["p"] },
     });
     render(<Canvas />);
     expect(screen.getByText("web-1")).toBeInTheDocument();
@@ -57,7 +57,7 @@ describe("Canvas", () => {
   it("right-clicking a node opens the Actions menu for it", () => {
     useAppStore.setState({
       ...applySnapshot(initialState(), { nodes: [{ id: "Deployment/p/web", kind: "Deployment", namespace: "p", name: "web", status: "ok", badges: ["1/1"], group: null }], edges: [] }),
-      connection: { ...initialState().connection, context: "prod", state: "connected", namespace: "p" },
+      connection: { ...initialState().connection, context: "prod", state: "connected", scope: ["p"] },
     });
     render(<Canvas />);
     fireEvent.contextMenu(screen.getByText("web"), { clientX: 120, clientY: 80 });

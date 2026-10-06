@@ -19,7 +19,7 @@ const pods: Table = {
     { nodeId: "Pod/payments/db", status: "ok", cells: [{ text: "db", status: null }, { text: "Running", status: "ok" }, { text: "3", status: null }] },
   ],
 };
-const connected = () => ({ ...initialState().connection, context: "prod", state: "connected" as const, namespace: "payments" });
+const connected = () => ({ ...initialState().connection, context: "prod", state: "connected" as const, scope: ["payments"] });
 const bodyRows = () => within(screen.getAllByRole("rowgroup")[1]).getAllByRole("row");
 const names = () => bodyRows().map((r) => within(r).getAllByRole("cell")[0].textContent);
 

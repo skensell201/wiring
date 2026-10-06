@@ -8,7 +8,7 @@ import { Navigator } from "./Navigator";
 vi.mock("../../shared/ipc/tauri", () => ({ invoke: vi.fn(async () => null), listen: vi.fn(async () => () => {}), Channel: class { onmessage: (m: unknown) => void = () => {}; } }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn(async () => "/tmp/extra.kubeconfig") }));
 vi.mock("../../shared/settings", () => ({
-  settings: { get: vi.fn(async () => null), set: vi.fn(async () => {}), getLastNamespace: vi.fn(async () => null), setLastNamespace: vi.fn(async () => {}), getSidebarCollapsed: vi.fn(async () => false), setSidebarCollapsed: vi.fn(async () => {}), getDetailsHeight: vi.fn(async () => null), setDetailsHeight: vi.fn(async () => {}) },
+  settings: { get: vi.fn(async () => null), set: vi.fn(async () => {}), getLastScope: vi.fn(async () => null), setLastScope: vi.fn(async () => {}), getSidebarCollapsed: vi.fn(async () => false), setSidebarCollapsed: vi.fn(async () => {}), getDetailsHeight: vi.fn(async () => null), setDetailsHeight: vi.fn(async () => {}) },
 }));
 
 const contexts = [
@@ -18,7 +18,7 @@ const contexts = [
 const node = (id: string, over: Partial<GraphNode> = {}): GraphNode => ({
   id, kind: "Pod", namespace: "p", name: id.split("/").pop()!, status: "ok", badges: ["Running"], group: null, ...over,
 });
-const connected = () => ({ ...initialState().connection, context: "prod", state: "connected" as const, namespace: "p" });
+const connected = () => ({ ...initialState().connection, context: "prod", state: "connected" as const, scope: ["p"] });
 
 beforeEach(() => useAppStore.setState(initialState()));
 
