@@ -100,6 +100,7 @@ impl ExecSessions {
 
     /// Whether the session is known and its task still runs (a session whose sink failed has
     /// ended on its own and is pruned on the next `start`).
+    #[cfg(test)]
     pub fn is_active(&self, id: u32) -> bool {
         self.live.get(&id).is_some_and(|l| !l.task.0.is_finished())
     }

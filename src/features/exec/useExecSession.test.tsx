@@ -2,7 +2,7 @@ import { act, renderHook } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ExecMessage } from "../../shared/ipc/types";
 import { encodeText } from "./base64";
-import { endLine, useExecSession } from "./useExecSession";
+import { endLine, MAX_INPUT_CHUNK, useExecSession } from "./useExecSession";
 
 const startExec = vi.fn();
 const stopExec = vi.fn();
@@ -69,6 +69,17 @@ describe("useExecSession", () => {
     expect(execInput).toHaveBeenCalledTimes(2);
     await act(async () => { pending.shift()!(); });
     expect(execInput.mock.calls[2]).toEqual([1, encodeText("d")]);
+  });
+
+  it("splits a large paste into chunks below the backend's 1 MiB limit, in order", async () => {
+    const { result } = setup();
+    await act(() => result.current.connect(req));
+    const paste = "x".repeat(MAX_INPUT_CHUNK * 2 + 5);
+    act(() => result.current.send(paste));
+    for (let i = 0; i < 3; i++) await act(async () => {});
+    const sizes = execInput.mock.calls.map(([, b64]) => atob(b64 as string).length);
+    expect(sizes).toEqual([MAX_INPUT_CHUNK, MAX_INPUT_CHUNK, 5]);
+    expect(MAX_INPUT_CHUNK).toBeLessThanOrEqual(1024 * 1024);
   });
 
   it("a failed input does not stall the queue", async () => {

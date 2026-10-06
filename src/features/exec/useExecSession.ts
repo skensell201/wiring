@@ -18,6 +18,9 @@ export function endLine(m: Exclude<ExecMessage, { type: "output" }>): string {
  * invokes would race for the session lock and reorder keystrokes); what arrives meanwhile is
  * concatenated and sent next. Until `startExec` resolves, input and the latest size wait here.
  */
+/** Bytes per `exec_input` call; well under the backend's 1 MiB limit (`MAX_INPUT`). */
+export const MAX_INPUT_CHUNK = 64 * 1024;
+
 interface Outbox { id: number | null; queue: Uint8Array[]; inFlight: boolean; size: [number, number] | null }
 
 function concat(chunks: Uint8Array[]): Uint8Array {
@@ -32,7 +35,11 @@ function flush(box: Outbox) {
   if (box.id === null) return;
   if (box.size) { const [cols, rows] = box.size; box.size = null; void commands.execResize(box.id, cols, rows); }
   if (box.inFlight || box.queue.length === 0) return;
-  const bytes = concat(box.queue.splice(0));
+  let bytes = concat(box.queue.splice(0));
+  if (bytes.length > MAX_INPUT_CHUNK) {
+    box.queue.push(bytes.subarray(MAX_INPUT_CHUNK));
+    bytes = bytes.subarray(0, MAX_INPUT_CHUNK);
+  }
   box.inFlight = true;
   commands.execInput(box.id, encodeBytes(bytes)).catch(() => {}).finally(() => { box.inFlight = false; flush(box); });
 }

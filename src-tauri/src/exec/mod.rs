@@ -19,6 +19,8 @@ pub const SHELL: [&str; 3] = ["sh", "-c", "command -v bash >/dev/null && exec ba
 /// Bounds for a TTY size coming from the frontend.
 pub const MAX_COLS: u16 = 1000;
 pub const MAX_ROWS: u16 = 1000;
+/// The largest decoded `exec_input` payload accepted (a paste; the frontend batches keystrokes).
+pub const MAX_INPUT: usize = 1024 * 1024;
 
 /// A running pod a terminal can open in, with its regular (non-init) containers in spec order.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -102,11 +104,20 @@ pub fn encode_output(bytes: &[u8]) -> String {
     STANDARD.encode(bytes)
 }
 
-/// Keystrokes from the frontend arrive base64-encoded.
+/// Keystrokes from the frontend arrive base64-encoded, at most `MAX_INPUT` bytes per call.
 pub fn decode_input(data: &str) -> AppResult<Vec<u8>> {
-    STANDARD
+    let too_large = || AppError::new(ErrorKind::Invalid, format!("terminal input is larger than {MAX_INPUT} bytes"));
+    // Refuse before decoding when even the encoded form is too long.
+    if data.len() > MAX_INPUT.div_ceil(3) * 4 {
+        return Err(too_large());
+    }
+    let bytes = STANDARD
         .decode(data)
-        .map_err(|e| AppError::new(ErrorKind::Invalid, format!("terminal input is not base64: {e}")))
+        .map_err(|e| AppError::new(ErrorKind::Invalid, format!("terminal input is not base64: {e}")))?;
+    if bytes.len() > MAX_INPUT {
+        return Err(too_large());
+    }
+    Ok(bytes)
 }
 
 pub fn clamp_size(cols: u16, rows: u16) -> (u16, u16) {
@@ -149,6 +160,13 @@ mod tests {
         assert_eq!(encode_output(b"hi\n"), "aGkK");
         assert_eq!(decode_input("aGkK").unwrap(), b"hi\n");
         let err = decode_input("not base64!").unwrap_err();
+        assert_eq!(err.kind, crate::error::ErrorKind::Invalid);
+    }
+
+    #[test]
+    fn input_over_one_mib_is_rejected() {
+        assert_eq!(decode_input(&encode_output(&vec![b'x'; MAX_INPUT])).unwrap().len(), MAX_INPUT);
+        let err = decode_input(&encode_output(&vec![b'x'; MAX_INPUT + 1])).unwrap_err();
         assert_eq!(err.kind, crate::error::ErrorKind::Invalid);
     }
 
