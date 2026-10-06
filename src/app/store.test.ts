@@ -333,13 +333,13 @@ describe("actions", () => {
   });
 
   it("starts with the RBAC and Node chips off, and toggling Node shows it", () => {
-  expect([...initialState().hiddenKinds].sort()).toEqual(["ClusterRole", "ClusterRoleBinding", "Node", "Role", "RoleBinding"]);
-  expect(initialState().hiddenKinds.has("NetworkPolicy")).toBe(false);
-  useAppStore.getState().toggleKind("Node");
-  expect(useAppStore.getState().hiddenKinds.has("Node")).toBe(false);
-});
+    expect([...initialState().hiddenKinds].sort()).toEqual(["ClusterRole", "ClusterRoleBinding", "Node", "Role", "RoleBinding"]);
+    expect(initialState().hiddenKinds.has("NetworkPolicy")).toBe(false);
+    useAppStore.getState().toggleKind("Node");
+    expect(useAppStore.getState().hiddenKinds.has("Node")).toBe(false);
+  });
 
-it("toggleKind hides and shows kinds; setSearch stores the query", () => {
+  it("toggleKind hides and shows kinds; setSearch stores the query", () => {
     useAppStore.getState().toggleKind("Secret");
     expect(useAppStore.getState().hiddenKinds.has("Secret")).toBe(true);
     useAppStore.getState().toggleKind("Secret");
