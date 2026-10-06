@@ -1,0 +1,7 @@
+apiVersion: wiringsmoke.example.com/v1
+kind: WiringSmoke
+metadata:
+  name: alpha
+  namespace: wiring-smoke
+spec:
+  size: small
