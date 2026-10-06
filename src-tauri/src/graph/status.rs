@@ -1,6 +1,6 @@
 //! Status colour, badges and Overview rows for every supported kind.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use k8s_openapi::api::apps::v1::{DaemonSet, Deployment, ReplicaSet, StatefulSet};
 use k8s_openapi::api::autoscaling::v2::{HorizontalPodAutoscaler, HorizontalPodAutoscalerCondition};
@@ -27,13 +27,14 @@ pub fn describe(obj: &Object, store: &Store) -> (Status, Badges) {
     } else {
         PodIndex::new(store)
     };
-    describe_with(obj, store, &index)
+    describe_with(obj, store, &index, &PolicyPods::new(store, std::iter::once(obj)))
 }
 
-/// `describe` with a pod index shared by the caller, for loops over many objects.
-pub fn describe_with<'a>(obj: &'a Object, store: &'a Store, index: &PodIndex<'a>) -> (Status, Badges) {
+/// `describe` with a pod index and policy-selected pods shared by the caller, for loops over
+/// many objects.
+pub fn describe_with<'a>(obj: &'a Object, store: &'a Store, index: &PodIndex<'a>, policy_pods: &PolicyPods<'a>) -> (Status, Badges) {
     let (status, mut badges) = base_describe(obj, store);
-    if matches!(obj, Object::Pod(_)) && picked_by_a_policy(obj, store) {
+    if matches!(obj, Object::Pod(_)) && policy_pods.contains(obj) {
         badges.push("policy".into());
     }
     if let Some(b) = crate::metrics::usage::usage_badge(store, index, obj) {
@@ -112,15 +113,47 @@ fn node(n: &Node) -> (Status, Badges) {
     (status, badges)
 }
 
-/// Whether a NetworkPolicy in the pod's namespace selects it (so its traffic is restricted).
-fn picked_by_a_policy(pod: &Object, store: &Store) -> bool {
-    store.iter_kind(Kind::NetworkPolicy).any(|np| {
-        let Object::NetworkPolicy(np) = np else { return false };
-        np.metadata.namespace.as_deref() == pod.namespace()
-            && np.spec.as_ref().is_some_and(|s| {
-                super::selector::label_selector_matches(&s.pod_selector.clone().unwrap_or_default(), pod.meta().labels.as_ref())
+/// The pods some NetworkPolicy in their namespace selects (so their traffic is restricted),
+/// worked out once per graph build or table rather than per pod.
+#[derive(Default)]
+pub struct PolicyPods<'a> {
+    /// `(namespace, name)` of every selected pod.
+    selected: HashSet<(Option<&'a str>, &'a str)>,
+}
+
+impl<'a> PolicyPods<'a> {
+    /// Check `pods` (non-pods are skipped) against every policy in the store.
+    pub fn new(store: &'a Store, pods: impl IntoIterator<Item = &'a Object>) -> Self {
+        let all_pods = k8s_openapi::apimachinery::pkg::apis::meta::v1::LabelSelector::default();
+        let policies: Vec<(Option<&str>, &k8s_openapi::apimachinery::pkg::apis::meta::v1::LabelSelector)> = store
+            .iter_kind(Kind::NetworkPolicy)
+            .filter_map(|obj| match obj {
+                Object::NetworkPolicy(np) => np
+                    .spec
+                    .as_ref()
+                    .map(|s| (obj.namespace(), s.pod_selector.as_ref().unwrap_or(&all_pods))),
+                _ => None,
             })
-    })
+            .collect();
+        let selected = if policies.is_empty() {
+            HashSet::new()
+        } else {
+            pods.into_iter()
+                .filter(|pod| matches!(pod, Object::Pod(_)))
+                .filter(|pod| {
+                    policies
+                        .iter()
+                        .any(|(ns, sel)| *ns == pod.namespace() && super::selector::label_selector_matches(sel, pod.meta().labels.as_ref()))
+                })
+                .map(|pod| (pod.namespace(), pod.name()))
+                .collect()
+        };
+        Self { selected }
+    }
+
+    pub fn contains(&self, pod: &Object) -> bool {
+        self.selected.contains(&(pod.namespace(), pod.name()))
+    }
 }
 
 fn keys_badge(n: usize) -> String {

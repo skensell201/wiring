@@ -1,11 +1,13 @@
 //! kubectl-like tables per kind, computed from the Store.
 
+use std::collections::HashMap;
+
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
 use k8s_openapi::jiff;
 use serde::{Deserialize, Serialize};
 
 use super::model::{node_id, NodeId, Status};
-use super::status::describe_with;
+use super::status::{describe_with, PolicyPods};
 use crate::metrics::usage::PodIndex;
 use crate::store::{Kind, Object, Store};
 
@@ -215,12 +217,24 @@ pub fn table(store: &Store, kind: Kind, now: jiff::Timestamp) -> Table {
     } else {
         PodIndex::default()
     };
+    let policy_pods = PolicyPods::new(store, store.iter_kind(kind));
+    // nodeName -> how many pods it hosts, for the Node table's pods column.
+    let mut node_pods: HashMap<&str, usize> = HashMap::new();
+    if kind == Kind::Node {
+        for obj in store.iter_kind(Kind::Pod) {
+            if let Object::Pod(p) = obj {
+                if let Some(n) = p.spec.as_ref().and_then(|s| s.node_name.as_deref()) {
+                    *node_pods.entry(n).or_default() += 1;
+                }
+            }
+        }
+    }
     let mut rows: Vec<TableRow> = store
         .iter_kind(kind)
         .map(|obj| {
-            let (status, badges) = describe_with(obj, store, &pods);
+            let (status, badges) = describe_with(obj, store, &pods, &policy_pods);
             let mut cells = vec![plain(obj.name())];
-            cells.extend(kind_cells(obj, store, &pods, &badges, status, now));
+            cells.extend(kind_cells(obj, store, &pods, &node_pods, &badges, status, now));
             TableRow {
                 node_id: node_id(kind, obj.namespace(), obj.name()),
                 status,
@@ -288,6 +302,7 @@ fn kind_cells<'a>(
     obj: &'a Object,
     store: &'a Store,
     pods: &PodIndex<'a>,
+    node_pods: &HashMap<&str, usize>,
     badges: &[String],
     status: Status,
     now: jiff::Timestamp,
@@ -509,10 +524,7 @@ fn kind_cells<'a>(
             age_cell,
         ],
         Object::Node(n) => {
-            let pods = store
-                .iter_kind(Kind::Pod)
-                .filter(|p| matches!(p, Object::Pod(p) if p.spec.as_ref().and_then(|s| s.node_name.as_deref()) == Some(obj.name())))
-                .count();
+            let pods = node_pods.get(obj.name()).copied().unwrap_or(0);
             vec![
                 coloured(node_ready_text(n), status),
                 plain(node_roles(n)),
