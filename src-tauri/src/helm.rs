@@ -290,14 +290,15 @@ pub fn release(store: &Store, namespace: &str, name: &str) -> AppResult<HelmRele
     })
 }
 
-/// Helm's ownership annotations, or `managed-by: Helm` + `instance` labels, for objects in the
-/// release's namespace (cluster-scoped objects have none, so the labels alone decide for them).
+/// Helm's ownership annotations (these name the release's namespace, so objects installed into
+/// another namespace still belong), or `managed-by: Helm` + `instance` labels in the release's
+/// namespace (cluster-scoped objects have none, so the labels alone decide for them).
 fn belongs(obj: &Object, namespace: &str, name: &str) -> bool {
     let meta = obj.meta();
     let annotation = |k: &str| meta.annotations.as_ref().and_then(|a| a.get(k)).map(String::as_str);
     if let Some(release) = annotation("meta.helm.sh/release-name") {
         let release_ns = annotation("meta.helm.sh/release-namespace").or(obj.namespace());
-        return release == name && release_ns == Some(namespace) && obj.namespace().is_none_or(|ns| ns == namespace);
+        return release == name && release_ns == Some(namespace);
     }
     let label = |k: &str| meta.labels.as_ref().and_then(|l| l.get(k)).map(String::as_str);
     label("app.kubernetes.io/managed-by") == Some("Helm")
@@ -638,9 +639,12 @@ pub(crate) mod tests {
     fn membership_needs_the_release_and_its_namespace() {
         let s = store_with_web();
         assert_eq!(members(&s, "shop", "api"), vec!["ConfigMap/shop/api-cfg".to_string()]);
+        // The annotation names the release's namespace, so an object installed into another
+        // namespace is found from the release's own.
+        assert_eq!(members(&s, "other", "web"), vec!["ConfigMap/shop/elsewhere".to_string()]);
         assert!(
-            members(&s, "other", "web").is_empty(),
-            "objects in shop claiming other/web are not visible from shop"
+            !members(&s, "shop", "web").contains(&"ConfigMap/shop/elsewhere".to_string()),
+            "it claims other/web"
         );
         assert!(
             members(&s, "shop", "web").iter().all(|id| !id.starts_with("Secret/")),
