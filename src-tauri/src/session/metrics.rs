@@ -115,6 +115,35 @@ fn scope_apis(client: Client, scope: &NamespaceScope) -> Vec<Api<DynamicObject>>
     }
 }
 
+/// One tick's PodMetrics lists (one per namespace of a set), run concurrently and combined into
+/// one sample. A namespace that forbids PodMetrics is skipped, so the rest of the selection keeps
+/// its usage; the tick is forbidden only when every list is. Any other error answers for the whole
+/// tick: a missing API is missing everywhere, and a transient one keeps the last sample.
+async fn list_all<Fut>(lists: impl IntoIterator<Item = Fut>) -> Result<Vec<Value>, kube::Error>
+where
+    Fut: Future<Output = Result<Vec<Value>, kube::Error>>,
+{
+    let mut items = Vec::new();
+    let mut forbidden = None;
+    let mut listed = false;
+    for result in futures::future::join_all(lists).await {
+        match result {
+            Ok(list) => {
+                listed = true;
+                items.extend(list);
+            }
+            Err(kube::Error::Api(s)) if s.code == 403 => {
+                forbidden.get_or_insert(kube::Error::Api(s));
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    match forbidden {
+        Some(e) if !listed => Err(e),
+        _ => Ok(items),
+    }
+}
+
 /// The live poller for `scope`. It is pushed to the namespace session's tasks, so a scope
 /// switch or disconnect aborts it with the watchers.
 pub fn spawn(
@@ -129,13 +158,11 @@ pub fn spawn(
         move || {
             let apis = apis.clone();
             async move {
-                // One list per namespace of a set; the first failure answers for the whole tick.
-                let mut items = Vec::new();
-                for api in apis {
+                list_all(apis.into_iter().map(|api| async move {
                     let list = api.list(&ListParams::default()).await?;
-                    items.extend(list.items.into_iter().filter_map(|o| serde_json::to_value(o).ok()));
-                }
-                Ok(items)
+                    Ok(list.items.into_iter().filter_map(|o| serde_json::to_value(o).ok()).collect())
+                }))
+                .await
             }
         },
         shared,
@@ -191,6 +218,71 @@ mod tests {
                 "/apis/metrics.k8s.io/v1beta1/namespaces/shop/pods"
             ]
         );
+    }
+
+    /// A fake namespace's PodMetrics list: `Ok` items, or an API error code.
+    fn fake_list(answer: Result<Vec<Value>, u16>) -> futures::future::BoxFuture<'static, Result<Vec<Value>, kube::Error>> {
+        Box::pin(async move { answer.map_err(api_error) })
+    }
+
+    #[tokio::test]
+    async fn a_forbidden_namespace_is_skipped_and_only_all_forbidden_is_forbidden() {
+        let items = list_all([fake_list(Ok(vec![item()])), fake_list(Err(403)), fake_list(Ok(vec![item()]))])
+            .await
+            .unwrap();
+        assert_eq!(items.len(), 2, "the allowed namespaces still give a sample");
+        let all = list_all([fake_list(Err(403)), fake_list(Err(403))]).await;
+        assert_eq!(classify(all), Outcome::Forbidden);
+        // Any other error still answers for the tick.
+        assert_eq!(
+            classify(list_all([fake_list(Err(403)), fake_list(Err(404))]).await),
+            Outcome::Unavailable
+        );
+        assert_eq!(
+            classify(list_all([fake_list(Ok(vec![])), fake_list(Err(503))]).await),
+            Outcome::Transient
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn namespaces_are_listed_concurrently() {
+        // Each list waits for the other to start: sequential lists would never finish.
+        let barrier = Arc::new(tokio::sync::Barrier::new(2));
+        let list = || {
+            let b = barrier.clone();
+            Box::pin(async move {
+                b.wait().await;
+                Ok(vec![item()])
+            }) as futures::future::BoxFuture<'static, Result<Vec<Value>, kube::Error>>
+        };
+        let items = tokio::time::timeout(Duration::from_secs(5), list_all([list(), list()]))
+            .await
+            .expect("both lists run at once")
+            .unwrap();
+        assert_eq!(items.len(), 2);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_poller_over_a_partly_forbidden_selection_keeps_its_sample() {
+        let shared = Shared::default();
+        let (tx, mut reducer) = mpsc::channel(8);
+        let (emitter, mut events) = ChannelEmitter::new();
+        let task = tokio::spawn(run(
+            || list_all([fake_list(Err(403)), fake_list(Ok(vec![item()]))]),
+            shared.clone(),
+            tx,
+            Arc::new(emitter),
+            Duration::from_secs(15),
+        ));
+        assert!(matches!(next(&mut reducer).await, Some(ReducerMsg::Rebuild)));
+        assert_eq!(
+            next_event(&mut events).await,
+            Some(OutEvent::MetricsUpdated(MetricsUpdate {
+                state: MetricsState::Available
+            }))
+        );
+        assert_eq!(shared.store().metrics.pods.len(), 1);
+        task.abort();
     }
 
     #[test]
