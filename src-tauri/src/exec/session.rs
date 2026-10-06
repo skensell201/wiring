@@ -571,16 +571,22 @@ mod tests {
 
     /// Delivers the first `left` messages (mirrored to `seen`), then refuses like a gone webview.
     struct FailsAfter {
-        left: std::sync::atomic::AtomicUsize,
+        left: std::sync::Mutex<usize>,
         seen: mpsc::UnboundedSender<ExecMessage>,
     }
 
     impl ExecSink for FailsAfter {
         fn send(&self, msg: ExecMessage) -> bool {
-            let ok = self
-                .left
-                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
-                .is_ok();
+            let ok = {
+                let mut left = self.left.lock().unwrap();
+                match left.checked_sub(1) {
+                    Some(n) => {
+                        *left = n;
+                        true
+                    }
+                    None => false,
+                }
+            };
             if ok {
                 let _ = self.seen.send(msg);
             }
@@ -597,7 +603,7 @@ mod tests {
         }));
         let (seen_tx, mut seen_rx) = mpsc::unbounded_channel();
         let sink = Arc::new(FailsAfter {
-            left: std::sync::atomic::AtomicUsize::new(1),
+            left: std::sync::Mutex::new(1),
             seen: seen_tx,
         });
         let req = ExecRequest {
