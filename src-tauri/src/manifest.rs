@@ -89,6 +89,26 @@ pub(crate) fn validate_dns_subdomain(field: &str, value: &str) -> AppResult<()> 
     }
 }
 
+const DNS_LABEL_MAX: usize = 63;
+
+/// RFC 1123 label, as the API server requires for namespace names: lowercase alphanumerics and
+/// `-` (no `.`), at most 63 characters, starting and ending alphanumeric.
+pub(crate) fn validate_dns_label(field: &str, value: &str) -> AppResult<()> {
+    let alnum = |c: char| c.is_ascii_lowercase() || c.is_ascii_digit();
+    let ok = value.len() <= DNS_LABEL_MAX
+        && value.chars().all(|c| alnum(c) || c == '-')
+        && value.chars().next().is_some_and(alnum)
+        && value.chars().last().is_some_and(alnum);
+    if ok {
+        Ok(())
+    } else {
+        Err(invalid(format!(
+            "{field} `{value}` is not a valid DNS label (lowercase letters, digits and `-`, \
+             at most {DNS_LABEL_MAX} characters, starting and ending with a letter or digit)"
+        )))
+    }
+}
+
 /// The manifest must describe the object `node_id` names: same kind, name and (for
 /// namespaced kinds) namespace. Editing must never silently move or rename an object.
 pub fn ensure_matches(m: &Manifest, node_id: &str) -> AppResult<()> {

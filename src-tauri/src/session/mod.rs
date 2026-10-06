@@ -214,7 +214,7 @@ impl Session {
 
     /// One namespace: the pre-scope entry point (removed once the frontend selects scopes).
     pub async fn select_namespace(&mut self, namespace: &str, expanded_groups: HashSet<NodeId>) -> AppResult<()> {
-        self.select_scope(scope::NamespaceScope::single(namespace), expanded_groups).await
+        self.select_scope(scope::NamespaceScope::single(namespace)?, expanded_groups).await
     }
 
     /// Tear down any previous watchers and start watching `scope`. All namespaces needs
@@ -606,7 +606,7 @@ mod tests {
         assert!(session.tasks.is_empty(), "nothing was started");
         // A named namespace still works, as with namespace-scoped RBAC today.
         session.select_namespace("team-a", HashSet::new()).await.unwrap();
-        assert_eq!(session.scope, Some(scope::NamespaceScope::single("team-a")));
+        assert_eq!(session.scope, Some(scope::NamespaceScope::single("team-a").unwrap()));
         session.shutdown().await;
     }
 

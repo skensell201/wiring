@@ -18,8 +18,9 @@ pub enum NamespaceScope {
 }
 
 impl NamespaceScope {
-    pub fn single(namespace: &str) -> Self {
-        Self::Set(BTreeSet::from([namespace.to_string()]))
+    /// One namespace, validated like a `select_namespaces` list of one.
+    pub fn single(namespace: &str) -> AppResult<Self> {
+        Self::from_arg(Some(vec![namespace.to_string()]))
     }
 
     /// The `select_namespaces` argument: `None` is all namespaces; a list is trimmed, deduplicated
@@ -37,7 +38,7 @@ impl NamespaceScope {
             ));
         }
         for ns in &set {
-            crate::manifest::validate_dns_subdomain("namespace", ns)?;
+            crate::manifest::validate_dns_label("namespace", ns)?;
         }
         Ok(Self::Set(set))
     }
@@ -121,6 +122,23 @@ mod tests {
     }
 
     #[test]
+    fn namespaces_must_be_dns_labels_whichever_way_they_are_picked() {
+        let label63 = "a".repeat(63);
+        for ok in ["a", "team-a", "0ns", label63.as_str()] {
+            assert!(NamespaceScope::from_arg(Some(vec![ok.into()])).is_ok(), "{ok}");
+            assert!(NamespaceScope::single(ok).is_ok(), "{ok}");
+        }
+        let label64 = "a".repeat(64);
+        for bad in ["a.b", "Team", "-a", "a-", "a_b", "a/b", label64.as_str(), ""] {
+            let err = NamespaceScope::from_arg(Some(vec!["fine".into(), bad.into()]));
+            if !bad.is_empty() {
+                assert_eq!(err.unwrap_err().kind, ErrorKind::Invalid, "{bad}");
+            }
+            assert_eq!(NamespaceScope::single(bad).unwrap_err().kind, ErrorKind::Invalid, "{bad}");
+        }
+    }
+
+    #[test]
     fn from_arg_caps_explicit_sets_at_twenty_namespaces() {
         let names = |n: usize| Some((0..n).map(|i| format!("ns-{i}")).collect::<Vec<_>>());
         assert!(matches!(NamespaceScope::from_arg(names(MAX_NAMESPACES)).unwrap(), NamespaceScope::Set(s) if s.len() == 20));
@@ -136,7 +154,7 @@ mod tests {
     #[test]
     fn multi_means_more_than_one_namespace() {
         assert!(NamespaceScope::All.is_multi());
-        assert!(!NamespaceScope::single("shop").is_multi());
+        assert!(!NamespaceScope::single("shop").unwrap().is_multi());
         assert!(NamespaceScope::from_arg(Some(vec!["a".into(), "b".into()])).unwrap().is_multi());
     }
 
@@ -151,7 +169,7 @@ mod tests {
 
     #[test]
     fn plan_is_per_namespace_for_sets_and_cluster_wide_for_all() {
-        let one = watch_plan(&NamespaceScope::single("shop"));
+        let one = watch_plan(&NamespaceScope::single("shop").unwrap());
         assert_eq!(one.len(), Kind::WATCHED.len());
         assert!(one.contains(&StreamId::namespaced(Kind::Pod, "shop")));
         assert!(one.contains(&StreamId::cluster(Kind::PersistentVolume)));
