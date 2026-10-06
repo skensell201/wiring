@@ -181,6 +181,22 @@ describe("actions", () => {
     expect(settings.setLastScope).toHaveBeenCalledWith("prod", ["a", "b"]);
   });
 
+  it("a failed selectScope is not remembered: the previous scope and graph come back and the error shows", async () => {
+    vi.mocked(settings.setLastScope).mockClear();
+    useAppStore.setState({
+      ...applySnapshot(initialState(), { nodes: [node("Pod/p/a")], edges: [] }),
+      connection: { ...initialState().connection, context: "prod", namespaces: ["p"], canListNamespaces: false, scope: ["p"] },
+    });
+    vi.mocked(invoke).mockImplementationOnce(async () => { throw { kind: "invalid", message: "all namespaces needs permission to list namespaces; pick namespaces by name" }; });
+    await useAppStore.getState().selectScope("all");
+    const s = useAppStore.getState();
+    expect(s.connection.scope).toEqual(["p"]);
+    expect(s.graphReady).toBe(true);
+    expect(s.nodes.has("Pod/p/a")).toBe(true);
+    expect(s.toasts.at(-1)).toMatchObject({ kind: "invalid", message: expect.stringContaining("all namespaces needs permission") });
+    expect(settings.setLastScope).not.toHaveBeenCalled();
+  });
+
   it("selectScope('all') sends null", async () => {
     await useAppStore.getState().selectScope("all");
     expect(invoke).toHaveBeenCalledWith("select_namespaces", { namespaces: null, expandedGroups: [] });
@@ -908,7 +924,8 @@ describe("editor", () => {
     expect(s.connection.scope).toEqual(["q"]);
     expect(s.details).toBeNull();
     expect(s.discardDialog.open).toBe(false);
-    expect(settings.setLastScope).toHaveBeenCalledWith("prod", ["q"]);
+    // Remembered once select_namespaces has succeeded.
+    await vi.waitFor(() => expect(settings.setLastScope).toHaveBeenCalledWith("prod", ["q"]));
   });
 
   it("disconnectedState toasts the edits it discards", async () => {

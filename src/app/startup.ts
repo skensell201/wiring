@@ -19,10 +19,11 @@ export async function startup(): Promise<void> {
   // A failed connect lands in disconnectedState, which decides about the picker itself.
   if (!(await s().connect(ctx.name))) return;
   const remembered = await settings.getLastScope(ctx.name);
-  const { namespaces } = s().connection;
+  const { namespaces, canListNamespaces } = s().connection;
   const known = (ns: string) => namespaces.length === 0 || namespaces.includes(ns);
   let scope: NamespaceScope | null = null;
-  if (remembered === "all") scope = namespaces.length > 0 ? "all" : null;
+  // All namespaces needs the permission to list them (it may have been revoked since).
+  if (remembered === "all") scope = namespaces.length > 0 && canListNamespaces ? "all" : null;
   else if (remembered) {
     const kept = remembered.filter(known);
     scope = kept.length > 0 ? kept : null;

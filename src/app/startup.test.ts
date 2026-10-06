@@ -17,7 +17,7 @@ vi.mock("../shared/settings", () => ({
 vi.mock("../shared/ipc/tauri", () => ({
   invoke: vi.fn(async (cmd: string) => {
     if (cmd === "list_contexts") return [{ name: "prod", cluster: "c", user: "u", namespace: "payments", sourceFile: "/k" }];
-    if (cmd === "connect") return { context: "prod", serverVersion: "v1", namespaces: ["default", "payments"] };
+    if (cmd === "connect") return { context: "prod", serverVersion: "v1", namespaces: ["default", "payments"], canListNamespaces: true };
     if (cmd === "denied_kinds" || cmd === "partial_kinds") return [];
     return null;
   }),
@@ -69,6 +69,22 @@ describe("startup", () => {
     await startup();
     expect(useAppStore.getState().connection.scope).toBe("all");
     expect(invoke).toHaveBeenCalledWith("select_namespaces", { namespaces: null, expandedGroups: [] });
+  });
+
+  it("does not restore All namespaces without permission to list namespaces", async () => {
+    const base = vi.mocked(invoke).getMockImplementation()!;
+    vi.mocked(invoke).mockImplementation(async (cmd: string, args?: any) =>
+      (cmd === "connect" ? { context: "prod", serverVersion: "v1", namespaces: ["payments"], canListNamespaces: false } : base(cmd, args)));
+    mem.set("lastContext", "prod");
+    mem.set("scope:prod", "all");
+    try {
+      await startup();
+    } finally {
+      vi.mocked(invoke).mockImplementation(base);
+    }
+    expect(useAppStore.getState().connection.scope).toEqual(["payments"]);
+    expect(invoke).not.toHaveBeenCalledWith("select_namespaces", { namespaces: null, expandedGroups: [] });
+    expect(invoke).toHaveBeenCalledWith("select_namespaces", { namespaces: ["payments"], expandedGroups: [] });
   });
 
   it("falls back to the context's namespace when none of the remembered ones exist", async () => {

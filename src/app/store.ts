@@ -458,10 +458,14 @@ export const useAppStore = create<AppState>()((set, get) => ({
     cancelTableRefresh();
     cancelDetailsRefresh();
     void get().stopLogs();
-    const { expandedGroups, connection } = get();
+    const { expandedGroups } = get();
     const expanded = [...expandedGroups];
-    // Remembered only once the switch is really happening (not while the discard dialog is up).
-    if (connection.context) void settings.setLastScope(connection.context, scope);
+    // What a refused switch restores: the backend keeps the previous scope's watchers then.
+    const before = get();
+    const previous = {
+      nodes: before.nodes, edges: before.edges, graphReady: before.graphReady, tooLarge: before.tooLarge,
+      deniedKinds: before.deniedKinds, partialKinds: before.partialKinds, tables: before.tables, scope: before.connection.scope,
+    };
     set((s) => ({
       nodes: new Map(), edges: new Map(), graphReady: false, tooLarge: null, selectedId: null, details: null, hoveredId: null,
       deniedKinds: new Set(), partialKinds: new Set(), tables: new Map(), focusRequest: null, connection: { ...s.connection, scope },
@@ -470,6 +474,16 @@ export const useAppStore = create<AppState>()((set, get) => ({
     }));
     try {
       await commands.selectNamespaces(scope, expanded);
+    } catch (e) {
+      const { scope: prevScope, ...graph } = previous;
+      if (get().connection.scope === scope) set((s) => ({ ...graph, connection: { ...s.connection, scope: prevScope } }));
+      get().toast(toAppError(e));
+      return;
+    }
+    // Remembered only once the backend accepted it (and not while the discard dialog was up).
+    const { connection } = get();
+    if (connection.context && connection.scope === scope) void settings.setLastScope(connection.context, scope);
+    try {
       const [denied, partial] = await Promise.all([commands.deniedKinds(), commands.partialKinds()]);
       // Only if this is still the current selection - a newer one owns these sets now.
       if (get().connection.scope === scope) set({ deniedKinds: new Set(denied), partialKinds: new Set(partial) });
