@@ -1002,7 +1002,7 @@ async fn graph_snapshot_reflects_applied_fixture() {
     );
     phases.done("setup");
 
-    let merged = kubeconfig::load_merged(&kubeconfig::default_paths()).unwrap();
+    let merged = kubeconfig::load_merged(&kubeconfig::default_sources().into_iter().map(|(p, _)| p).collect::<Vec<_>>()).unwrap();
     let (emitter, mut rx) = ChannelEmitter::new();
     let (mut session, info) = Session::connect(merged, &context, Arc::new(emitter)).await.unwrap();
     assert!(info.namespaces.contains(&NAMESPACE.to_string()));

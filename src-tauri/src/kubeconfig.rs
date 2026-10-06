@@ -87,11 +87,6 @@ pub fn default_sources() -> Vec<(PathBuf, SourceOrigin)> {
     sources_from(std::env::var("KUBECONFIG").ok().as_deref(), dirs::home_dir())
 }
 
-/// `$KUBECONFIG` entries if set, otherwise `~/.kube/config`.
-pub fn default_paths() -> Vec<PathBuf> {
-    default_sources().into_iter().map(|(p, _)| p).collect()
-}
-
 /// One path, read.
 enum Read {
     Missing,
@@ -203,6 +198,8 @@ pub fn validate_file(path: &Path) -> AppResult<()> {
             format!("{}: invalid kubeconfig ({})", path.display(), describe_read_error(&e)),
         )
     })?;
+    // Deliberate: kubectl allows split kubeconfigs (clusters/users in one file), but a
+    // file added here that brings no contexts adds nothing to pick, so it is refused.
     if cfg.contexts.is_empty() {
         let name = path
             .file_name()
