@@ -5,22 +5,19 @@
 //! base64, so the bytes here are base64(gzip(json)). Values can hold credentials: nothing
 //! decoded here is ever logged, and errors never echo a record.
 
-// Nothing outside the tests calls this module yet; Task 9 (release list/details) uses it.
-// Remove this allow then.
-#![allow(dead_code)]
-
+use std::collections::BTreeMap;
 use std::io::Read;
 
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use flate2::read::GzDecoder;
 use k8s_openapi::api::core::v1::Secret;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::error::{AppError, AppResult, ErrorKind};
-use crate::graph::Status;
-use crate::store::Object;
+use crate::graph::{node_id, NodeId, Status};
+use crate::store::{Kind, Object, Store};
 
 pub const STORAGE_TYPE: &str = "helm.sh/release.v1";
 const GZIP_MAGIC: [u8; 3] = [0x1f, 0x8b, 0x08];
@@ -125,6 +122,197 @@ pub fn health(status: &str) -> Status {
         s if s.starts_with("pending-") || s == "uninstalling" => Status::Warn,
         _ => Status::Unknown,
     }
+}
+
+/// A release's latest revision, as one row of the releases list.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HelmRelease {
+    pub name: String,
+    pub namespace: String,
+    /// `name-version`, as `helm list` shows it.
+    pub chart: String,
+    pub app_version: String,
+    pub revision: i64,
+    pub status: String,
+    pub health: Status,
+    pub updated: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HelmRevision {
+    pub revision: i64,
+    pub chart: String,
+    pub app_version: String,
+    pub status: String,
+    pub health: Status,
+    pub updated: Option<String>,
+    pub description: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HelmReleaseDetails {
+    pub release: HelmRelease,
+    pub description: String,
+    pub first_deployed: Option<String>,
+    pub last_deployed: Option<String>,
+    /// The user-supplied values as YAML; empty when none were given.
+    pub values: String,
+    pub notes: String,
+    /// Every stored revision, newest first.
+    pub history: Vec<HelmRevision>,
+    /// The release's objects that exist in the cluster (in the scope), as node ids.
+    pub resources: Vec<NodeId>,
+}
+
+/// A storage Secret with the release name and revision from its labels.
+struct Stored<'a> {
+    namespace: &'a str,
+    name: &'a str,
+    revision: i64,
+    secret: &'a Secret,
+}
+
+fn stored(store: &Store) -> Vec<Stored<'_>> {
+    store
+        .iter_kind(Kind::Secret)
+        .filter_map(|obj| {
+            let Object::Secret(secret) = obj else { return None };
+            if secret.type_.as_deref() != Some(STORAGE_TYPE) {
+                return None;
+            }
+            let labels = secret.metadata.labels.as_ref()?;
+            Some(Stored {
+                namespace: obj.namespace()?,
+                name: labels.get("name")?.as_str(),
+                revision: labels.get("version")?.parse().ok()?,
+                secret,
+            })
+        })
+        .collect()
+}
+
+fn chart_of(raw: &RawRelease) -> String {
+    format!("{}-{}", raw.chart.metadata.name, raw.chart.metadata.version)
+}
+
+fn row_of(raw: &RawRelease, namespace: &str) -> HelmRelease {
+    HelmRelease {
+        name: raw.name.clone(),
+        namespace: if raw.namespace.is_empty() {
+            namespace.to_owned()
+        } else {
+            raw.namespace.clone()
+        },
+        chart: chart_of(raw),
+        app_version: raw.chart.metadata.app_version.clone(),
+        revision: raw.version,
+        status: raw.info.status.clone(),
+        health: health(&raw.info.status),
+        updated: raw.info.last_deployed.clone(),
+    }
+}
+
+fn revision_of(raw: &RawRelease) -> HelmRevision {
+    HelmRevision {
+        revision: raw.version,
+        chart: chart_of(raw),
+        app_version: raw.chart.metadata.app_version.clone(),
+        status: raw.info.status.clone(),
+        health: health(&raw.info.status),
+        updated: raw.info.last_deployed.clone(),
+        description: raw.info.description.clone(),
+    }
+}
+
+/// The record, if it decodes and agrees with the Secret's labels and namespace. Only names
+/// and the revision are logged; the record itself and decode errors never are.
+fn decoded(s: &Stored<'_>) -> Option<RawRelease> {
+    let raw = decode_secret(s.secret)
+        .ok()
+        .filter(|raw| raw.name == s.name && (raw.namespace.is_empty() || raw.namespace == s.namespace));
+    if raw.is_none() {
+        tracing::warn!(
+            namespace = s.namespace,
+            release = s.name,
+            revision = s.revision,
+            "undecodable Helm release record"
+        );
+    }
+    raw
+}
+
+/// The latest revision of every release in the store, sorted by namespace and name.
+pub fn releases(store: &Store) -> Vec<HelmRelease> {
+    let mut latest: BTreeMap<(&str, &str), Stored<'_>> = BTreeMap::new();
+    for s in stored(store) {
+        let key = (s.namespace, s.name);
+        if latest.get(&key).is_none_or(|cur| cur.revision < s.revision) {
+            latest.insert(key, s);
+        }
+    }
+    latest
+        .values()
+        .filter_map(|s| decoded(s).map(|raw| row_of(&raw, s.namespace)))
+        .collect()
+}
+
+/// Overview, values, history, notes and member objects of one release.
+pub fn release(store: &Store, namespace: &str, name: &str) -> AppResult<HelmReleaseDetails> {
+    // Each revision is reduced to its history row at once; only the newest keeps its full record.
+    let mut history = Vec::new();
+    let mut latest: Option<RawRelease> = None;
+    for s in stored(store).iter().filter(|s| s.namespace == namespace && s.name == name) {
+        let Some(raw) = decoded(s) else { continue };
+        history.push(revision_of(&raw));
+        if latest.as_ref().is_none_or(|cur| cur.version < raw.version) {
+            latest = Some(raw);
+        }
+    }
+    history.sort_by_key(|h| std::cmp::Reverse(h.revision));
+    let latest = latest.ok_or_else(|| AppError::new(ErrorKind::NotFound, format!("Helm release {namespace}/{name} not found")))?;
+    let values = match &latest.config {
+        None | Some(Value::Null) => String::new(),
+        Some(Value::Object(m)) if m.is_empty() => String::new(),
+        Some(v) => serde_yaml_ng::to_string(v).map_err(|e| AppError::internal(e.to_string()))?,
+    };
+    Ok(HelmReleaseDetails {
+        release: row_of(&latest, namespace),
+        description: latest.info.description,
+        first_deployed: latest.info.first_deployed,
+        last_deployed: latest.info.last_deployed,
+        values,
+        notes: latest.info.notes,
+        history,
+        resources: members(store, namespace, name),
+    })
+}
+
+/// Helm's ownership annotations, or `managed-by: Helm` + `instance` labels, for objects in the
+/// release's namespace (cluster-scoped objects have none, so the labels alone decide for them).
+fn belongs(obj: &Object, namespace: &str, name: &str) -> bool {
+    let meta = obj.meta();
+    let annotation = |k: &str| meta.annotations.as_ref().and_then(|a| a.get(k)).map(String::as_str);
+    if let Some(release) = annotation("meta.helm.sh/release-name") {
+        let release_ns = annotation("meta.helm.sh/release-namespace").or(obj.namespace());
+        return release == name && release_ns == Some(namespace) && obj.namespace().is_none_or(|ns| ns == namespace);
+    }
+    let label = |k: &str| meta.labels.as_ref().and_then(|l| l.get(k)).map(String::as_str);
+    label("app.kubernetes.io/managed-by") == Some("Helm")
+        && label("app.kubernetes.io/instance") == Some(name)
+        && obj.namespace().is_none_or(|ns| ns == namespace)
+}
+
+pub fn members(store: &Store, namespace: &str, name: &str) -> Vec<NodeId> {
+    let mut ids: Vec<NodeId> = store
+        .iter()
+        .filter(|o| !is_storage_secret(o) && belongs(o, namespace, name))
+        .map(|o| node_id(o.kind(), o.namespace(), o.name()))
+        .collect();
+    ids.sort();
+    ids
 }
 
 #[cfg(test)]
@@ -276,5 +464,187 @@ pub(crate) mod tests {
             ..Default::default()
         });
         assert!(!is_storage_secret(&plain));
+    }
+
+    use crate::store::Store;
+
+    fn object(v: Value) -> Object {
+        Object::from_json_value(v).unwrap()
+    }
+
+    fn store_with_web() -> Store {
+        let mut s = Store::default();
+        s.upsert(storage_secret(
+            "shop",
+            "web",
+            1,
+            "superseded",
+            &release_json("web", "shop", 1, "superseded", "1.4.0"),
+        ));
+        s.upsert(storage_secret(
+            "shop",
+            "web",
+            2,
+            "superseded",
+            &release_json("web", "shop", 2, "superseded", "1.4.1"),
+        ));
+        s.upsert(storage_secret(
+            "shop",
+            "web",
+            3,
+            "deployed",
+            &release_json("web", "shop", 3, "deployed", "1.4.2"),
+        ));
+        s.upsert(storage_secret(
+            "shop",
+            "api",
+            1,
+            "failed",
+            &release_json("api", "shop", 1, "failed", "0.1.0"),
+        ));
+        s.upsert(object(
+            json!({ "apiVersion": "v1", "kind": "ConfigMap", "metadata": { "name": "web-cfg", "namespace": "shop",
+            "annotations": { "meta.helm.sh/release-name": "web", "meta.helm.sh/release-namespace": "shop" } } }),
+        ));
+        s.upsert(object(
+            json!({ "apiVersion": "apps/v1", "kind": "Deployment", "metadata": { "name": "web", "namespace": "shop",
+            "labels": { "app.kubernetes.io/managed-by": "Helm", "app.kubernetes.io/instance": "web" } },
+            "spec": { "selector": { "matchLabels": { "app": "web" } }, "template": { "metadata": { "labels": { "app": "web" } },
+            "spec": { "containers": [{ "name": "web", "image": "nginx" }] } } } }),
+        ));
+        // Another release's object, and one claiming the web release of another namespace.
+        s.upsert(object(
+            json!({ "apiVersion": "v1", "kind": "ConfigMap", "metadata": { "name": "api-cfg", "namespace": "shop",
+            "annotations": { "meta.helm.sh/release-name": "api", "meta.helm.sh/release-namespace": "shop" } } }),
+        ));
+        s.upsert(object(
+            json!({ "apiVersion": "v1", "kind": "ConfigMap", "metadata": { "name": "elsewhere", "namespace": "shop",
+            "annotations": { "meta.helm.sh/release-name": "web", "meta.helm.sh/release-namespace": "other" } } }),
+        ));
+        // `instance` without `managed-by: Helm` is not membership.
+        s.upsert(object(
+            json!({ "apiVersion": "v1", "kind": "ConfigMap", "metadata": { "name": "kustomized", "namespace": "shop",
+            "labels": { "app.kubernetes.io/instance": "web" } } }),
+        ));
+        s
+    }
+
+    #[test]
+    fn the_list_has_the_latest_revision_per_release() {
+        let list = releases(&store_with_web());
+        let rows: Vec<(&str, &str, i64, &str, Status)> = list
+            .iter()
+            .map(|r| (r.name.as_str(), r.chart.as_str(), r.revision, r.status.as_str(), r.health))
+            .collect();
+        assert_eq!(
+            rows,
+            vec![
+                ("api", "web-0.1.0", 1, "failed", Status::Err),
+                ("web", "web-1.4.2", 3, "deployed", Status::Ok)
+            ]
+        );
+        assert_eq!(list[1].app_version, "2.0.1");
+        assert_eq!(list[1].updated.as_deref(), Some("2026-10-03T09:30:00Z"));
+        assert_eq!(list[1].namespace, "shop");
+    }
+
+    #[test]
+    fn an_undecodable_record_is_skipped() {
+        let mut s = store_with_web();
+        let Object::Secret(mut broken) = storage_secret("shop", "bad", 1, "deployed", &json!({})) else {
+            unreachable!()
+        };
+        broken.data = Some(
+            [("release".to_string(), k8s_openapi::ByteString(b"%%%".to_vec()))]
+                .into_iter()
+                .collect(),
+        );
+        s.upsert(Object::Secret(broken));
+        assert!(releases(&s).iter().all(|r| r.name != "bad"));
+    }
+
+    #[test]
+    fn a_record_that_disagrees_with_its_labels_is_skipped() {
+        let mut s = Store::default();
+        // Labels say shop/web, the record says it is api (or lives in another namespace).
+        s.upsert(storage_secret(
+            "shop",
+            "web",
+            1,
+            "deployed",
+            &release_json("api", "shop", 1, "deployed", "1.0.0"),
+        ));
+        s.upsert(storage_secret(
+            "shop",
+            "db",
+            1,
+            "deployed",
+            &release_json("db", "other", 1, "deployed", "1.0.0"),
+        ));
+        s.upsert(storage_secret(
+            "shop",
+            "ok",
+            1,
+            "deployed",
+            &release_json("ok", "shop", 1, "deployed", "1.0.0"),
+        ));
+        let names: Vec<String> = releases(&s).into_iter().map(|r| r.name).collect();
+        assert_eq!(names, vec!["ok".to_string()]);
+        assert_eq!(release(&s, "shop", "web").unwrap_err().kind, ErrorKind::NotFound);
+    }
+
+    #[test]
+    fn details_have_values_notes_history_newest_first_and_members() {
+        let d = release(&store_with_web(), "shop", "web").unwrap();
+        assert_eq!(d.release.revision, 3);
+        assert_eq!(d.description, "Revision 3");
+        assert_eq!(d.first_deployed.as_deref(), Some("2026-10-01T08:00:00Z"));
+        assert_eq!(d.values, "replicaCount: 2\nimage:\n  tag: 2.0.1\n");
+        assert_eq!(d.notes, "Visit http://web.shop\n");
+        let history: Vec<(i64, &str, &str)> = d
+            .history
+            .iter()
+            .map(|h| (h.revision, h.chart.as_str(), h.status.as_str()))
+            .collect();
+        assert_eq!(
+            history,
+            vec![
+                (3, "web-1.4.2", "deployed"),
+                (2, "web-1.4.1", "superseded"),
+                (1, "web-1.4.0", "superseded")
+            ]
+        );
+        assert_eq!(
+            d.resources,
+            vec!["ConfigMap/shop/web-cfg".to_string(), "Deployment/shop/web".to_string()]
+        );
+    }
+
+    #[test]
+    fn empty_values_render_as_nothing() {
+        let mut rel = release_json("bare", "shop", 1, "deployed", "1.0.0");
+        rel["config"] = json!({});
+        let mut s = Store::default();
+        s.upsert(storage_secret("shop", "bare", 1, "deployed", &rel));
+        assert_eq!(release(&s, "shop", "bare").unwrap().values, "");
+    }
+
+    #[test]
+    fn an_unknown_release_is_not_found() {
+        assert_eq!(release(&store_with_web(), "shop", "nope").unwrap_err().kind, ErrorKind::NotFound);
+    }
+
+    #[test]
+    fn membership_needs_the_release_and_its_namespace() {
+        let s = store_with_web();
+        assert_eq!(members(&s, "shop", "api"), vec!["ConfigMap/shop/api-cfg".to_string()]);
+        assert!(
+            members(&s, "other", "web").is_empty(),
+            "objects in shop claiming other/web are not visible from shop"
+        );
+        assert!(
+            members(&s, "shop", "web").iter().all(|id| !id.starts_with("Secret/")),
+            "storage Secrets are not members"
+        );
     }
 }

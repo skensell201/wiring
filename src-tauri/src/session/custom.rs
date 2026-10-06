@@ -127,6 +127,15 @@ impl Session {
             watch.task.abort();
         }
     }
+
+    /// Latest revision of every Helm release in the scope (from the watched Secrets).
+    pub fn helm_releases(&self) -> Vec<crate::helm::HelmRelease> {
+        crate::helm::releases(&self.shared.store())
+    }
+
+    pub fn helm_release(&self, namespace: &str, name: &str) -> crate::error::AppResult<crate::helm::HelmReleaseDetails> {
+        crate::helm::release(&self.shared.store(), namespace, name)
+    }
 }
 
 /// `list_custom`: the rows of the kind `resolve` yields, in the current scope; the table then
@@ -461,5 +470,20 @@ mod tests {
             error: None,
         }));
         assert!(tokio::time::timeout(Duration::from_secs(10), rx.recv()).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn helm_reads_come_from_the_store() {
+        use crate::helm::tests::{release_json, storage_secret};
+        let session = offline_session();
+        session.shared.store().upsert(storage_secret(
+            "shop",
+            "web",
+            1,
+            "deployed",
+            &release_json("web", "shop", 1, "deployed", "1.0.0"),
+        ));
+        assert_eq!(session.helm_releases().len(), 1);
+        assert_eq!(session.helm_release("shop", "web").unwrap().release.chart, "web-1.0.0");
     }
 }
