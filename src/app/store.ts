@@ -7,12 +7,13 @@ import { applyLogMessage, initialLogs, type LogsState } from "../features/logs/l
 import { commands } from "../shared/ipc/commands";
 import type {
   AppError, ConnectionState, ContextInfo, CustomKind, CustomTable, Graph, GraphDelta, GraphEdge, Forward, GraphNode, K8sEvent, Kind, LogMessage, NamespaceScope, NodeId, ObjectDetails,
-  HelmRelease, HelmReleaseDetails, ResourceRef, Status, Table, TooLarge,
+  HelmRelease, HelmReleaseDetails, KubeconfigSource, ResourceRef, Status, Table, TooLarge,
 } from "../shared/ipc/types";
 import { toAppError } from "../shared/ipc/types";
 import { firstNamespace, inScope } from "../shared/scope";
 import { settings } from "../shared/settings";
 import { cancelTableRefresh } from "./tableRefresh";
+import { connectContext } from "../features/cluster/connectContext";
 
 export interface Toast { id: number; kind: AppError["kind"] | "info"; message: string }
 
@@ -96,6 +97,10 @@ export interface Connection {
   /** The watched namespaces; `null` until one is chosen. */
   scope: NamespaceScope | null;
   busy: boolean;
+  /** The context a connect is dialling (the header and the centre pane say so); `null` otherwise. */
+  connecting: string | null;
+  /** The last failed connect, shown by the centre pane until the next connect or a disconnect. */
+  lastError: { context: string; error: AppError } | null;
 }
 
 export interface GraphState {
@@ -115,6 +120,10 @@ export interface GraphState {
 
 export interface AppState extends GraphState {
   contexts: ContextInfo[];
+  /** What each kubeconfig path held at the last scan; `null` until scanned. */
+  kubeconfigSources: KubeconfigSource[] | null;
+  /** Bumped by `openNamespacePicker`; the header's picker opens on every change. */
+  namespacePickerSeq: number;
   connection: Connection;
   hoveredId: NodeId | null;
   expandedGroups: Set<NodeId>;
@@ -170,6 +179,17 @@ export interface AppState extends GraphState {
   setConnectionState: (s: ConnectionState) => void;
   // user actions
   loadContexts: () => Promise<void>;
+  loadKubeconfigSources: () => Promise<void>;
+  /** Re-read the contexts and the kubeconfig sources (the welcome pane's Rescan). */
+  rescanKubeconfigs: () => Promise<void>;
+  /** Connect again to the context of the last failed connect, reopening its scope. */
+  retryConnect: () => Promise<void>;
+  /** Leave the failure pane for the cluster list ("Choose another cluster"). */
+  dismissConnectError: () => Promise<void>;
+  /** Ask the header's namespace picker to open (an empty state's "Choose a namespace"). */
+  openNamespacePicker: () => void;
+  /** Turn every kind chip on. */
+  showAllKinds: () => void;
   addKubeconfig: (path: string) => Promise<void>;
   connect: (context: string) => Promise<boolean>;
   reconnect: () => Promise<void>;
@@ -268,7 +288,9 @@ export const DEFAULT_HIDDEN_KINDS: readonly Kind[] = ["Role", "RoleBinding", "Cl
 export function initialState(): Omit<AppState, keyof Actions> {
   return {
     contexts: [],
-    connection: { state: "disconnected", context: null, serverVersion: null, namespaces: [], canListNamespaces: true, scope: null, busy: false },
+    kubeconfigSources: null,
+    namespacePickerSeq: 0,
+    connection: { state: "disconnected", context: null, serverVersion: null, namespaces: [], canListNamespaces: true, scope: null, busy: false, connecting: null, lastError: null },
     nodes: new Map(),
     edges: new Map(),
     graphReady: false,
@@ -319,7 +341,7 @@ export function disconnectedState(s: AppState): Omit<AppState, keyof Actions> {
   const lost = lostEditsToast(s);
   return {
     ...initialState(), contexts: s.contexts, hiddenKinds: s.hiddenKinds, toasts: lost ? [...s.toasts, { id: ++toastSeq, ...lost }] : s.toasts,
-    pickerOpen: s.contexts.length === 0, sidebarCollapsed: s.sidebarCollapsed,
+    pickerOpen: s.contexts.length === 0, sidebarCollapsed: s.sidebarCollapsed, kubeconfigSources: s.kubeconfigSources,
   };
 }
 
@@ -331,6 +353,7 @@ function lostEditsToast(s: Pick<AppState, "details">): Omit<Toast, "id"> | null 
 
 type Actions = Pick<AppState,
   | "applySnapshot" | "applyDelta" | "setObjectEvents" | "setConnectionState" | "loadContexts" | "addKubeconfig" | "connect"
+  | "loadKubeconfigSources" | "rescanKubeconfigs" | "retryConnect" | "dismissConnectError" | "openNamespacePicker" | "showAllKinds"
   | "reconnect" | "disconnect" | "selectNamespace" | "selectScope" | "select" | "setHovered" | "toggleGroup" | "toggleKind" | "setSearch" | "toast"
   | "dismissToast" | "setPickerOpen" | "showGraph" | "showTable" | "refreshTable" | "setIncludeHelmStorage"
   | "loadCustomKinds" | "showCustom" | "refreshCustom" | "applyCustomTable" | "showHelm" | "refreshHelm" | "selectRelease" | "clearRelease" | "focusInGraph" | "clearFocusRequest"
@@ -424,6 +447,9 @@ function leaveCustomView(prev: View, next: View): void {
  *  a load left over from a previous connection neither lands nor ends the next one's. */
 let customKindsGen = 0;
 
+/** Connect generations: a connect superseded by a later one neither lands its result nor its error. */
+let connectSeq = 0;
+
 export const useAppStore = create<AppState>()((set, get) => ({
   ...initialState(),
 
@@ -462,6 +488,34 @@ export const useAppStore = create<AppState>()((set, get) => ({
     }
   },
 
+  loadKubeconfigSources: async () => {
+    try {
+      // `?? []`: an answer without a list still counts as scanned.
+      set({ kubeconfigSources: (await commands.kubeconfigSources()) ?? [] });
+    } catch (e) {
+      get().toast(toAppError(e));
+    }
+  },
+
+  rescanKubeconfigs: async () => {
+    await get().loadContexts();
+    await get().loadKubeconfigSources();
+  },
+
+  retryConnect: async () => {
+    const last = get().connection.lastError;
+    if (last) await connectContext(last.context);
+  },
+
+  dismissConnectError: async () => {
+    set((s) => ({ connection: { ...s.connection, lastError: null } }));
+    if (get().sidebarCollapsed) await get().toggleSidebar();
+  },
+
+  openNamespacePicker: () => set((s) => ({ namespacePickerSeq: s.namespacePickerSeq + 1 })),
+
+  showAllKinds: () => set({ hiddenKinds: new Set() }),
+
   addKubeconfig: async (path) => {
     try {
       set({ contexts: await commands.addKubeconfig(path) });
@@ -473,23 +527,30 @@ export const useAppStore = create<AppState>()((set, get) => ({
   connect: async (context) => {
     const lost = lostEditsToast(get());
     customKindsGen++; // a custom kinds load of the session being replaced must not land in the next
-    set((s) => ({ connection: { ...s.connection, busy: true } }));
+    const seq = ++connectSeq;
+    set((s) => ({ connection: { ...s.connection, busy: true, connecting: context, lastError: null } }));
     try {
       const info = await commands.connect(context);
+      if (seq !== connectSeq) return false; // superseded: a later connect owns the session now
       set({
         ...initialState(),
         contexts: get().contexts,
+        kubeconfigSources: get().kubeconfigSources,
         hiddenKinds: get().hiddenKinds,
         sidebarCollapsed: get().sidebarCollapsed,
-        connection: { state: "connected", context: info.context, serverVersion: info.serverVersion, namespaces: info.namespaces, canListNamespaces: info.canListNamespaces, scope: null, busy: false },
+        connection: {
+          state: "connected", context: info.context, serverVersion: info.serverVersion, namespaces: info.namespaces,
+          canListNamespaces: info.canListNamespaces, scope: null, busy: false, connecting: null, lastError: null,
+        },
       });
       if (lost) get().toast(lost);
       return true;
     } catch (e) {
+      if (seq !== connectSeq) return false;
       // The backend tears the previous session down before dialling, so a failed connect leaves
-      // the app disconnected whatever it was before.
-      set(disconnectedState(get()));
-      get().toast(toAppError(e));
+      // the app disconnected whatever it was before. The centre pane shows the error; no toast.
+      const base = disconnectedState(get());
+      set({ ...base, connection: { ...base.connection, lastError: { context, error: toAppError(e) } } });
       return false;
     }
   },

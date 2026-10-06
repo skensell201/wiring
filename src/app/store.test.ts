@@ -265,7 +265,7 @@ describe("actions", () => {
     expect(c.state).toBe("connected");
   });
 
-  it("connect failure becomes a toast and leaves the app disconnected", async () => {
+  it("connect failure is kept as the last error and leaves the app disconnected, without a toast", async () => {
     // The backend tears the previous session down before dialling the new context, so a failed
     // connect from a connected state must not pretend the old connection is still alive.
     useAppStore.setState({
@@ -276,12 +276,9 @@ describe("actions", () => {
     vi.mocked(invoke).mockRejectedValueOnce({ kind: "auth", message: "exec plugin missing" });
     expect(await useAppStore.getState().connect("prod")).toBe(false);
     const s = useAppStore.getState();
-    expect(s.connection).toEqual(initialState().connection);
+    expect(s.connection).toEqual({ ...initialState().connection, lastError: { context: "prod", error: { kind: "auth", message: "exec plugin missing" } } });
     expect(s.nodes.size).toBe(0);
-    expect(s.pickerOpen).toBe(true);
-    expect(s.toasts).toHaveLength(2);
-    expect(s.toasts[0]).toMatchObject({ message: "earlier" });
-    expect(s.toasts[1]).toMatchObject({ kind: "auth", message: "exec plugin missing" });
+    expect(s.toasts).toEqual([{ id: 1, kind: "info", message: "earlier" }]);
   });
 
   it("disconnectedState keeps contexts, hidden kinds and toasts; the picker opens only with nothing to pick from", () => {
