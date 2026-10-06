@@ -16,7 +16,7 @@ use wiring_lib::error::ErrorKind;
 use wiring_lib::exec::session::ExecRequest;
 use wiring_lib::exec::{ExecMessage, ExecPod};
 use wiring_lib::forward::resolve::suggest_local_port;
-use wiring_lib::graph::{Graph, GraphDelta, Problem, Relation};
+use wiring_lib::graph::{Graph, GraphDelta, Problem, Relation, Status};
 use wiring_lib::kubeconfig;
 use wiring_lib::logs::session::LogRequest;
 use wiring_lib::logs::LogMessage;
@@ -748,6 +748,23 @@ async fn graph_snapshot_reflects_applied_fixture() {
     .await;
     assert!(ok, "the broken image never explained its Deployment; last graph: {graph:#?}");
     phases.done("graph");
+
+    // Policies, RBAC and the node this runs on are wired up.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    let ok = graph_until(&mut rx, &mut graph, deadline, |g| {
+        let edge = |rel: &str, src: &str| g.edges.iter().any(|e| e.relation.as_str() == rel && e.source.starts_with(src));
+        edge("applies", "NetworkPolicy/wiring-smoke/web-from-talker")
+            && edge("allows", "Pod/wiring-smoke/talker")
+            && edge("grants", "RoleBinding/wiring-smoke/default-reads-pods")
+            && edge("subject", "RoleBinding/wiring-smoke/default-reads-pods")
+            && g.edges
+                .iter()
+                .any(|e| e.relation.as_str() == "runsOn" && e.target.starts_with("Node//"))
+            && g.nodes.iter().any(|n| n.kind == Kind::Node && n.status == Status::Ok)
+    })
+    .await;
+    assert!(ok, "policy / RBAC / node edges never appeared; last graph: {graph:#?}");
+    phases.done("graph extras");
 
     // Details for the deployment must render YAML + summary.
     let details = session.get_object("Deployment/wiring-smoke/web").unwrap();

@@ -80,3 +80,22 @@ apiVersion: v1
 kind: Service
 metadata: { name: whoami, namespace: wiring-smoke }
 spec: { selector: { app: whoami }, ports: [ { name: web, port: 8080, targetPort: http } ] }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: web-from-talker, namespace: wiring-smoke }
+spec:
+  podSelector: { matchLabels: { app: web } }
+  policyTypes: [ Ingress ]
+  ingress: [ { from: [ { podSelector: { matchLabels: { app: talker } } } ], ports: [ { protocol: TCP, port: 80 } ] } ]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: { name: pod-reader, namespace: wiring-smoke }
+rules: [ { apiGroups: [ "" ], resources: [ pods ], verbs: [ get, list ] } ]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: { name: default-reads-pods, namespace: wiring-smoke }
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: pod-reader }
+subjects: [ { kind: ServiceAccount, name: default, namespace: wiring-smoke } ]
