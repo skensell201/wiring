@@ -27,6 +27,7 @@ vi.mock("../shared/ipc/tauri", () => ({
 
 import { invoke } from "../shared/ipc/tauri";
 import { startup } from "./startup";
+import { connectionPane, type Pane } from "../features/onboarding/panes";
 
 beforeEach(() => { useAppStore.setState(initialState()); mem.clear(); vi.mocked(invoke).mockClear(); });
 
@@ -53,6 +54,47 @@ describe("startup", () => {
     expect(s.connection.context).toBe("prod");
     expect(s.connection.scope).toEqual(["payments"]);
     expect(invoke).toHaveBeenCalledWith("select_namespaces", { namespaces: ["payments"], expandedGroups: [] });
+  });
+
+  it("goes from starting straight to connecting with a remembered context", async () => {
+    mem.set("lastContext", "prod");
+    const seen: (Pane["type"] | "session")[] = [];
+    const record = () => {
+      const s = useAppStore.getState();
+      const t = connectionPane(s.connection, s.contexts.length, s.contextsLoaded)?.type ?? "session";
+      if (seen[seen.length - 1] !== t) seen.push(t);
+    };
+    record();
+    const unsub = useAppStore.subscribe(record);
+    try {
+      await startup();
+    } finally {
+      unsub();
+    }
+    expect(seen).toEqual(["starting", "connecting", "session"]);
+  });
+
+  it("marks the contexts loaded even when listing them fails", async () => {
+    vi.mocked(invoke).mockImplementationOnce(async () => { throw new Error("boom"); });
+    await startup();
+    expect(useAppStore.getState().contextsLoaded).toBe(true);
+    expect(useAppStore.getState().contexts).toHaveLength(0);
+  });
+
+  it("does not dial the remembered context when the user cancelled while the contexts loaded", async () => {
+    mem.set("lastContext", "prod");
+    const base = vi.mocked(invoke).getMockImplementation()!;
+    vi.mocked(invoke).mockImplementation(async (cmd: string, args?: any) => {
+      if (cmd === "list_contexts") void useAppStore.getState().disconnect();
+      return base(cmd, args);
+    });
+    try {
+      await startup();
+    } finally {
+      vi.mocked(invoke).mockImplementation(base);
+    }
+    expect(invoke).not.toHaveBeenCalledWith("connect", expect.anything());
+    expect(useAppStore.getState().connection.connecting).toBeNull();
   });
 
   it("restores a remembered multi-namespace scope, dropping namespaces that are gone", async () => {
@@ -104,6 +146,7 @@ describe("startup", () => {
     mem.set("lastContext", "gone");
     await startup();
     expect(invoke).not.toHaveBeenCalledWith("connect", expect.anything());
+    expect(useAppStore.getState().connection.connecting).toBeNull();
   });
 
   it("loads the persisted sidebar-collapsed flag before connecting", async () => {

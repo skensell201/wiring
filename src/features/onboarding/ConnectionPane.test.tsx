@@ -37,11 +37,17 @@ describe("connectionPane", () => {
   const c = initialState().connection;
   it("picks the pane in priority order", () => {
     const error = { context: "a", error: HELPER };
-    expect(connectionPane({ ...c, connecting: "b", context: "a", lastError: error }, 2)).toEqual({ type: "connecting", context: "b" });
-    expect(connectionPane({ ...c, context: "a" }, 2)).toBeNull();
-    expect(connectionPane({ ...c, lastError: error }, 2)).toEqual({ type: "failed", context: "a", error: HELPER });
-    expect(connectionPane(c, 0)).toEqual({ type: "welcome" });
-    expect(connectionPane(c, 3)).toEqual({ type: "choose", contexts: 3 });
+    expect(connectionPane({ ...c, connecting: "b", context: "a", lastError: error }, 2, true)).toEqual({ type: "connecting", context: "b" });
+    expect(connectionPane({ ...c, context: "a" }, 2, true)).toBeNull();
+    expect(connectionPane({ ...c, lastError: error }, 2, true)).toEqual({ type: "failed", context: "a", error: HELPER });
+    expect(connectionPane(c, 0, true)).toEqual({ type: "welcome" });
+    expect(connectionPane(c, 3, true)).toEqual({ type: "choose", contexts: 3 });
+  });
+
+  it("says nothing about contexts until they have been loaded", () => {
+    expect(connectionPane(c, 0, false)).toEqual({ type: "starting" });
+    expect(connectionPane(c, 3, false)).toEqual({ type: "starting" });
+    expect(connectionPane({ ...c, connecting: "b" }, 0, false)).toEqual({ type: "connecting", context: "b" });
   });
 });
 

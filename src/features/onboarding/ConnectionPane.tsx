@@ -25,6 +25,8 @@ function sourceStateText(s: KubeconfigSource): string {
 /** The centre pane while there is no connected session: welcome, choose, connecting or failed. */
 export function ConnectionPane({ pane }: { pane: Pane }) {
   switch (pane.type) {
+    case "starting":
+      return null; // the contexts load in a blink; anything said here would only flash
     case "connecting":
       return <EmptyState icon={LoaderCircle} spinning title={`Connecting to ${pane.context}…`}>Waiting for the cluster to answer…</EmptyState>;
     case "failed":

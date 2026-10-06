@@ -120,6 +120,8 @@ export interface GraphState {
 
 export interface AppState extends GraphState {
   contexts: ContextInfo[];
+  /** Whether `loadContexts` has finished once (either way); until then an empty list says nothing. */
+  contextsLoaded: boolean;
   /** What each kubeconfig path held at the last scan; `null` until scanned. */
   kubeconfigSources: KubeconfigSource[] | null;
   /** Bumped by `openNamespacePicker`; the header's picker opens on every change. */
@@ -291,6 +293,7 @@ export const DEFAULT_HIDDEN_KINDS: readonly Kind[] = ["Role", "RoleBinding", "Cl
 export function initialState(): Omit<AppState, keyof Actions> {
   return {
     contexts: [],
+    contextsLoaded: false,
     kubeconfigSources: null,
     namespacePickerSeq: 0,
     connection: { state: "disconnected", context: null, serverVersion: null, namespaces: [], canListNamespaces: true, scope: null, busy: false, connecting: null, lastError: null },
@@ -344,7 +347,7 @@ export function initialState(): Omit<AppState, keyof Actions> {
 export function disconnectedState(s: AppState): Omit<AppState, keyof Actions> {
   const lost = lostEditsToast(s);
   return {
-    ...initialState(), contexts: s.contexts, hiddenKinds: s.hiddenKinds, toasts: lost ? [...s.toasts, { id: ++toastSeq, ...lost }] : s.toasts,
+    ...initialState(), contexts: s.contexts, contextsLoaded: s.contextsLoaded, hiddenKinds: s.hiddenKinds, toasts: lost ? [...s.toasts, { id: ++toastSeq, ...lost }] : s.toasts,
     sidebarCollapsed: s.sidebarCollapsed, kubeconfigSources: s.kubeconfigSources,
   };
 }
@@ -501,8 +504,9 @@ export const useAppStore = create<AppState>()((set, get) => ({
 
   loadContexts: async () => {
     try {
-      set({ contexts: await commands.listContexts() });
+      set({ contexts: await commands.listContexts(), contextsLoaded: true });
     } catch (e) {
+      set({ contextsLoaded: true });
       get().toast(toAppError(e));
     }
   },
@@ -570,6 +574,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
       set({
         ...initialState(),
         contexts: get().contexts,
+        contextsLoaded: get().contextsLoaded,
         kubeconfigSources: get().kubeconfigSources,
         hiddenKinds: get().hiddenKinds,
         sidebarCollapsed: get().sidebarCollapsed,

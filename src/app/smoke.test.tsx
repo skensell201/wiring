@@ -9,10 +9,10 @@ vi.mock("../shared/settings", () => ({
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn(async () => null) }));
 
 describe("App shell", () => {
-  it("renders", () => {
+  it("renders", async () => {
     render(<App />);
     expect(screen.getByText("Wiring")).toBeInTheDocument();
-    // No contexts and no session: the welcome pane stands in for the views.
-    expect(screen.getByRole("status", { name: "Connect Wiring to a cluster" })).toBeInTheDocument();
+    // No contexts (once startup has loaded them) and no session: the welcome pane stands in for the views.
+    expect(await screen.findByRole("status", { name: "Connect Wiring to a cluster" })).toBeInTheDocument();
   });
 });

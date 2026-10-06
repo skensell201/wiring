@@ -20,14 +20,25 @@ vi.mock("../shared/settings", () => ({
 }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn(async () => null) }));
 
+import { invoke } from "../shared/ipc/tauri";
+
 const detailsPanel = () => screen.queryByRole("separator", { name: "Resize details panel" });
 
 beforeEach(() => {
   hoisted.resolveConnect = null;
+  vi.mocked(invoke).mockClear();
   useAppStore.setState(initialState());
 });
 
 describe("App with a connection pane", () => {
+  it("shows neither the welcome nor the choose pane before the contexts are loaded", async () => {
+    render(<App />);
+    await act(async () => {});
+    expect(screen.queryByRole("status", { name: "Connect Wiring to a cluster" })).toBeNull();
+    expect(screen.queryByRole("status", { name: "Choose a cluster" })).toBeNull();
+    expect(vi.mocked(invoke).mock.calls.map((c) => c[0])).not.toContain("kubeconfig_sources");
+  });
+
   it("hides the old cluster's details panel while switching, and brings it back after", async () => {
     useAppStore.setState({
       contexts: [

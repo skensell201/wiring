@@ -29,7 +29,7 @@ export function App() {
   const viewName = useAppStore((s) => s.view.name);
   const customKey = useAppStore((s) => (s.view.name === "custom" ? refKey(s.view.resource) : null));
   const maximized = useAppStore((s) => s.detailsMaximized);
-  const pane = useAppStore(useShallow((s) => connectionPane(s.connection, s.contexts.length)));
+  const pane = useAppStore(useShallow((s) => connectionPane(s.connection, s.contexts.length, s.contextsLoaded)));
   useEffect(() => {
     let active = true;
     let stop: (() => void) | undefined;
