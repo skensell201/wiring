@@ -412,10 +412,11 @@ function dropSelection<S extends GraphState>(s: S, dropped: boolean): S {
 
 // ---- store ----------------------------------------------------------------
 
-/** A custom table's watch has no reader once another view replaces it. */
+/** A custom table's watch has no reader once another view replaces it. Another custom kind needs no
+ *  stop: its list_custom supersedes the open watch in the backend, and a separate stop_custom (not
+ *  awaited, commands run concurrently) could land after that list and end the new kind's watch. */
 function leaveCustomView(prev: View, next: View): void {
-  if (prev.name !== "custom") return;
-  if (next.name === "custom" && refKey(next.resource) === refKey(prev.resource)) return;
+  if (prev.name !== "custom" || next.name === "custom") return;
   void commands.stopCustom().catch(() => {});
 }
 
@@ -695,7 +696,9 @@ export const useAppStore = create<AppState>()((set, get) => ({
         return;
       }
       if (refKey(view.resource) !== key) {
-        // Another kind was opened meanwhile, and this late answer replaced its watch; restart it.
+        // Another kind was opened meanwhile. Each list_custom supersedes the ones begun before it, so
+        // this answer only owns the watch if its request reached the backend after the other kind's
+        // (concurrent commands race to the session lock); then the open kind has none. Restart it.
         void get().refreshCustom(view.resource);
         return;
       }

@@ -60,6 +60,14 @@ describe("Custom Resources section", () => {
     useAppStore.getState().showGraph();
     expect(invoke).toHaveBeenCalledWith("stop_custom", undefined);
   });
+
+  it("switching to another kind lists it without a stop that could race its watch", async () => {
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => (cmd === "list_custom" ? { resource: rollout.resource, table, error: null } : null));
+    useAppStore.setState({ connection: connected(), view: { name: "custom", resource: cert.resource } });
+    await useAppStore.getState().showCustom(rollout.resource);
+    expect(invoke).toHaveBeenCalledWith("list_custom", { resource: rollout.resource });
+    expect(invoke).not.toHaveBeenCalledWith("stop_custom", undefined);
+  });
 });
 
 describe("custom kinds store", () => {
@@ -131,7 +139,7 @@ describe("custom table answers in flight", () => {
     const b = useAppStore.getState().showCustom(rollout.resource);
     pending[1].resolve({ resource: rollout.resource, table: rollTable, error: null });
     await b;
-    pending[0].resolve({ resource: cert.resource, table, error: null }); // A's late answer replaced B's watch
+    pending[0].resolve({ resource: cert.resource, table, error: null }); // A's late answer: its request may have begun after B's and taken the watch
     await a;
     await vi.waitFor(() => expect(listCalls()).toEqual(["Certificate", "Rollout", "Rollout"]));
     pending[2].resolve({ resource: rollout.resource, table: rollTable, error: null });
