@@ -52,12 +52,6 @@ pub struct KubeconfigSource {
     pub error: Option<String>,
 }
 
-/// Only the first line of an error's `Display`, so raw parser output (which
-/// may echo source tokens) never reaches the UI.
-fn first_line(e: &impl std::fmt::Display) -> String {
-    e.to_string().lines().next().unwrap_or_default().to_string()
-}
-
 /// A description of a kubeconfig read/parse failure built from the error's
 /// kind and location only — never the parser's own text, which can echo
 /// values (tokens, keys) from the file.
@@ -179,9 +173,12 @@ pub fn list_contexts(paths: &[PathBuf]) -> AppResult<Vec<ContextInfo>> {
 pub fn load_merged(paths: &[PathBuf]) -> AppResult<Kubeconfig> {
     let mut merged = Kubeconfig::default();
     for (path, cfg) in read_existing(paths) {
-        merged = merged
-            .merge(cfg)
-            .map_err(|e| AppError::new(ErrorKind::Internal, format!("merging {}: {}", path.display(), first_line(&e))))?;
+        merged = merged.merge(cfg).map_err(|e| {
+            AppError::new(
+                ErrorKind::Internal,
+                format!("could not merge {} with the other kubeconfig files", path.display()),
+            )
+        })?;
     }
     if merged.contexts.is_empty() {
         return Err(AppError::new(ErrorKind::NotFound, "no kubeconfig contexts found"));
@@ -414,6 +411,19 @@ mod tests {
         assert!(
             !err.is_empty() && !err.contains("not a valid kubeconfig") && !err.contains('\n'),
             "{err}"
+        );
+    }
+
+    #[test]
+    fn a_merge_failure_names_the_file_not_the_library_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = kubeconfig_file(dir.path(), "a", &[("prod", "c1", "u1")]);
+        let b = dir.path().join("b");
+        std::fs::write(&b, "apiVersion: v1\nkind: Other\ncontexts: []\n").unwrap();
+        let err = load_merged(&[a, b.clone()]).unwrap_err();
+        assert_eq!(
+            err.message,
+            format!("could not merge {} with the other kubeconfig files", b.display())
         );
     }
 
