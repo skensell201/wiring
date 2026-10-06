@@ -7,6 +7,7 @@
 
 use std::collections::HashSet;
 use std::io::{IsTerminal, Read};
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
@@ -40,6 +41,8 @@ pub fn merge_path(current: &str, shell: Option<&str>, extras: &[PathBuf]) -> Str
 
 /// `cmd`'s stdout if it exits successfully within `timeout`; otherwise it is killed and `None`.
 pub fn run_with_timeout(mut cmd: Command, timeout: Duration) -> Option<String> {
+    // Its own process group, so a timeout can take down everything the rc files started.
+    cmd.process_group(0);
     let mut child = cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().ok()?;
     let mut stdout = child.stdout.take()?;
     let (tx, rx) = mpsc::channel();
@@ -55,6 +58,7 @@ pub fn run_with_timeout(mut cmd: Command, timeout: Duration) -> Option<String> {
             Ok(Some(status)) if status.success() => break,
             Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
             _ => {
+                kill_group(child.id());
                 let _ = child.kill();
                 let _ = child.wait();
                 return None;
@@ -62,6 +66,16 @@ pub fn run_with_timeout(mut cmd: Command, timeout: Duration) -> Option<String> {
         }
     }
     rx.recv_timeout(deadline.saturating_duration_since(Instant::now())).ok()
+}
+
+/// SIGKILLs the process group led by `pid` (via `kill(1)`, to avoid a libc dependency).
+fn kill_group(pid: u32) {
+    let _ = Command::new("kill")
+        .args(["-KILL", "--", &format!("-{pid}")])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
 }
 
 /// The text between the last start marker and the end marker after it; `None` when either marker
@@ -121,6 +135,10 @@ fn default_shell() -> &'static str {
 /// Sets this process's `PATH` to the login shell's merged with the current one (or, when the
 /// shell is not asked or does not answer, the current one plus the common tool directories).
 /// Call once at startup, before any other thread reads the environment.
+///
+/// Blocks for at most `SHELL_TIMEOUT` (typical login shells answer in well under a second). It is
+/// synchronous on purpose: `set_var` is only sound while no other thread reads the environment, so
+/// it cannot run in the background once the app is up.
 pub fn apply_login_shell_path() {
     let current = std::env::var("PATH").unwrap_or_default();
     let from_shell = if should_query_shell(std::io::stdout().is_terminal()) {
@@ -189,6 +207,29 @@ mod tests {
         let started = Instant::now();
         assert_eq!(run_with_timeout(slow, Duration::from_millis(200)), None);
         assert!(started.elapsed() < Duration::from_secs(2), "{:?}", started.elapsed());
+    }
+
+    #[test]
+    fn run_with_timeout_kills_the_children_the_command_started() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid_file = dir.path().join("child.pid");
+        let mut cmd = Command::new("/bin/sh");
+        cmd.args(["-c", &format!("sleep 30 & echo $! > {}; sleep 10", pid_file.display())]);
+        assert_eq!(run_with_timeout(cmd, Duration::from_millis(500)), None);
+        let pid = std::fs::read_to_string(&pid_file).unwrap().trim().to_string();
+        let alive = || {
+            Command::new("kill")
+                .args(["-0", &pid])
+                .stderr(Stdio::null())
+                .status()
+                .unwrap()
+                .success()
+        };
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while alive() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(!alive(), "child {pid} survived");
     }
 
     #[test]
