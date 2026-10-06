@@ -136,6 +136,8 @@ export interface AppState extends GraphState {
   deniedLoaded: boolean;
   /** Set instead of `nodes` when the scope has too many objects for a graph. */
   tooLarge: TooLarge | null;
+  /** `context|scope` of the last too-large switch notice, so it is said once per scope. */
+  tooLargeNotified: string | null;
   search: string;
   toasts: Toast[];
   view: View;
@@ -305,6 +307,7 @@ export function initialState(): Omit<AppState, keyof Actions> {
     partialKinds: new Set(),
     deniedLoaded: false,
     tooLarge: null,
+    tooLargeNotified: null,
     search: "",
     toasts: [],
     view: { name: "graph" },
@@ -465,7 +468,19 @@ export const useAppStore = create<AppState>()((set, get) => ({
     });
     refreshDetailsIfTouched(before, get());
     const s = get();
-    if (s.tooLarge && s.view.name === "graph") set({ view: { name: "table", kind: s.lastTableKind ?? "Deployment" } });
+    if (s.tooLarge && s.view.name === "graph") {
+      set({ view: { name: "table", kind: s.lastTableKind ?? "Deployment" } });
+      // Said once per scope: the backend sends a too-large snapshot on every rebuild.
+      const sc = s.connection.scope;
+      const key = `${s.connection.context}|${JSON.stringify(Array.isArray(sc) ? [...sc].sort() : sc)}`;
+      if (s.tooLargeNotified !== key) {
+        set({ tooLargeNotified: key });
+        get().toast({
+          kind: "info",
+          message: `${s.tooLarge.nodes.toLocaleString("en-US")} objects are too many to draw, so Wiring shows tables. Pick fewer namespaces to see the graph.`,
+        });
+      }
+    }
   },
   applyDelta: (d) => {
     const before = get();

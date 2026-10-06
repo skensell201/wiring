@@ -165,3 +165,33 @@ describe("empty-state actions", () => {
     expect(useAppStore.getState().hiddenKinds.size).toBe(0);
   });
 });
+
+describe("too-large switch notice", () => {
+  const big = { nodes: [], edges: [], tooLarge: { nodes: 1873, kinds: [] } };
+  const notices = () => useAppStore.getState().toasts.filter((t) => t.message.includes("too many to draw"));
+
+  it("says so once per scope when the graph switches to a table", () => {
+    useAppStore.setState({ connection: { ...initialState().connection, context: "prod", state: "connected", scope: ["shop"] } });
+    useAppStore.getState().applySnapshot(big);
+    expect(useAppStore.getState().view).toEqual({ name: "table", kind: "Deployment" });
+    expect(notices()).toHaveLength(1);
+    expect(notices()[0]).toMatchObject({ kind: "info", message: expect.stringContaining("1,873 objects") });
+
+    // Back to the graph, another rebuild of the same scope: switched again, not said again.
+    useAppStore.getState().showGraph();
+    useAppStore.getState().applySnapshot(big);
+    expect(useAppStore.getState().view.name).toBe("table");
+    expect(notices()).toHaveLength(1);
+
+    useAppStore.setState((s) => ({ connection: { ...s.connection, scope: "all" } }));
+    useAppStore.getState().showGraph();
+    useAppStore.getState().applySnapshot(big);
+    expect(notices()).toHaveLength(2);
+  });
+
+  it("says nothing when a table was already on screen", () => {
+    useAppStore.setState({ view: { name: "table", kind: "Pod" }, connection: { ...initialState().connection, context: "prod", state: "connected", scope: ["shop"] } });
+    useAppStore.getState().applySnapshot(big);
+    expect(notices()).toHaveLength(0);
+  });
+});
