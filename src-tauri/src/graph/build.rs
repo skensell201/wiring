@@ -29,6 +29,10 @@ pub fn build(store: &Store, opts: &BuildOptions) -> Graph {
     let pods = PodIndex::new(store);
     let policy_pods = PolicyPods::new(store, store.iter_kind(Kind::Pod));
     for obj in store.iter() {
+        // Helm's release records are storage, not workload wiring.
+        if crate::helm::is_storage_secret(obj) {
+            continue;
+        }
         // Must run before `hide_single_replicasets`, which counts a Deployment's *remaining*
         // ReplicaSet children: a stale RS has to be excluded from that count, not hidden by it.
         if is_stale_replicaset(obj) {
@@ -1240,5 +1244,19 @@ status: {{ replicas: 2, readyReplicas: {ready} }}
         };
         assert!(has("Custom/argoproj.io/v1alpha1/Rollout/s/web", "ReplicaSet/s/web-abc"));
         assert!(has("ReplicaSet/s/web-abc", "Pod/s/web-abc-1"));
+    }
+
+    #[test]
+    fn helm_storage_secrets_never_reach_the_graph() {
+        use crate::helm::tests::{release_json, storage_secret};
+        let mut s = Store::default();
+        s.upsert(storage_secret(
+            "s",
+            "web",
+            1,
+            "deployed",
+            &release_json("web", "s", 1, "deployed", "1.0.0"),
+        ));
+        assert!(build(&s, &BuildOptions::default()).nodes.is_empty());
     }
 }

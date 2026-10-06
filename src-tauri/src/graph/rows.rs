@@ -209,8 +209,15 @@ pub fn columns(kind: Kind) -> Vec<TableColumn> {
     }
 }
 
-/// Build the table for `kind` from the store. Rows sorted by name.
+/// `table_filtered` without Helm storage Secrets, the default every caller but the Secrets
+/// table's toggle wants.
 pub fn table(store: &Store, kind: Kind, now: jiff::Timestamp) -> Table {
+    table_filtered(store, kind, now, false)
+}
+
+/// The table for `kind`, rows sorted by name. Helm storage Secrets are left out unless
+/// `include_helm_storage`.
+pub fn table_filtered(store: &Store, kind: Kind, now: jiff::Timestamp, include_helm_storage: bool) -> Table {
     let columns = columns(kind);
     let pods = if crate::metrics::usage::has_usage(kind) {
         PodIndex::new(store)
@@ -231,6 +238,7 @@ pub fn table(store: &Store, kind: Kind, now: jiff::Timestamp) -> Table {
     }
     let mut rows: Vec<TableRow> = store
         .iter_kind(kind)
+        .filter(|obj| include_helm_storage || !crate::helm::is_storage_secret(obj))
         .map(|obj| {
             let (status, badges) = describe_with(obj, store, &pods, &policy_pods);
             let mut cells = vec![plain(obj.name())];
@@ -747,6 +755,31 @@ spec:
         assert_eq!(
             cell(&table(&s, Kind::ClusterRoleBinding, now()), "web-cluster", "role").text,
             "ClusterRole/view"
+        );
+    }
+
+    #[test]
+    fn helm_storage_secrets_are_hidden_unless_asked_for() {
+        use crate::helm::tests::{release_json, storage_secret};
+        let mut s = Store::default();
+        s.upsert(storage_secret(
+            "shop",
+            "web",
+            1,
+            "deployed",
+            &release_json("web", "shop", 1, "deployed", "1.0.0"),
+        ));
+        s.upsert(
+            Object::from_json_value(serde_json::json!({
+                "apiVersion": "v1", "kind": "Secret", "type": "Opaque", "metadata": { "name": "db", "namespace": "shop" }
+            }))
+            .unwrap(),
+        );
+        let names = |t: &Table| t.rows.iter().map(|r| r.cells[0].text.clone()).collect::<Vec<_>>();
+        assert_eq!(names(&table(&s, Kind::Secret, now())), vec!["db"]);
+        assert_eq!(
+            names(&table_filtered(&s, Kind::Secret, now(), true)),
+            vec!["db", "sh.helm.release.v1.web.v1"]
         );
     }
 }

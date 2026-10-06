@@ -161,10 +161,10 @@ pub async fn partial_kinds(state: State<'_, AppState>) -> AppResult<Vec<Kind>> {
 }
 
 #[tauri::command]
-pub async fn list_rows(state: State<'_, AppState>, kind: Kind) -> AppResult<Table> {
+pub async fn list_rows(state: State<'_, AppState>, kind: Kind, include_helm_storage: Option<bool>) -> AppResult<Table> {
     let mut guard = state.session.lock().await;
     let session = session_mut(&mut guard)?;
-    Ok(session.list_rows(kind))
+    Ok(session.list_rows(kind, include_helm_storage.unwrap_or(false)))
 }
 
 #[tauri::command]

@@ -123,7 +123,7 @@ const GROUP_ID: &str = "PodGroup/wiring-smoke/Deployment/web";
 /// the `talker` pod is left out.
 fn pod_names(session: &Session) -> Vec<String> {
     session
-        .list_rows(Kind::Pod)
+        .list_rows(Kind::Pod, false)
         .rows
         .into_iter()
         .map(|r| r.node_id.trim_start_matches("Pod/wiring-smoke/").to_owned())
@@ -157,7 +157,7 @@ async fn exercise_metrics(session: &Session, context: &str) {
     // docker-desktop node it can take a few minutes.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(240);
     loop {
-        let table = session.list_rows(Kind::Pod);
+        let table = session.list_rows(Kind::Pod, false);
         let cpu = table
             .columns
             .iter()
@@ -646,7 +646,7 @@ async fn exercise_scopes(session: &mut Session, rx: &mut UnboundedReceiver<OutEv
         "both namespaces in one graph: {:?}",
         graph.nodes.iter().map(|n| &n.id).collect::<Vec<_>>()
     );
-    let table = session.list_rows(Kind::ConfigMap);
+    let table = session.list_rows(Kind::ConfigMap, false);
     assert_eq!(table.columns[0].key, "namespace", "{:?}", table.columns);
     assert!(table.rows.iter().any(|r| r.cells[0].text == NAMESPACE_B), "{:?}", table.rows);
 

@@ -307,10 +307,10 @@ impl Session {
         object_details(&store, &graph, node_id)
     }
 
-    pub fn list_rows(&self, kind: Kind) -> Table {
+    pub fn list_rows(&self, kind: Kind, include_helm_storage: bool) -> Table {
         let table = {
             let store = self.shared.store();
-            crate::graph::rows::table(&store, kind, k8s_openapi::jiff::Timestamp::now())
+            crate::graph::rows::table_filtered(&store, kind, k8s_openapi::jiff::Timestamp::now(), include_helm_storage)
         };
         if self.scope.as_ref().is_some_and(scope::NamespaceScope::is_multi) {
             crate::graph::rows::with_namespace_column(table)
