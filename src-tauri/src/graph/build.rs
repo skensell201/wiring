@@ -57,6 +57,7 @@ pub fn build(store: &Store, opts: &BuildOptions) -> Graph {
         .collect();
 
     retain_bound_persistent_volumes(&mut nodes, &edges);
+    retain_connected_cluster_objects(&mut nodes, &mut edges);
 
     hide_single_replicasets(&mut nodes, &mut edges);
     collapse_pod_groups(&mut nodes, &mut edges, opts);
@@ -146,6 +147,42 @@ fn is_stale_replicaset(obj: &Object) -> bool {
 fn retain_bound_persistent_volumes(nodes: &mut HashMap<NodeId, Node>, edges: &[Edge]) {
     let bound: HashSet<&NodeId> = edges.iter().filter(|e| e.relation == Relation::Binds).map(|e| &e.source).collect();
     nodes.retain(|id, n| n.kind != Kind::PersistentVolume || bound.contains(id));
+}
+
+/// Cluster-scoped objects only appear when they touch the scope: a Node hosting a pod here, a
+/// ClusterRoleBinding with a ServiceAccount subject here, a ClusterRole a shown binding grants.
+/// Edges to what is dropped go too.
+fn retain_connected_cluster_objects(nodes: &mut HashMap<NodeId, Node>, edges: &mut Vec<Edge>) {
+    let kind_of = |id: &str| nodes.get(id).map(|n| n.kind);
+    let hosting: HashSet<NodeId> = edges
+        .iter()
+        .filter(|e| e.relation == Relation::RunsOn)
+        .map(|e| e.target.clone())
+        .collect();
+    let bound: HashSet<NodeId> = edges
+        .iter()
+        .filter(|e| e.relation == Relation::Subject && kind_of(&e.source) == Some(Kind::ClusterRoleBinding))
+        .map(|e| e.source.clone())
+        .collect();
+    let granted: HashSet<NodeId> = edges
+        .iter()
+        .filter(|e| {
+            e.relation == Relation::Grants
+                && match kind_of(&e.source) {
+                    Some(Kind::RoleBinding) => true,
+                    Some(Kind::ClusterRoleBinding) => bound.contains(&e.source),
+                    _ => false,
+                }
+        })
+        .map(|e| e.target.clone())
+        .collect();
+    nodes.retain(|id, n| match n.kind {
+        Kind::Node => hosting.contains(id),
+        Kind::ClusterRoleBinding => bound.contains(id),
+        Kind::ClusterRole => granted.contains(id),
+        _ => true,
+    });
+    edges.retain(|e| nodes.contains_key(&e.source) && nodes.contains_key(&e.target));
 }
 
 /// A Deployment with exactly one ReplicaSet child: drop the RS node, re-point RS->X edges to the Deployment.
@@ -360,6 +397,23 @@ mod tests {
 
     fn edge_ids(g: &Graph) -> Vec<&str> {
         g.edges.iter().map(|e| e.id.as_str()).collect()
+    }
+
+    #[test]
+    fn cluster_scoped_rbac_and_nodes_only_show_when_connected() {
+        let s = Store::from_fixture("graph-extras").unwrap();
+        let g = build(&s, &BuildOptions::default());
+        let has = |id: &str| g.node(id).is_some();
+        assert!(has("Node//node-a") && has("Node//node-b"), "nodes hosting pods stay");
+        assert!(!has("Node//node-c"), "a node without pods here is hidden");
+        assert!(has("ClusterRoleBinding//web-cluster"), "binds a ServiceAccount in the scope");
+        assert!(!has("ClusterRoleBinding//system-only"), "only Group subjects");
+        assert!(has("ClusterRole//view"), "granted by shown bindings");
+        assert!(!has("ClusterRole//unused"), "only granted by a hidden binding");
+        assert!(
+            g.edges.iter().all(|e| g.node(&e.source).is_some() && g.node(&e.target).is_some()),
+            "no dangling edges"
+        );
     }
 
     #[test]
