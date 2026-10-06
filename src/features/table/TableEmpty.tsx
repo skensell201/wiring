@@ -27,7 +27,7 @@ export function TableEmpty({ state, noun, onCreate, noAccessBody, scope = "names
       return <EmptyState icon={LoaderCircle} spinning title={`Loading ${noun}…`} />;
     case "empty":
       return (
-        <EmptyState icon={Inbox} title="Nothing here yet" primary={onCreate ? { label: "+ Create", onClick: onCreate } : scope === "cluster" ? undefined : pickAnother} secondary={onCreate && !scope === "cluster" ? pickAnother : undefined}>
+        <EmptyState icon={Inbox} title="Nothing here yet" primary={onCreate ? { label: "+ Create", onClick: onCreate } : scope === "cluster" ? undefined : pickAnother} secondary={onCreate && scope !== "cluster" ? pickAnother : undefined}>
           {`${state.scope} has no ${noun}.`}
         </EmptyState>
       );
