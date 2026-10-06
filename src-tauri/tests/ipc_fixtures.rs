@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use serde::Serialize;
 use wiring_lib::error::{AppError, ErrorKind};
 use wiring_lib::exec::{ExecMessage, ExecPod};
-use wiring_lib::graph::{Edge, Graph, GraphDelta, GroupInfo, Node, Problem, Relation, Status};
+use wiring_lib::graph::{Edge, Graph, GraphDelta, GroupInfo, KindStat, Node, Problem, Relation, Status, TooLarge};
 use wiring_lib::kubeconfig::ContextInfo;
 use wiring_lib::logs::{LogLine, LogMessage};
 use wiring_lib::session::emitter::{ConnectionState, K8sEvent, ObjectEvents};
@@ -62,6 +62,32 @@ fn connect_info() {
             server_version: "v1.33.2".into(),
             namespaces: vec!["default".into(), "kube-system".into(), "payments".into()],
             can_list_namespaces: true,
+        },
+    );
+}
+
+#[test]
+fn graph_too_large() {
+    assert_matches(
+        "graph_too_large",
+        &Graph {
+            nodes: vec![],
+            edges: vec![],
+            too_large: Some(TooLarge {
+                nodes: 1873,
+                kinds: vec![
+                    KindStat {
+                        kind: Kind::Deployment,
+                        count: 120,
+                        worst: Status::Warn,
+                    },
+                    KindStat {
+                        kind: Kind::Pod,
+                        count: 1500,
+                        worst: Status::Err,
+                    },
+                ],
+            }),
         },
     );
 }

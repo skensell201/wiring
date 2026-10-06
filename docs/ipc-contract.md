@@ -22,11 +22,13 @@ Argument names are camelCase on the JS side; Tauri maps them to the Rust snake_c
 | `add_kubeconfig` | `{ path }` | `ContextInfo[]` — rejects with `AppError` if the file is missing or unparseable |
 | `connect` | `{ context }` | `ConnectInfo` — a **rejected promise** carries the `AppError`; no `connection_error` event is sent for connect failures |
 | `disconnect` | — | `null` |
-| `select_namespace` | `{ namespace, expandedGroups: string[] }` | `null` — the graph arrives via events |
+| `select_namespace` | `{ namespace, expandedGroups: string[] }` | `null` — one namespace; same as `select_namespaces` with `[namespace]`. The graph arrives via events |
+| `select_namespaces` | `{ namespaces: string[] \| null, expandedGroups: string[] }` | `null` — `null` watches all namespaces (refused with `invalid` when `ConnectInfo.canListNamespaces` is false); a list watches those (trimmed, deduplicated, each a DNS-1123 label, at most 20; an empty or longer list rejects with `invalid`: "pick up to 20 namespaces, or All namespaces"). The graph arrives via events. |
 | `set_expanded_groups` | `{ expandedGroups: string[] }` | `null` |
 | `get_object` | `{ nodeId }` | `ObjectDetails` (`summary` is an ordered `[string, string][]`) |
 | `watch_events` | `{ nodeId: string \| null }` | `null` — `null` stops the current watcher |
 | `denied_kinds` | — | `Kind[]` — kinds the session could not watch (RBAC 403 / API group missing) |
+| `partial_kinds` | — | `Kind[]` — kinds watched in some namespaces but forbidden in others (or forbidden cluster-wide and watched per namespace instead) |
 | `list_rows` | `{ kind }` | `Table` — kubectl-like columns/rows for `kind`, computed from the cached store |
 | `update_object` | `{ nodeId, yaml, force: boolean }` | `ObjectDetails` — fresh YAML/summary of the saved object (see [Writes](#writes)) |
 | `create_object` | `{ namespace, yaml }` | `NodeId` of the created object; it reaches the graph through the watch |
@@ -59,7 +61,7 @@ Argument names are camelCase on the JS side; Tauri maps them to the Rust snake_c
 |---|---|---|
 | `connection_state` | `"connected" \| "degraded" \| "disconnected"` | `connected` is emitted after `connect` succeeds and again whenever a namespace session starts; `disconnected` on `disconnect` and before a re-`connect` tears down the old session |
 | `connection_error` | `AppError` | Per-kind failures: message is `"<Kind>: <reason>"`. `forbidden`/`notFound` per kind ⇒ the kind is dropped, call `denied_kinds` to mark its chip. A transient error is reported once per kind until it recovers. A fatal `auth` error (expired/invalid credentials) is reported once and followed by `disconnected`; the user must reconnect. |
-| `graph_snapshot` | `Graph` | Full replace. Arrives after every kind finished its initial list, and again after recovery from `degraded`. |
+| `graph_snapshot` | `Graph` | Full replace. Arrives after every kind finished its initial list, and again after recovery from `degraded`. When the graph has more than 1 500 nodes the snapshot is `{ nodes: [], edges: [], tooLarge: { nodes, kinds: [{ kind, count, worst }] } }` (a PodGroup counts its pods under `Pod`); every change of `tooLarge` (entering, leaving, or new counts) arrives as a new snapshot, never as a delta. |
 | `graph_delta` | `GraphDelta` | Apply `addedNodes`/`updatedNodes` (full node objects) / `removedNodes` (ids) / `addedEdges` / `removedEdges` (ids). Only sent when non-empty. |
 | `object_events` | `ObjectEvents` | Full list, newest first, for the node passed to `watch_events`. Ignore payloads whose `nodeId` is not the current selection. |
 | `forwards_changed` | `Forward[]` | Every running forward, ordered by id, after each start, stop and status change (see [Port-forward](#port-forward)). Empty after a disconnect. |
@@ -67,8 +69,9 @@ Argument names are camelCase on the JS side; Tauri maps them to the Rust snake_c
 
 ### Ordering rules the frontend must follow
 
-- After `select_namespace`, clear the graph and ignore `graph_delta` until the next `graph_snapshot`. (The backend also drops events from the torn-down namespace session, but the rule keeps the UI correct regardless.)
+- After `select_namespace(s)`, clear the graph and ignore `graph_delta` until the next `graph_snapshot`. (The backend also drops events from the torn-down namespace session, but the rule keeps the UI correct regardless.)
 - Treat every `graph_snapshot` as a full replace, not only the first one.
+- A snapshot whose namespaced nodes fall outside the current selection belongs to the previous one and is ignored.
 - `degraded` may arrive before any snapshot if a watcher cannot connect; a `connection_error` explains why.
 
 ## Node ids
@@ -91,13 +94,14 @@ A node whose `status` is `warn` or `err` may carry `problem: { reason, message, 
 
 - `TableColumn { key, label, numeric }` — one entry per kubectl-like column for that kind (see `graph::rows::columns`); `name` is always first.
 - `TableRow { nodeId, status, cells: TableCell[] }` — `cells` align 1:1 with `columns`; rows are sorted by name.
+- With several namespaces selected `list_rows` returns a leading `namespace` column (`—` for cluster-scoped kinds) and rows sorted by namespace, then name.
 - `TableCell { text, status: Status | null }` — `status` colours the cell (e.g. the Pod `status` cell, or a workload's `ready` cell) and is `null` for plain cells.
 - `PodGroup` is not a table kind (`columns` is empty, `rows` is always empty) — `list_rows({ kind: "Pod" })` always lists individual pods; collapsing pods into groups is a graph-only concern.
 - Requesting a kind the session could not watch (see `denied_kinds`) returns an empty table, not an error — the frontend shows the RBAC empty state itself.
 
 ## Metrics
 
-- Source: `metrics.k8s.io/v1beta1` `PodMetrics` in the selected namespace, polled every 15 s while the namespace session lives.
+- Source: `metrics.k8s.io/v1beta1` `PodMetrics` in the selected namespaces (keyed `namespace/name`; forbidden namespaces skipped), polled every 15 s while the namespace session lives.
 - Tables: Pod, Deployment, StatefulSet and DaemonSet gain numeric `cpu` (`CPU`) and `memory` (`Memory`) columns. Values are `kubectl top` style — CPU always in millicores (`120m`), memory always in whole MiB (`64Mi`) — so the leading number sorts correctly; `—` without a sample. Workloads sum the pods they own.
 - `get_object` summary for those kinds ends with `CPU usage` and `Memory usage` rows (`120m / req 100m / lim 500m (24%)`: requests and limits summed over containers, a total omitted when any container lacks it; the percentage is of the limit, else of the request), or a single `Usage` row: `waiting for the first metrics sample`, `Metrics API not available (install metrics-server)`, `No access to pod metrics (RBAC)` or `no sample yet`.
 - Graph: a pod or workload at ≥ 80 % of a CPU or memory limit gets a last badge `mem 92%` / `cpu 85%` (the higher; memory on a tie). Usage never changes `status`.
@@ -115,6 +119,7 @@ The backend stores `extraKubeconfigs: string[]` in `settings.json` (tauri-plugin
 | `extraKubeconfigs` | `string[]` | backend | Kubeconfig files added via "Add kubeconfig…" |
 | `lastContext` | `string` | frontend | Context to reconnect on startup |
 | `lastNamespace` | `Record<string, string>` | frontend | Last selected namespace, keyed by context name |
+| `lastScope` | `Record<string, "all" \| string[]>` | frontend | Last selected scope per context; supersedes `lastNamespace`, which is still read once for migration |
 | `sidebarCollapsed` | `boolean` | frontend | Whether the Navigator is collapsed to its icon rail |
 
 ## Security notes
