@@ -11,12 +11,13 @@ const STATUS_TEXT: Record<Status, string> = { ok: "text-status-ok", warn: "text-
 
 /** The per-kind table: sortable, filtered by the header search, keyboard-navigable. */
 export function TableView() {
-  const { kind, table, search, selectedId, denied, scope, namespaces, graphReady, select, focusInGraph, openActionsMenu } = useAppStore(
+  const { kind, table, search, selectedId, denied, scope, namespaces, graphReady, includeHelmStorage, setIncludeHelmStorage, select, focusInGraph, openActionsMenu } = useAppStore(
     useShallow((s) => {
       const kind = s.view.name === "table" ? s.view.kind : null;
       return {
         kind, table: kind ? s.tables.get(kind) : undefined, search: s.search, selectedId: s.selectedId,
         denied: kind ? s.deniedKinds.has(kind) : false, scope: s.connection.scope, namespaces: s.connection.namespaces, graphReady: s.graphReady,
+        includeHelmStorage: s.includeHelmStorage, setIncludeHelmStorage: s.setIncludeHelmStorage,
         select: s.select, focusInGraph: s.focusInGraph, openActionsMenu: s.openActionsMenu,
       };
     }),
@@ -65,6 +66,12 @@ export function TableView() {
 
   return (
     <div className="h-full w-full overflow-auto bg-space px-8 py-6">
+      {kind === "Secret" && !denied && (
+        <label className="mb-3 flex w-fit items-center gap-2 text-xs text-text-muted">
+          <input type="checkbox" checked={includeHelmStorage} onChange={(e) => void setIncludeHelmStorage(e.target.checked)} className="accent-accent" />
+          Show Helm storage
+        </label>
+      )}
       {table && graphReady && !denied && (
         <table ref={grid} role="grid" tabIndex={0} onKeyDown={onKeyDown} aria-label={plural}
           className="w-full border-separate border-spacing-0 rounded-card border border-border bg-surface text-sm outline-none focus-visible:ring-1 focus-visible:ring-accent">

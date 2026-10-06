@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { initialState, useAppStore } from "../../app/store";
+import { invoke } from "../../shared/ipc/tauri";
 import type { Table } from "../../shared/ipc/types";
 import { TableView } from "./TableView";
 
@@ -168,4 +169,36 @@ describe("TableView", () => {
     expect(bodyRows()).toHaveLength(1);
     expect(within(bodyRows()[0]).getAllByRole("cell")[0]).toHaveTextContent("blog");
   });
+});
+
+it("the Secrets table can show Helm's storage Secrets", async () => {
+  const secrets = { kind: "Secret" as const, columns: [{ key: "name", label: "Name", numeric: false }], rows: [] };
+  vi.mocked(invoke).mockImplementation(async (cmd: string) => (cmd === "list_rows" ? secrets : null));
+  useAppStore.setState({
+    connection: { ...initialState().connection, context: "prod", state: "connected", scope: ["shop"] },
+    graphReady: true, view: { name: "table", kind: "Secret" }, tables: new Map([["Secret", secrets]]),
+  });
+  render(<TableView />);
+  const toggle = screen.getByRole("checkbox", { name: "Show Helm storage" });
+  expect(toggle).not.toBeChecked();
+  fireEvent.click(toggle);
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith("list_rows", { kind: "Secret", includeHelmStorage: true }));
+  expect(useAppStore.getState().includeHelmStorage).toBe(true);
+});
+
+it("a later refresh of the Secrets table keeps asking for Helm storage", async () => {
+  const secrets = { kind: "Secret" as const, columns: [], rows: [] };
+  vi.mocked(invoke).mockClear();
+  vi.mocked(invoke).mockImplementation(async (cmd: string) => (cmd === "list_rows" ? secrets : null));
+  useAppStore.setState({ includeHelmStorage: true });
+  await useAppStore.getState().refreshTable("Secret");
+  await useAppStore.getState().refreshTable("ConfigMap");
+  expect(invoke).toHaveBeenCalledWith("list_rows", { kind: "Secret", includeHelmStorage: true });
+  expect(invoke).toHaveBeenCalledWith("list_rows", { kind: "ConfigMap", includeHelmStorage: false });
+});
+
+it("other tables have no Helm storage toggle", () => {
+  useAppStore.setState({ graphReady: true, view: { name: "table", kind: "ConfigMap" }, tables: new Map([["ConfigMap", { kind: "ConfigMap", columns: [], rows: [] }]]) });
+  render(<TableView />);
+  expect(screen.queryByRole("checkbox", { name: "Show Helm storage" })).toBeNull();
 });

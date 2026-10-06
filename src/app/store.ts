@@ -103,6 +103,8 @@ export interface GraphState {
   edges: Map<string, GraphEdge>;
   /** false between select_namespaces and the next graph_snapshot — deltas are ignored meanwhile. */
   graphReady: boolean;
+  /** Secrets table: also list Helm's release-storage Secrets. Kept across scope switches, reset by a new connection. */
+  includeHelmStorage: boolean;
   selectedId: NodeId | null;
   details: Details | null;
   /** The details panel fills the window (the centre pane hidden); reset whenever the selection clears. */
@@ -186,6 +188,7 @@ export interface AppState extends GraphState {
   showGraph: () => void;
   showTable: (kind: Kind) => Promise<void>;
   refreshTable: (kind: Kind) => Promise<void>;
+  setIncludeHelmStorage: (value: boolean) => Promise<void>;
   loadCustomKinds: (refresh?: boolean) => Promise<void>;
   showCustom: (resource: ResourceRef) => Promise<void>;
   refreshCustom: (resource: ResourceRef) => Promise<void>;
@@ -269,6 +272,7 @@ export function initialState(): Omit<AppState, keyof Actions> {
     nodes: new Map(),
     edges: new Map(),
     graphReady: false,
+    includeHelmStorage: false,
     selectedId: null,
     details: null,
     hoveredId: null,
@@ -328,7 +332,7 @@ function lostEditsToast(s: Pick<AppState, "details">): Omit<Toast, "id"> | null 
 type Actions = Pick<AppState,
   | "applySnapshot" | "applyDelta" | "setObjectEvents" | "setConnectionState" | "loadContexts" | "addKubeconfig" | "connect"
   | "reconnect" | "disconnect" | "selectNamespace" | "selectScope" | "select" | "setHovered" | "toggleGroup" | "toggleKind" | "setSearch" | "toast"
-  | "dismissToast" | "setPickerOpen" | "showGraph" | "showTable" | "refreshTable"
+  | "dismissToast" | "setPickerOpen" | "showGraph" | "showTable" | "refreshTable" | "setIncludeHelmStorage"
   | "loadCustomKinds" | "showCustom" | "refreshCustom" | "applyCustomTable" | "showHelm" | "refreshHelm" | "selectRelease" | "clearRelease" | "focusInGraph" | "clearFocusRequest"
   | "toggleSidebar" | "startEdit" | "setBuffer" | "reviewEdit" | "backToEdit" | "applyEdit" | "cancelEdit" | "reloadEdit"
   | "confirmDiscard" | "cancelDiscard" | "openCreate" | "setCreateKind" | "setCreateNamespace" | "setCreateBuffer" | "submitCreate" | "closeCreate"
@@ -622,7 +626,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
     const onTable = (v: View) => v.name === "table" && v.kind === kind;
     const wasOnTable = onTable(get().view);
     try {
-      const table = await commands.listRows(kind);
+      const table = await commands.listRows(kind, kind === "Secret" && get().includeHelmStorage);
       // The namespace moved on while this fetch was in flight — its rows are stale.
       if (scope === null || get().connection.scope !== scope) return;
       // The user left this table while its refetch was in flight; showing it again refetches.
@@ -640,6 +644,11 @@ export const useAppStore = create<AppState>()((set, get) => ({
     } catch (e) {
       get().toast(toAppError(e));
     }
+  },
+
+  setIncludeHelmStorage: async (value) => {
+    set({ includeHelmStorage: value });
+    await get().refreshTable("Secret");
   },
 
   loadCustomKinds: async (refresh = false) => {
