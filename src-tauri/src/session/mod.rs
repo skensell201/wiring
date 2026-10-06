@@ -498,13 +498,25 @@ where
 
 /// `"Kind/ns/name"`; cluster-scoped `"Kind//name"`; PodGroup `"PodGroup/ns/OwnerKind/ownerName"`;
 /// custom resources `"Custom/group/version/kind/ns/name"` (see `custom::id`).
+/// Escape a value for a field selector: `\`, `,` and `=` are special there.
+fn escape_selector_value(v: &str) -> String {
+    let mut out = String::with_capacity(v.len());
+    for c in v.chars() {
+        if matches!(c, '\\' | ',' | '=') {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
+}
+
 /// Events of a custom resource, matched by kind, name and API version (no uid is stored).
 fn custom_events_selector(c: &crate::custom::id::CustomId) -> String {
     format!(
         "involvedObject.kind={},involvedObject.name={},involvedObject.apiVersion={}",
-        c.kind,
-        c.name,
-        c.api_version()
+        escape_selector_value(&c.kind),
+        escape_selector_value(&c.name),
+        escape_selector_value(&c.api_version())
     )
 }
 
@@ -615,6 +627,16 @@ pub fn events_to_list(events: &BTreeMap<String, CoreEvent>) -> Vec<K8sEvent> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn selector_values_are_escaped() {
+        assert_eq!(escape_selector_value(r"a,b=c\d"), r"a\,b\=c\\d");
+        let c = crate::custom::id::CustomId::parse("Custom/x.io/v1/Thing/ns/a,b=c").unwrap();
+        assert_eq!(
+            custom_events_selector(&c),
+            r"involvedObject.kind=Thing,involvedObject.name=a\,b\=c,involvedObject.apiVersion=x.io/v1"
+        );
+    }
+
     #[test]
     fn custom_event_selector_names_the_api_group() {
         let c = crate::custom::id::CustomId::parse("Custom/cert-manager.io/v1/Certificate/shop/web-tls").unwrap();

@@ -32,6 +32,16 @@ pub struct RawManifest {
 
 /// Parse exactly one YAML document with a `kind` and a `metadata.name`.
 pub fn parse_raw(yaml: &str) -> AppResult<RawManifest> {
+    parse_raw_with(yaml, |name| {
+        if crate::custom::id::is_path_segment_name(name) {
+            Ok(())
+        } else {
+            Err(invalid(format!("metadata.name `{name}` is not a valid object name")))
+        }
+    })
+}
+
+fn parse_raw_with(yaml: &str, check_name: impl Fn(&str) -> AppResult<()>) -> AppResult<RawManifest> {
     let mut docs = Vec::new();
     for doc in serde_yaml_ng::Deserializer::from_str(yaml) {
         let value = serde_json::Value::deserialize(doc).map_err(|e| invalid(format!("YAML parse error: {e}")))?;
@@ -60,7 +70,7 @@ pub fn parse_raw(yaml: &str) -> AppResult<RawManifest> {
         Some(Value::String(name)) => name.clone(),
         Some(_) => return Err(invalid("metadata.name must be a string")),
     };
-    validate_dns_subdomain("metadata.name", &name)?;
+    check_name(&name)?;
     let namespace = match metadata.and_then(|m| m.get("namespace")) {
         None | Some(Value::Null) => None,
         Some(Value::String(ns)) if ns.is_empty() => None,
@@ -81,7 +91,7 @@ pub fn parse_raw(yaml: &str) -> AppResult<RawManifest> {
 
 /// Parse exactly one YAML document with a watched `kind` and a `metadata.name`.
 pub fn parse(yaml: &str) -> AppResult<Manifest> {
-    let raw = parse_raw(yaml)?;
+    let raw = parse_raw_with(yaml, |name| validate_dns_subdomain("metadata.name", name))?;
     let kind = Kind::parse(&raw.kind).ok_or_else(|| invalid(format!("kind {} is not supported", raw.kind)))?;
     Ok(Manifest {
         kind,
@@ -301,5 +311,14 @@ mod tests {
                 .message
                 .contains("not supported")
         );
+    }
+
+    #[test]
+    fn raw_manifests_accept_path_segment_names_but_built_ins_stay_dns() {
+        let yaml = "apiVersion: x.io/v1\nkind: Thing\nmetadata:\n  name: Web:TLS\n  namespace: shop\n";
+        assert_eq!(parse_raw(yaml).unwrap().name, "Web:TLS");
+        assert!(parse_raw(&yaml.replace("Web:TLS", "a/b")).is_err());
+        let cm = "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: Web:TLS\n";
+        assert!(parse(cm).is_err());
     }
 }

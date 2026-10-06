@@ -34,6 +34,16 @@ fn is_subdomain(s: &str) -> bool {
     s.len() <= 253 && s.split('.').all(is_label)
 }
 
+/// A custom resource name: Kubernetes only requires a valid path segment, so uppercase letters,
+/// `:` and the like are fine. Nothing that could alter the URL path or query is.
+pub(crate) fn is_path_segment_name(s: &str) -> bool {
+    s.len() <= 253
+        && !matches!(s, "" | "." | "..")
+        && !s
+            .chars()
+            .any(|c| matches!(c, '/' | '%' | '?' | '#' | '\\') || c.is_whitespace() || c.is_control())
+}
+
 /// A CRD kind: a letter, then letters and digits (at most 63 bytes).
 fn is_kind(s: &str) -> bool {
     let b = s.as_bytes();
@@ -53,7 +63,7 @@ impl CustomId {
             && is_label(version)
             && is_kind(kind)
             && (namespace.is_empty() || is_label(namespace))
-            && is_subdomain(name);
+            && is_path_segment_name(name);
         if !valid {
             return Err(malformed(id));
         }
@@ -168,10 +178,8 @@ mod tests {
             "Custom/x.io/v1/Thing/ns/.",
             "Custom/x.io/v1/Thing/ns/a%2Fb",
             "Custom/x.io/v1/Thing/ns/a?b",
-            "Custom/x.io/v1/Thing/ns/A",
             "Custom/x.io/v1/Thing/n s/x",
             "Custom/x.io/v1/Thing/n.s/x",
-            "Custom/x.io/v1/Thing/ns/-x",
             "Custom/x_y/v1/Thing/ns/x",
             "Custom/x.io/v1/Th%69ng/ns/x",
             "Custom/x.io/v1/Thing?/ns/x",
@@ -184,5 +192,35 @@ mod tests {
         assert!(CustomId::parse(&format!("Custom/x.io/v1/Thing/ns/{long}")).is_err());
         assert!(CustomId::parse("Custom/x.io/v1/Thing/ns/web.1-a").is_ok());
         assert!(CustomId::parse("Custom/x.io/v1alpha1/Thing/ns/x").is_ok());
+    }
+
+    #[test]
+    fn custom_resource_names_are_path_segments_not_dns_names() {
+        for ok in ["Web-TLS", "a:b", "x.y", "system:node:Foo", "UPPER_case"] {
+            let c = CustomId::parse(&format!("Custom/x.io/v1/Thing/ns/{ok}")).expect(ok);
+            assert_eq!(c.name, ok);
+        }
+        for bad in ["", ".", "..", "a/b", "a%2Fb", "a b", "a\nb", "a?b", "a#b", "a\tb", "a\\b"] {
+            assert!(CustomId::parse(&format!("Custom/x.io/v1/Thing/ns/{bad}")).is_err(), "{bad:?}");
+        }
+        assert!(CustomId::parse(&format!("Custom/x.io/v1/Thing/ns/{}", "a".repeat(253))).is_ok());
+        assert!(CustomId::parse(&format!("Custom/x.io/v1/Thing/ns/{}", "a".repeat(254))).is_err());
+    }
+
+    #[test]
+    fn a_name_with_a_colon_stays_one_path_segment() {
+        use kube::core::{ApiResource, DynamicObject, Request, Resource};
+        let ar = ApiResource {
+            group: "x.io".into(),
+            version: "v1".into(),
+            api_version: "x.io/v1".into(),
+            kind: "Thing".into(),
+            plural: "things".into(),
+        };
+        let req = Request::new(DynamicObject::url_path(&ar, Some("ns")))
+            .get("Web:TLS", &Default::default())
+            .unwrap();
+        assert_eq!(req.uri().path(), "/apis/x.io/v1/namespaces/ns/things/Web:TLS");
+        assert_eq!(req.uri().query(), None);
     }
 }
