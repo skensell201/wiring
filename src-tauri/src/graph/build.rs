@@ -1105,7 +1105,7 @@ status: {{ replicas: 2, readyReplicas: {ready} }}
         assert_eq!((cr[0].id.as_str(), cr[0].name.as_str(), cr[0].status), (id, "web", Status::Unknown));
         assert_eq!(cr[0].namespace.as_deref(), Some("s"));
         assert!(cr[0].problem.is_none());
-        let owns: Vec<&str> = g
+        let mut owns: Vec<&str> = g
             .edges
             .iter()
             .filter(|e| e.source == id && e.relation == Relation::Owns)
