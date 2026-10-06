@@ -709,7 +709,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
     }
   },
 
-  applyCustomTable: (t) =>
+  applyCustomTable: (t) => {
     set((s) => {
       const key = refKey(t.resource);
       const customTables = new Map(s.customTables);
@@ -723,7 +723,12 @@ export const useAppStore = create<AppState>()((set, get) => ({
       const dropped = sel !== null && !t.error && (s.customTables.get(key)?.rows.some((r) => r.nodeId === sel) ?? false)
         && !t.table.rows.some((r) => r.nodeId === sel);
       return dropSelection({ ...s, customTables, customTableErrors }, dropped);
-    }),
+    });
+    // A custom resource is off the graph, so no delta tells its details it changed; its kind's table
+    // does (any change, as a row shows only some fields). Throttled, and view mode only.
+    const sel = get().selectedId;
+    if (sel !== null && t.table.rows.some((r) => r.nodeId === sel)) scheduleDetailsRefresh();
+  },
 
   showHelm: async () => {
     leaveCustomView(get().view, { name: "helm" });
