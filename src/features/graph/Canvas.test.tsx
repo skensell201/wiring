@@ -2,16 +2,19 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { applySnapshot, initialState, useAppStore } from "../../app/store";
 import { Canvas } from "./Canvas";
+import { NAMESPACED_KINDS } from "./graphEmptyState";
 
 vi.mock("../../shared/ipc/tauri", () => ({ invoke: vi.fn(async () => null), listen: vi.fn(async () => () => {}), Channel: class { onmessage: (m: unknown) => void = () => {}; } }));
 
 beforeEach(() => useAppStore.setState(initialState()));
 
 describe("Canvas", () => {
-  it("shows the empty state before a namespace is selected", () => {
+  it("asks for a namespace before one is selected, and the button opens the picker", () => {
     useAppStore.setState({ connection: { ...initialState().connection, context: "prod", state: "connected" } });
     render(<Canvas />);
-    expect(screen.getByText(/select a namespace/i)).toBeInTheDocument();
+    expect(screen.getByRole("status", { name: "Choose a namespace" })).toHaveTextContent("Pick one or more namespaces to see their resources.");
+    fireEvent.click(screen.getByRole("button", { name: "Choose a namespace" }));
+    expect(useAppStore.getState().namespacePickerSeq).toBe(1);
   });
 
   it("shows the loading state after selecting a namespace until the snapshot arrives", () => {
@@ -20,13 +23,45 @@ describe("Canvas", () => {
     expect(screen.getByText(/loading payments/i)).toBeInTheDocument();
   });
 
-  it("shows the empty-namespace state for an empty snapshot", () => {
+  it("shows the empty-namespace state for an empty snapshot, with + Create", () => {
     useAppStore.setState({
       ...applySnapshot(initialState(), { nodes: [], edges: [] }),
       connection: { ...initialState().connection, context: "prod", state: "connected", scope: ["payments"] },
     });
     render(<Canvas />);
-    expect(screen.getByText(/namespace is empty/i)).toBeInTheDocument();
+    expect(screen.getByRole("status", { name: "Nothing here yet" })).toHaveTextContent("payments has no resources.");
+    fireEvent.click(screen.getByRole("button", { name: "+ Create" }));
+    expect(useAppStore.getState().createDialog.open).toBe(true);
+  });
+
+  it("says no access when every namespaced kind is denied", () => {
+    useAppStore.setState({
+      ...applySnapshot(initialState(), { nodes: [], edges: [] }), deniedKinds: new Set(NAMESPACED_KINDS),
+      connection: { ...initialState().connection, context: "prod", state: "connected", scope: ["payments"] },
+    });
+    render(<Canvas />);
+    expect(screen.getByRole("status", { name: "No access" })).toHaveTextContent("You can't list any resources in payments (RBAC).");
+  });
+
+  it("offers Show all kinds when the chips hide every kind", () => {
+    useAppStore.setState({
+      ...applySnapshot(initialState(), { nodes: [{ id: "Role/p/reader", kind: "Role", namespace: "p", name: "reader", status: "ok", badges: [], group: null }], edges: [] }),
+      connection: { ...initialState().connection, context: "prod", state: "connected", scope: ["p"] },
+    });
+    render(<Canvas />);
+    fireEvent.click(screen.getByRole("button", { name: "Show all kinds" }));
+    expect(useAppStore.getState().hiddenKinds.size).toBe(0);
+  });
+
+  it("offers Clear search when nothing matches", () => {
+    useAppStore.setState({
+      ...applySnapshot(initialState(), { nodes: [{ id: "Pod/p/web-1", kind: "Pod", namespace: "p", name: "web-1", status: "ok", badges: [], group: null }], edges: [] }),
+      connection: { ...initialState().connection, context: "prod", state: "connected", scope: ["p"] }, search: "zzz",
+    });
+    render(<Canvas />);
+    expect(screen.getByRole("status", { name: "No matches" })).toHaveTextContent("Nothing on the graph matches “zzz”.");
+    fireEvent.click(screen.getByRole("button", { name: "Clear search" }));
+    expect(useAppStore.getState().search).toBe("");
   });
 
   it("consumes a focus request once it has centred on the node", async () => {
@@ -98,6 +133,6 @@ describe("Canvas", () => {
       connection: { ...initialState().connection, context: "prod", state: "connected", scope: "all" },
     });
     render(<Canvas />);
-    expect(screen.getByText("1,873 objects — too many for the graph. Use the tables, or pick fewer namespaces.")).toBeInTheDocument();
+    expect(screen.getByRole("status", { name: "Too many objects to draw" })).toHaveTextContent("1,873 objects in All namespaces. Use the tables, or pick fewer namespaces.");
   });
 });
