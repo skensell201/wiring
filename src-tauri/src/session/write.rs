@@ -58,12 +58,15 @@ fn api_resource(kind: Kind) -> Option<ApiResource> {
 }
 
 /// Whether `create_object` takes `m` down the built-in path: its `kind` is a watched kind and its
-/// `apiVersion` is that kind's (or missing, which the built-in path fills in). Anything else,
-/// such as a Knative `serving.knative.dev/v1` `Service`, is a custom resource.
+/// `apiVersion`'s group is that kind's (any version, as discovery never serves built-ins), or it
+/// has no `apiVersion`, which the built-in path fills in. Anything else, such as a Knative
+/// `serving.knative.dev/v1` `Service`, is a custom resource.
 pub(crate) fn is_builtin_manifest(m: &manifest::RawManifest) -> bool {
-    Kind::parse(&m.kind)
-        .and_then(api_resource)
-        .is_some_and(|ar| m.api_version.as_deref().is_none_or(|v| v == ar.api_version))
+    Kind::parse(&m.kind).and_then(api_resource).is_some_and(|ar| {
+        m.api_version
+            .as_deref()
+            .is_none_or(|v| crate::custom::id::split_api_version(v).0 == ar.group)
+    })
 }
 
 pub(super) fn resource_for(kind: Kind) -> AppResult<ApiResource> {
