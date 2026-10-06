@@ -81,7 +81,7 @@ export function HelmView() {
         </table>
       )}
       {message && <div className="grid flex-1 place-items-center text-text-muted">{message}</div>}
-      {selected && (
+      {selected && !denied && (
         <section aria-label="Release details" className="shrink-0 rounded-card border border-border bg-surface">
           <div className="flex h-12 items-center gap-6 border-b border-border px-6">
             <div role="tablist" className="flex h-full gap-6">

@@ -37,6 +37,13 @@ describe("HelmView", () => {
     expect(screen.queryByText(/No Helm releases/)).toBeNull();
   });
 
+  it("hides an open release's details once Secrets are denied", () => {
+    useAppStore.setState({ helmSelected: { namespace: "shop", name: "web" }, helmDetails: details, deniedKinds: new Set(["Secret"]) });
+    render(<HelmView />);
+    expect(screen.queryByRole("region", { name: "Release details" })).toBeNull();
+    expect(screen.queryByText("replicaCount: 2")).toBeNull();
+  });
+
   it("notes that releases are missing where Secrets are partly unreadable", () => {
     useAppStore.setState({ partialKinds: new Set(["Secret"]) });
     render(<HelmView />);
