@@ -8,7 +8,7 @@
 //! The shell is run as `$SHELL -i -l -c` (`/bin/zsh` on macOS and `/bin/sh` elsewhere when `SHELL`
 //! is unset; fish gets `string join : $PATH` because its `PATH` is a list) and has
 //! [`SHELL_TIMEOUT`] to answer. The result is the login shell's entries first, then the app's own,
-//! then those of the common tool directories that exist, without duplicates. When the shell fails
+//! then those of the common tool directories that exist, without duplicates or relative entries. When the shell fails
 //! or times out, only the app's entries and the common directories are used. The shell is skipped
 //! the same way when stdout is a terminal (the app was started from a shell that already has its
 //! `PATH`). The shell's whole process group is killed on timeout and after a successful answer, so
@@ -29,7 +29,8 @@ const START: &str = "__WIRING_PATH_START__";
 const END: &str = "__WIRING_PATH_END__";
 
 /// `shell`'s entries, then `current`'s, then the `extras` that exist as directories, in that
-/// order, without empty entries or duplicates.
+/// order, without duplicates and without empty or relative entries (`.` or `bin` would resolve
+/// against whatever the working directory happens to be, a helper-hijacking hazard).
 pub fn merge_path(current: &str, shell: Option<&str>, extras: &[PathBuf]) -> String {
     let listed = shell
         .into_iter()
@@ -39,7 +40,8 @@ pub fn merge_path(current: &str, shell: Option<&str>, extras: &[PathBuf]) -> Str
     let mut seen = HashSet::new();
     let mut out = Vec::new();
     for p in listed.chain(existing) {
-        if !p.as_os_str().is_empty() && seen.insert(p.clone()) {
+        // An empty entry is not absolute either.
+        if p.is_absolute() && seen.insert(p.clone()) {
             out.push(p);
         }
     }
@@ -199,6 +201,21 @@ mod tests {
     #[test]
     fn merge_drops_empty_entries() {
         assert_eq!(merge_path("/usr/bin::/bin:", Some(""), &[]), "/usr/bin:/bin");
+    }
+
+    #[test]
+    fn merge_drops_relative_entries_from_every_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = std::env::current_dir().unwrap();
+        // A relative extra that exists as a directory relative to the working directory.
+        let relative_extra = PathBuf::from("src");
+        assert!(cwd.join(&relative_extra).is_dir());
+        let merged = merge_path(
+            ".:/usr/bin:bin",
+            Some("./node_modules/.bin:/opt/homebrew/bin:."),
+            &[relative_extra, dir.path().to_path_buf()],
+        );
+        assert_eq!(merged, format!("/opt/homebrew/bin:/usr/bin:{}", dir.path().display()));
     }
 
     #[test]
