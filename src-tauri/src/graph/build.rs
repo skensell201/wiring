@@ -52,8 +52,14 @@ pub fn build(store: &Store, opts: &BuildOptions) -> Graph {
         );
     }
 
+    let (custom_nodes, custom_edges) = custom_owners(store, &nodes);
+    for n in custom_nodes {
+        nodes.insert(n.id.clone(), n);
+    }
+
     let mut edges: Vec<Edge> = all_edges(store)
         .into_iter()
+        .chain(custom_edges)
         .filter(|e| nodes.contains_key(&e.source) && nodes.contains_key(&e.target))
         .collect();
 
@@ -75,6 +81,44 @@ pub fn build(store: &Store, opts: &BuildOptions) -> Graph {
     };
     graph.normalize();
     graph
+}
+
+/// Owners that are custom resources (an ownerReference whose kind is not built in) as neutral
+/// `Custom` nodes, one per owner, with an `owns` edge to each child on the graph. Custom
+/// resources are not watched, so their status is unknown; their details load on demand.
+/// A reference that would not make a parseable custom id (malformed data) is skipped.
+fn custom_owners(store: &Store, nodes: &HashMap<NodeId, Node>) -> (Vec<Node>, Vec<Edge>) {
+    use crate::custom::id::{custom_node_id, split_api_version, CustomId};
+    let mut owners: BTreeMap<NodeId, Node> = BTreeMap::new();
+    let mut edges = Vec::new();
+    for obj in store.iter() {
+        let child = node_id(obj.kind(), obj.namespace(), obj.name());
+        if !nodes.contains_key(&child) {
+            continue;
+        }
+        for r in obj.meta().owner_references.iter().flatten() {
+            if Kind::parse(&r.kind).is_some() {
+                continue;
+            }
+            let (group, version) = split_api_version(&r.api_version);
+            let id = custom_node_id(group, version, &r.kind, obj.namespace(), &r.name);
+            if CustomId::parse(&id).is_err() {
+                continue;
+            }
+            owners.entry(id.clone()).or_insert_with(|| Node {
+                id: id.clone(),
+                kind: Kind::Custom,
+                namespace: obj.namespace().map(str::to_owned),
+                name: r.name.clone(),
+                status: Status::Unknown,
+                badges: Vec::new(),
+                group: None,
+                problem: None,
+            });
+            edges.push(Edge::new(&id, &child, Relation::Owns));
+        }
+    }
+    (owners.into_values().collect(), edges)
 }
 
 /// Longest owner chain a pod can have to a watched controller (Pod -> ReplicaSet -> Deployment).
@@ -241,7 +285,9 @@ fn collapse_pod_groups(nodes: &mut HashMap<NodeId, Node>, edges: &mut Vec<Edge>,
     // owner id -> member pod ids
     let mut members: BTreeMap<NodeId, Vec<NodeId>> = BTreeMap::new();
     for e in edges.iter() {
-        if e.relation == Relation::Owns && nodes.get(&e.target).map(|n| n.kind) == Some(Kind::Pod) {
+        let owner_kind = nodes.get(&e.source).map(|n| n.kind);
+        // A PodGroup id names its owner as `<Kind>/<name>`, which a custom owner cannot be.
+        if e.relation == Relation::Owns && nodes.get(&e.target).map(|n| n.kind) == Some(Kind::Pod) && owner_kind != Some(Kind::Custom) {
             members.entry(e.source.clone()).or_default().push(e.target.clone());
         }
     }
@@ -1031,6 +1077,92 @@ status: {{ replicas: 2, readyReplicas: {ready} }}
         assert_eq!(
             problem(&g, "Deployment/r/ro").and_then(|p| p.cause.as_deref()),
             Some("ReplicaSet/r/ro-b")
+        );
+    }
+
+    fn obj(v: serde_json::Value) -> crate::store::Object {
+        crate::store::Object::from_json_value(v).unwrap()
+    }
+
+    fn owned_secret(name: &str, owner_kind: &str, owner_api: &str, owner: &str) -> crate::store::Object {
+        obj(serde_json::json!({
+            "apiVersion": "v1", "kind": "Secret",
+            "metadata": { "name": name, "namespace": "s", "ownerReferences": [
+                { "apiVersion": owner_api, "kind": owner_kind, "name": owner, "uid": format!("uid-{owner}") }
+            ] }
+        }))
+    }
+
+    #[test]
+    fn a_custom_resource_owner_becomes_a_neutral_node_with_owns_edges() {
+        let mut s = Store::default();
+        s.upsert(owned_secret("web-tls", "Certificate", "cert-manager.io/v1", "web"));
+        s.upsert(owned_secret("web-tls-next", "Certificate", "cert-manager.io/v1", "web"));
+        let g = build(&s, &BuildOptions::default());
+        let id = "Custom/cert-manager.io/v1/Certificate/s/web";
+        let cr: Vec<_> = g.nodes.iter().filter(|n| n.kind == Kind::Custom).collect();
+        assert_eq!(cr.len(), 1, "deduplicated: {cr:?}");
+        assert_eq!((cr[0].id.as_str(), cr[0].name.as_str(), cr[0].status), (id, "web", Status::Unknown));
+        assert_eq!(cr[0].namespace.as_deref(), Some("s"));
+        assert!(cr[0].problem.is_none());
+        let owns: Vec<&str> = g
+            .edges
+            .iter()
+            .filter(|e| e.source == id && e.relation == Relation::Owns)
+            .map(|e| e.target.as_str())
+            .collect();
+        owns.sort();
+        assert_eq!(owns, vec!["Secret/s/web-tls", "Secret/s/web-tls-next"]);
+    }
+
+    #[test]
+    fn built_in_owners_do_not_become_custom_nodes() {
+        let mut s = Store::default();
+        s.upsert(owned_secret("token", "ServiceAccount", "v1", "missing-sa"));
+        let g = build(&s, &BuildOptions::default());
+        assert!(g.nodes.iter().all(|n| n.kind != Kind::Custom), "{:?}", g.nodes);
+    }
+
+    #[test]
+    fn malformed_custom_owner_references_are_skipped() {
+        let mut s = Store::default();
+        s.upsert(owned_secret("a", "Cert/ificate", "cert-manager.io/v1", "web"));
+        s.upsert(owned_secret("b", "Certificate", "cert-manager.io/v1", ""));
+        s.upsert(owned_secret("c", "Certificate", "cert-manager.io/v1", "we/b"));
+        s.upsert(owned_secret("d", "Certificate", "Bad Group/v1", "web"));
+        let g = build(&s, &BuildOptions::default());
+        assert!(g.nodes.iter().all(|n| n.kind != Kind::Custom), "{:?}", g.nodes);
+        assert!(g.edges.iter().all(|e| !e.source.starts_with("Custom/")));
+        assert_eq!(g.nodes.len(), 4);
+    }
+
+    #[test]
+    fn pods_owned_by_a_custom_resource_are_not_grouped() {
+        let mut s = Store::default();
+        for i in 0..4 {
+            s.upsert(obj(serde_json::json!({
+                "apiVersion": "v1", "kind": "Pod",
+                "metadata": { "name": format!("wf-{i}"), "namespace": "s", "ownerReferences": [
+                    { "apiVersion": "argoproj.io/v1alpha1", "kind": "Workflow", "name": "wf", "uid": "u" }
+                ] },
+                "spec": { "containers": [{ "name": "main", "image": "busybox" }] }
+            })));
+        }
+        let opts = BuildOptions {
+            group_threshold: 1,
+            ..BuildOptions::default()
+        };
+        let g = build(&s, &opts);
+        assert!(
+            g.nodes.iter().all(|n| n.kind != Kind::PodGroup),
+            "a PodGroup id cannot name a custom owner"
+        );
+        assert_eq!(
+            g.edges
+                .iter()
+                .filter(|e| e.source == "Custom/argoproj.io/v1alpha1/Workflow/s/wf")
+                .count(),
+            4
         );
     }
 }
