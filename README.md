@@ -41,7 +41,7 @@ Download the latest installer from [**Releases**](https://github.com/skensell201
 | macOS (Apple Silicon and Intel) | `Wiring_<version>_universal.dmg` | The build is unsigned. After copying to Applications, run `xattr -d com.apple.quarantine /Applications/Wiring.app`, or right-click the app and choose **Open**. |
 | Windows 10/11 | `Wiring_<version>_x64_en-US.msi` or `Wiring_<version>_x64-setup.exe` | The build is unsigned. When SmartScreen appears, choose **More info → Run anyway**. |
 
-Wiring reads your kubeconfig from `~/.kube/config`, or from `KUBECONFIG` when it is set. You can also add a kubeconfig file from inside the app with **Add kubeconfig…**. A file without contexts is refused. If Wiring finds no contexts at all, it opens on a welcome screen. That screen lists each file it looked at and what it found there (not found, unreadable, no contexts), with **Add kubeconfig…** and **Rescan**.
+Wiring reads your kubeconfig from `~/.kube/config`, or from `KUBECONFIG` when it is set. You can also add a kubeconfig file from inside the app with **Add kubeconfig…**. A file without contexts is refused. If Wiring finds no contexts at all, it opens on a welcome screen. That screen lists each file it looked at and what it found there (not found, can't be read, no contexts), with **Add kubeconfig…** and **Rescan**.
 
 **Login helpers.** Clusters that sign in through a helper program, such as `gke-gcloud-auth-plugin`, `aws` or `kubelogin`, need it installed. On macOS and Linux, Wiring uses your login shell's `PATH`, so it finds a helper installed with Homebrew or a cloud SDK even when you start Wiring from the Dock or a launcher. (When you start Wiring from a terminal, it already has your `PATH`.) Restart Wiring after installing one.
 
