@@ -5,13 +5,11 @@
 //! base64, so the bytes here are base64(gzip(json)). Values can hold credentials: nothing
 //! decoded here is ever logged, and errors never echo a record.
 
-use std::collections::BTreeMap;
 use std::io::Read;
 
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use flate2::read::GzDecoder;
-use k8s_openapi::api::core::v1::Secret;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -104,7 +102,8 @@ fn decode_with_limit(payload: &[u8], limit: usize) -> AppResult<RawRelease> {
     serde_json::from_slice(&json).map_err(|_| corrupt())
 }
 
-pub(crate) fn decode_secret(secret: &Secret) -> AppResult<RawRelease> {
+#[cfg(test)]
+pub(crate) fn decode_secret(secret: &k8s_openapi::api::core::v1::Secret) -> AppResult<RawRelease> {
     let payload = secret.data.as_ref().and_then(|d| d.get("release")).ok_or_else(corrupt)?;
     decode(&payload.0)
 }
@@ -167,15 +166,21 @@ pub struct HelmReleaseDetails {
     pub resources: Vec<NodeId>,
 }
 
-/// A storage Secret with the release name and revision from its labels.
-struct Stored<'a> {
-    namespace: &'a str,
-    name: &'a str,
+/// What is copied out of a storage Secret while the store is locked: the label-derived
+/// identity and the raw record. Decoding happens afterwards, without the lock.
+pub struct Candidate {
+    namespace: String,
+    name: String,
     revision: i64,
-    secret: &'a Secret,
+    payload: Vec<u8>,
 }
 
-fn stored(store: &Store) -> Vec<Stored<'_>> {
+/// Cheap, under the store lock: every storage Secret's identity and record bytes.
+pub fn collect_list(store: &Store) -> Vec<Candidate> {
+    collect(store, |_, _| true)
+}
+
+fn collect(store: &Store, keep: impl Fn(&str, &str) -> bool) -> Vec<Candidate> {
     store
         .iter_kind(Kind::Secret)
         .filter_map(|obj| {
@@ -184,11 +189,21 @@ fn stored(store: &Store) -> Vec<Stored<'_>> {
                 return None;
             }
             let labels = secret.metadata.labels.as_ref()?;
-            Some(Stored {
-                namespace: obj.namespace()?,
-                name: labels.get("name")?.as_str(),
+            let namespace = obj.namespace()?;
+            let name = labels.get("name")?.as_str();
+            if !keep(namespace, name) {
+                return None;
+            }
+            Some(Candidate {
+                namespace: namespace.to_owned(),
+                name: name.to_owned(),
                 revision: labels.get("version")?.parse().ok()?,
-                secret,
+                payload: secret
+                    .data
+                    .as_ref()
+                    .and_then(|d| d.get("release"))
+                    .map(|b| b.0.clone())
+                    .unwrap_or_default(),
             })
         })
         .collect()
@@ -229,43 +244,76 @@ fn revision_of(raw: &RawRelease) -> HelmRevision {
 
 /// The record, if it decodes and agrees with the Secret's labels and namespace. Only names
 /// and the revision are logged; the record itself and decode errors never are.
-fn decoded(s: &Stored<'_>) -> Option<RawRelease> {
-    let raw = decode_secret(s.secret)
+fn decoded(c: &Candidate) -> Option<RawRelease> {
+    let raw = decode(&c.payload)
         .ok()
-        .filter(|raw| raw.name == s.name && (raw.namespace.is_empty() || raw.namespace == s.namespace));
+        .filter(|raw| raw.name == c.name && (raw.namespace.is_empty() || raw.namespace == c.namespace));
     if raw.is_none() {
-        tracing::warn!(
-            namespace = s.namespace,
-            release = s.name,
-            revision = s.revision,
-            "undecodable Helm release record"
-        );
+        tracing::debug!(namespace = %c.namespace, release = %c.name, revision = c.revision, "undecodable Helm release record");
     }
     raw
 }
 
-/// The latest revision of every release in the store, sorted by namespace and name.
-pub fn releases(store: &Store) -> Vec<HelmRelease> {
-    let mut latest: BTreeMap<(&str, &str), Stored<'_>> = BTreeMap::new();
-    for s in stored(store) {
-        let key = (s.namespace, s.name);
-        if latest.get(&key).is_none_or(|cur| cur.revision < s.revision) {
-            latest.insert(key, s);
+/// The latest decodable revision of every release, sorted by namespace and name.
+pub fn build_list(mut candidates: Vec<Candidate>) -> Vec<HelmRelease> {
+    candidates.sort_by(|a, b| {
+        (&a.namespace, &a.name, std::cmp::Reverse(a.revision)).cmp(&(&b.namespace, &b.name, std::cmp::Reverse(b.revision)))
+    });
+    let mut out = Vec::new();
+    let mut done: Option<(&str, &str)> = None;
+    for c in &candidates {
+        if done == Some((c.namespace.as_str(), c.name.as_str())) {
+            continue;
+        }
+        if let Some(raw) = decoded(c) {
+            out.push(row_of(&raw, &c.namespace));
+            done = Some((c.namespace.as_str(), c.name.as_str()));
         }
     }
-    latest
-        .values()
-        .filter_map(|s| decoded(s).map(|raw| row_of(&raw, s.namespace)))
-        .collect()
+    out
+}
+
+/// The releases list straight from a store.
+#[cfg(test)]
+pub fn releases(store: &Store) -> Vec<HelmRelease> {
+    build_list(collect_list(store))
+}
+
+/// A release's records and member objects, copied out under the store lock.
+pub struct CollectedRelease {
+    namespace: String,
+    name: String,
+    candidates: Vec<Candidate>,
+    resources: Vec<NodeId>,
+}
+
+pub fn collect_release(store: &Store, namespace: &str, name: &str) -> CollectedRelease {
+    CollectedRelease {
+        namespace: namespace.to_owned(),
+        name: name.to_owned(),
+        candidates: collect(store, |ns, n| ns == namespace && n == name),
+        resources: members(store, namespace, name),
+    }
+}
+
+#[cfg(test)]
+pub fn release(store: &Store, namespace: &str, name: &str) -> AppResult<HelmReleaseDetails> {
+    build_release(collect_release(store, namespace, name))
 }
 
 /// Overview, values, history, notes and member objects of one release.
-pub fn release(store: &Store, namespace: &str, name: &str) -> AppResult<HelmReleaseDetails> {
+pub fn build_release(collected: CollectedRelease) -> AppResult<HelmReleaseDetails> {
+    let CollectedRelease {
+        namespace,
+        name,
+        candidates,
+        resources,
+    } = collected;
     // Each revision is reduced to its history row at once; only the newest keeps its full record.
     let mut history = Vec::new();
     let mut latest: Option<RawRelease> = None;
-    for s in stored(store).iter().filter(|s| s.namespace == namespace && s.name == name) {
-        let Some(raw) = decoded(s) else { continue };
+    for c in &candidates {
+        let Some(raw) = decoded(c) else { continue };
         history.push(revision_of(&raw));
         if latest.as_ref().is_none_or(|cur| cur.version < raw.version) {
             latest = Some(raw);
@@ -276,17 +324,17 @@ pub fn release(store: &Store, namespace: &str, name: &str) -> AppResult<HelmRele
     let values = match &latest.config {
         None | Some(Value::Null) => String::new(),
         Some(Value::Object(m)) if m.is_empty() => String::new(),
-        Some(v) => serde_yaml_ng::to_string(v).map_err(|e| AppError::internal(e.to_string()))?,
+        Some(v) => serde_yaml_ng::to_string(v).map_err(|_| AppError::internal("the Helm release values could not be rendered"))?,
     };
     Ok(HelmReleaseDetails {
-        release: row_of(&latest, namespace),
+        release: row_of(&latest, &namespace),
         description: latest.info.description,
         first_deployed: latest.info.first_deployed,
         last_deployed: latest.info.last_deployed,
         values,
         notes: latest.info.notes,
         history,
-        resources: members(store, namespace, name),
+        resources,
     })
 }
 
@@ -562,6 +610,29 @@ pub(crate) mod tests {
         );
         s.upsert(Object::Secret(broken));
         assert!(releases(&s).iter().all(|r| r.name != "bad"));
+    }
+
+    #[test]
+    fn a_broken_newest_revision_falls_back_to_the_previous_one_in_the_list() {
+        let mut s = Store::default();
+        s.upsert(storage_secret(
+            "shop",
+            "web",
+            1,
+            "deployed",
+            &release_json("web", "shop", 1, "deployed", "1.0.0"),
+        ));
+        let Object::Secret(mut broken) = storage_secret("shop", "web", 2, "deployed", &json!({})) else {
+            unreachable!()
+        };
+        broken.data = Some(
+            [("release".to_string(), k8s_openapi::ByteString(b"%%%".to_vec()))]
+                .into_iter()
+                .collect(),
+        );
+        s.upsert(Object::Secret(broken));
+        let list = releases(&s);
+        assert_eq!((list.len(), list[0].revision), (1, 1));
     }
 
     #[test]

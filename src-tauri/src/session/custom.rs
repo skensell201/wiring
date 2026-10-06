@@ -128,13 +128,16 @@ impl Session {
         }
     }
 
-    /// Latest revision of every Helm release in the scope (from the watched Secrets).
+    /// Latest revision of every Helm release in the scope (from the watched Secrets). The store
+    /// lock is held only to copy the records out; decoding runs after it is released.
     pub fn helm_releases(&self) -> Vec<crate::helm::HelmRelease> {
-        crate::helm::releases(&self.shared.store())
+        let collected = crate::helm::collect_list(&self.shared.store());
+        crate::helm::build_list(collected)
     }
 
     pub fn helm_release(&self, namespace: &str, name: &str) -> crate::error::AppResult<crate::helm::HelmReleaseDetails> {
-        crate::helm::release(&self.shared.store(), namespace, name)
+        let collected = crate::helm::collect_release(&self.shared.store(), namespace, name);
+        crate::helm::build_release(collected)
     }
 }
 
