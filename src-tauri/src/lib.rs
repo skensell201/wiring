@@ -5,6 +5,7 @@ pub mod error;
 pub mod exec;
 pub mod forward;
 pub mod graph;
+pub mod helm;
 pub mod kubeconfig;
 pub mod logs;
 pub mod manifest;
