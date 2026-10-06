@@ -218,7 +218,7 @@ impl Session {
         self.tasks = watch::spawn_plan(&self.client, &plan, &[], &store_tx);
         self.tasks.push(metrics::spawn(
             self.client.clone(),
-            namespace,
+            &scope::NamespaceScope::single(namespace),
             self.shared.clone(),
             reducer_tx.clone(),
             Arc::new(self.ns_emitter.clone()),

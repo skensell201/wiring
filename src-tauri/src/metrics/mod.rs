@@ -43,7 +43,16 @@ impl std::ops::Add for PodUsage {
 /// A sample older than this is shown as stale (four missed polls).
 pub const STALE_AFTER: std::time::Duration = std::time::Duration::from_secs(60);
 
-/// The latest sample of the selected namespace, keyed by pod name.
+/// The key of a pod in `MetricsSample::pods`: `namespace/name`, or just the name when the item
+/// carries no namespace. Two namespaces can hold pods of the same name.
+pub fn pod_key(namespace: Option<&str>, name: &str) -> String {
+    match namespace {
+        Some(ns) if !ns.is_empty() => format!("{ns}/{name}"),
+        _ => name.to_string(),
+    }
+}
+
+/// The latest sample of the watched namespaces.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct MetricsSample {
     pub state: MetricsState,
@@ -52,6 +61,7 @@ pub struct MetricsSample {
     pub unresponsive: bool,
     /// When the sample in `pods` arrived.
     pub sampled_at: Option<std::time::Instant>,
+    /// Usage per pod, keyed by [`pod_key`].
     pub pods: HashMap<String, PodUsage>,
 }
 

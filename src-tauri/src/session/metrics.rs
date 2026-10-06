@@ -11,6 +11,7 @@ use tokio::task::JoinHandle;
 
 use super::emitter::{Emitter, OutEvent};
 use super::reducer::ReducerMsg;
+use super::scope::NamespaceScope;
 use super::shared::Shared;
 use crate::metrics::sample::parse_pod_metrics;
 use crate::metrics::{MetricsSample, MetricsState, MetricsUpdate};
@@ -105,23 +106,36 @@ fn end(shared: &Shared, state: MetricsState) -> MetricsState {
     state
 }
 
-/// The live poller for `namespace`. It is pushed to the namespace session's tasks, so a
-/// namespace switch or disconnect aborts it with the watchers.
+/// One PodMetrics list per tick: cluster-wide for `All`, one per namespace of a set.
+fn scope_apis(client: Client, scope: &NamespaceScope) -> Vec<Api<DynamicObject>> {
+    let ar = ApiResource::from_gvk_with_plural(&GroupVersionKind::gvk("metrics.k8s.io", "v1beta1", "PodMetrics"), "pods");
+    match scope {
+        NamespaceScope::All => vec![Api::all_with(client, &ar)],
+        NamespaceScope::Set(set) => set.iter().map(|ns| Api::namespaced_with(client.clone(), ns, &ar)).collect(),
+    }
+}
+
+/// The live poller for `scope`. It is pushed to the namespace session's tasks, so a scope
+/// switch or disconnect aborts it with the watchers.
 pub fn spawn(
     client: Client,
-    namespace: &str,
+    scope: &NamespaceScope,
     shared: Shared,
     reducer: mpsc::Sender<ReducerMsg>,
     emitter: Arc<dyn Emitter>,
 ) -> JoinHandle<()> {
-    let ar = ApiResource::from_gvk_with_plural(&GroupVersionKind::gvk("metrics.k8s.io", "v1beta1", "PodMetrics"), "pods");
-    let api: Api<DynamicObject> = Api::namespaced_with(client, namespace, &ar);
+    let apis = scope_apis(client, scope);
     tokio::spawn(run(
         move || {
-            let api = api.clone();
+            let apis = apis.clone();
             async move {
-                let list = api.list(&ListParams::default()).await?;
-                Ok(list.items.into_iter().filter_map(|o| serde_json::to_value(o).ok()).collect())
+                // One list per namespace of a set; the first failure answers for the whole tick.
+                let mut items = Vec::new();
+                for api in apis {
+                    let list = api.list(&ListParams::default()).await?;
+                    items.extend(list.items.into_iter().filter_map(|o| serde_json::to_value(o).ok()));
+                }
+                Ok(items)
             }
         },
         shared,
@@ -158,6 +172,25 @@ mod tests {
 
     fn item() -> Value {
         json!({ "metadata": { "name": "a" }, "containers": [ { "name": "c", "usage": { "cpu": "250m", "memory": "64Mi" } } ] })
+    }
+
+    #[tokio::test]
+    async fn all_namespaces_list_once_and_a_set_lists_each_namespace() {
+        let client = Client::try_from(kube::Config::new("https://127.0.0.1:1".parse().unwrap())).unwrap();
+        let urls = |scope: &NamespaceScope| -> Vec<String> {
+            scope_apis(client.clone(), scope)
+                .iter()
+                .map(|a| a.resource_url().to_string())
+                .collect()
+        };
+        assert_eq!(urls(&NamespaceScope::All), vec!["/apis/metrics.k8s.io/v1beta1/pods"]);
+        assert_eq!(
+            urls(&NamespaceScope::Set(["blog".to_string(), "shop".to_string()].into_iter().collect())),
+            vec![
+                "/apis/metrics.k8s.io/v1beta1/namespaces/blog/pods",
+                "/apis/metrics.k8s.io/v1beta1/namespaces/shop/pods"
+            ]
+        );
     }
 
     #[test]

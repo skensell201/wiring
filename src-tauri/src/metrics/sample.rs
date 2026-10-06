@@ -6,13 +6,14 @@ use serde_json::Value;
 
 use super::{quantity, PodUsage};
 
-/// Usage per pod name, summed over its containers. An item without a name, or with a quantity
+/// Usage per pod (keyed by [`pod_key`](super::pod_key)), summed over its containers. An item without a name, or with a quantity
 /// that does not parse, is skipped rather than shown as a wrong number.
 pub fn parse_pod_metrics(items: &[Value]) -> HashMap<String, PodUsage> {
     items
         .iter()
         .filter_map(|item| {
-            let name = item.pointer("/metadata/name")?.as_str()?.to_string();
+            let name = item.pointer("/metadata/name")?.as_str()?;
+            let namespace = item.pointer("/metadata/namespace").and_then(Value::as_str);
             let mut total = PodUsage::default();
             for c in item.get("containers")?.as_array()? {
                 total = total
@@ -21,7 +22,7 @@ pub fn parse_pod_metrics(items: &[Value]) -> HashMap<String, PodUsage> {
                         memory_bytes: quantity::memory_bytes(c.pointer("/usage/memory")?.as_str()?)?,
                     };
             }
-            Some((name, total))
+            Some((super::pod_key(namespace, name), total))
         })
         .collect()
 }
@@ -60,6 +61,19 @@ mod tests {
                 memory_bytes: 2 << 20
             }
         );
+    }
+
+    #[test]
+    fn pods_with_the_same_name_in_two_namespaces_stay_apart() {
+        let item = |ns: &str, cpu: &str| {
+            json!({ "metadata": { "name": "web", "namespace": ns }, "containers": [
+            { "name": "app", "usage": { "cpu": cpu, "memory": "1Mi" } } ] })
+        };
+        let pods = parse_pod_metrics(&[item("a", "10m"), item("b", "20m")]);
+        assert_eq!(pods["a/web"].cpu_millis, 10);
+        assert_eq!(pods["b/web"].cpu_millis, 20);
+        assert_eq!(crate::metrics::pod_key(None, "web"), "web");
+        assert_eq!(crate::metrics::pod_key(Some("a"), "web"), "a/web");
     }
 
     #[test]
