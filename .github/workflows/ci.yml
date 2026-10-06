@@ -18,6 +18,18 @@ jobs:
       - run: pnpm test
       - run: pnpm build
 
+  site:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with: { version: 9 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: pnpm, cache-dependency-path: site/pnpm-lock.yaml }
+      - run: pnpm -C site install --frozen-lockfile
+      - run: pnpm -C site test
+      - run: pnpm site:build   # fails on dead links
+
   backend:
     runs-on: ubuntu-latest
     steps:

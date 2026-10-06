@@ -11,7 +11,10 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "site:dev": "pnpm -C site dev",
+    "site:build": "pnpm -C site build",
+    "site:test": "pnpm -C site test"
   },
   "dependencies": {
     "@codemirror/lang-yaml": "^6.1",
