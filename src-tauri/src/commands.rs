@@ -20,7 +20,7 @@ use crate::forward::{Forward, PortOption};
 use crate::graph::rows::Table;
 use crate::graph::NodeId;
 use crate::helm::{HelmRelease, HelmReleaseDetails};
-use crate::kubeconfig::{self, ContextInfo};
+use crate::kubeconfig::{self, ContextInfo, KubeconfigSource, SourceOrigin};
 use crate::logs::session::LogRequest;
 use crate::logs::LogMessage;
 use crate::manifest;
@@ -60,15 +60,26 @@ fn extra_kubeconfigs(app: &AppHandle) -> Vec<PathBuf> {
         .collect()
 }
 
+/// Every kubeconfig path in load order (`$KUBECONFIG` or `~/.kube/config`, then the added files), with its origin.
+fn all_kubeconfig_sources(app: &AppHandle) -> Vec<(PathBuf, SourceOrigin)> {
+    let mut sources = kubeconfig::default_sources();
+    sources.extend(extra_kubeconfigs(app).into_iter().map(|p| (p, SourceOrigin::Added)));
+    sources
+}
+
 fn all_kubeconfig_paths(app: &AppHandle) -> Vec<PathBuf> {
-    let mut paths = kubeconfig::default_paths();
-    paths.extend(extra_kubeconfigs(app));
-    paths
+    all_kubeconfig_sources(app).into_iter().map(|(p, _)| p).collect()
 }
 
 #[tauri::command]
 pub fn list_contexts(app: AppHandle) -> AppResult<Vec<ContextInfo>> {
     kubeconfig::list_contexts(&all_kubeconfig_paths(&app))
+}
+
+/// What each kubeconfig path holds, for the welcome pane.
+#[tauri::command]
+pub fn kubeconfig_sources(app: AppHandle) -> AppResult<Vec<KubeconfigSource>> {
+    Ok(kubeconfig::scan(&all_kubeconfig_sources(&app)))
 }
 
 #[tauri::command]
@@ -459,6 +470,7 @@ pub fn register(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wr
         .invoke_handler(tauri::generate_handler![
             list_contexts,
             add_kubeconfig,
+            kubeconfig_sources,
             connect,
             disconnect,
             select_namespaces,

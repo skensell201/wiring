@@ -192,15 +192,23 @@ pub fn path_strings(paths: &[PathBuf]) -> Vec<String> {
 
 /// Validates a single file before it's added as a kubeconfig source, so the
 /// UI can surface a clean error instead of failing later inside `load_merged`.
+/// A file without contexts would add nothing, so it is refused too.
 pub fn validate_file(path: &Path) -> AppResult<()> {
     if !path.exists() {
         return Err(AppError::new(ErrorKind::NotFound, format!("{} does not exist", path.display())));
     }
-    if let Err(e) = Kubeconfig::read_from(path) {
-        return Err(AppError::new(
+    let cfg = Kubeconfig::read_from(path).map_err(|e| {
+        AppError::new(
             ErrorKind::Internal,
             format!("{}: invalid kubeconfig ({})", path.display(), describe_read_error(&e)),
-        ));
+        )
+    })?;
+    if cfg.contexts.is_empty() {
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| path.display().to_string());
+        return Err(AppError::new(ErrorKind::Invalid, format!("{name} has no contexts")));
     }
     Ok(())
 }
@@ -425,6 +433,16 @@ mod tests {
             err.message,
             format!("could not merge {} with the other kubeconfig files", b.display())
         );
+    }
+
+    #[test]
+    fn validate_file_rejects_a_file_without_contexts() {
+        let dir = tempfile::tempdir().unwrap();
+        let err = validate_file(&empty_file(dir.path())).unwrap_err();
+        assert_eq!(err.kind, ErrorKind::Invalid);
+        assert_eq!(err.message, "empty has no contexts");
+        let good = kubeconfig_file(dir.path(), "good", &[("prod", "c1", "u1")]);
+        assert!(validate_file(&good).is_ok());
     }
 
     #[test]
