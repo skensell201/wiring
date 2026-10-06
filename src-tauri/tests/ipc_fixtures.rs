@@ -136,6 +136,33 @@ fn graph() {
 }
 
 #[test]
+fn graph_extras() {
+    let n = |id: &str, kind: Kind, ns: Option<&str>, name: &str, badges: &[&str]| Node {
+        namespace: ns.map(String::from),
+        ..node(id, kind, name, Status::Ok, badges, None)
+    };
+    let g = Graph {
+        nodes: vec![
+            n("NetworkPolicy/s/web-ingress", Kind::NetworkPolicy, Some("s"), "web-ingress", &[]),
+            n("Pod/s/web-1", Kind::Pod, Some("s"), "web-1", &["Running", "policy"]),
+            n("Node//node-a", Kind::Node, None, "node-a", &["Ready", "v1.36.1"]),
+            n("RoleBinding/s/web-reader", Kind::RoleBinding, Some("s"), "web-reader", &[]),
+            n("Role/s/reader", Kind::Role, Some("s"), "reader", &[]),
+            n("ServiceAccount/s/web", Kind::ServiceAccount, Some("s"), "web", &[]),
+        ],
+        edges: vec![
+            Edge::new("NetworkPolicy/s/web-ingress", "Pod/s/web-1", Relation::Applies),
+            Edge::new("Pod/s/web-1", "NetworkPolicy/s/web-ingress", Relation::Allows),
+            Edge::new("RoleBinding/s/web-reader", "Role/s/reader", Relation::Grants),
+            Edge::new("RoleBinding/s/web-reader", "ServiceAccount/s/web", Relation::Subject),
+            Edge::new("Pod/s/web-1", "Node//node-a", Relation::RunsOn),
+        ],
+        too_large: None,
+    };
+    assert_matches("graph_extras", &g);
+}
+
+#[test]
 fn graph_delta() {
     let d = GraphDelta {
         added_nodes: vec![node("Pod/payments/web-1", Kind::Pod, "web-1", Status::Warn, &["Pending"], None)],

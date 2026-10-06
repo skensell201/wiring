@@ -1,0 +1,17 @@
+{
+  "nodes": [
+    { "id": "NetworkPolicy/s/web-ingress", "kind": "NetworkPolicy", "namespace": "s", "name": "web-ingress", "status": "ok", "badges": [], "group": null },
+    { "id": "Pod/s/web-1", "kind": "Pod", "namespace": "s", "name": "web-1", "status": "ok", "badges": ["Running", "policy"], "group": null },
+    { "id": "Node//node-a", "kind": "Node", "namespace": null, "name": "node-a", "status": "ok", "badges": ["Ready", "v1.36.1"], "group": null },
+    { "id": "RoleBinding/s/web-reader", "kind": "RoleBinding", "namespace": "s", "name": "web-reader", "status": "ok", "badges": [], "group": null },
+    { "id": "Role/s/reader", "kind": "Role", "namespace": "s", "name": "reader", "status": "ok", "badges": [], "group": null },
+    { "id": "ServiceAccount/s/web", "kind": "ServiceAccount", "namespace": "s", "name": "web", "status": "ok", "badges": [], "group": null }
+  ],
+  "edges": [
+    { "id": "NetworkPolicy/s/web-ingress->Pod/s/web-1:applies", "source": "NetworkPolicy/s/web-ingress", "target": "Pod/s/web-1", "relation": "applies" },
+    { "id": "Pod/s/web-1->NetworkPolicy/s/web-ingress:allows", "source": "Pod/s/web-1", "target": "NetworkPolicy/s/web-ingress", "relation": "allows" },
+    { "id": "RoleBinding/s/web-reader->Role/s/reader:grants", "source": "RoleBinding/s/web-reader", "target": "Role/s/reader", "relation": "grants" },
+    { "id": "RoleBinding/s/web-reader->ServiceAccount/s/web:subject", "source": "RoleBinding/s/web-reader", "target": "ServiceAccount/s/web", "relation": "subject" },
+    { "id": "Pod/s/web-1->Node//node-a:runsOn", "source": "Pod/s/web-1", "target": "Node//node-a", "relation": "runsOn" }
+  ]
+}

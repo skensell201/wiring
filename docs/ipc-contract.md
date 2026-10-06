@@ -6,9 +6,9 @@ The JSON fixtures in `src/shared/ipc/fixtures/` are the authoritative payload sh
 
 | Type | Values |
 |---|---|
-| `Kind` | `Deployment`, `StatefulSet`, `DaemonSet`, `ReplicaSet`, `Job`, `CronJob`, `Pod`, `Service`, `Ingress`, `ConfigMap`, `Secret`, `PersistentVolumeClaim`, `PersistentVolume`, `ServiceAccount`, `HorizontalPodAutoscaler`, `PodGroup` |
+| `Kind` | `Deployment`, `StatefulSet`, `DaemonSet`, `ReplicaSet`, `Job`, `CronJob`, `Pod`, `Service`, `Ingress`, `ConfigMap`, `Secret`, `PersistentVolumeClaim`, `PersistentVolume`, `ServiceAccount`, `HorizontalPodAutoscaler`, `NetworkPolicy`, `Role`, `RoleBinding`, `ClusterRole`, `ClusterRoleBinding`, `Node`, `PodGroup` (`ClusterRole`, `ClusterRoleBinding` and `Node` are cluster-scoped: ids `Kind//name`) |
 | `Status` | `ok`, `warn`, `err`, `unknown` |
-| `Relation` | `owns`, `selects`, `routes`, `mounts`, `envFrom`, `claims`, `binds`, `usesSA`, `scales` |
+| `Relation` | `owns`, `selects`, `routes`, `mounts`, `envFrom`, `claims`, `binds`, `usesSA`, `scales`, `applies`, `allows`, `grants`, `subject`, `runsOn` |
 | `ErrorKind` | `auth`, `network`, `forbidden`, `notFound`, `conflict`, `invalid`, `internal` — `conflict` is HTTP 409 (stale `resourceVersion` on a write); `invalid` is HTTP 400/422 (the message is the server's, listing the bad fields) |
 | `ConnectionState` | `connected`, `degraded`, `disconnected` |
 
@@ -75,7 +75,7 @@ Argument names are camelCase on the JS side; Tauri maps them to the Rust snake_c
 
 ## Node ids
 
-- Namespaced: `Kind/<namespace>/<name>`; cluster-scoped: `PersistentVolume//<name>`.
+- Namespaced: `Kind/<namespace>/<name>`; cluster-scoped: `PersistentVolume//<name>` (likewise `ClusterRole//`, `ClusterRoleBinding//`, `Node//`).
 - Collapsed pods: `PodGroup/<namespace>/<OwnerKind>/<ownerName>`. The owner is the *visible* owner — a Deployment whose single ReplicaSet is hidden yields `PodGroup/ns/Deployment/web`. During a rollout two ReplicaSets are visible, so the groups are `PodGroup/ns/ReplicaSet/<rs>` and the id changes back when the old ReplicaSet drains; expanded-group state does not survive that.
 - `get_object` on a PodGroup returns `yaml: ""` and a summary of member counts; `watch_events` on a PodGroup is a no-op.
 
@@ -86,6 +86,16 @@ A node whose `status` is `warn` or `err` may carry `problem: { reason, message, 
 - `cause` is the id of a node in the same graph to blame next (a workload's worst-status owned child, a Service's worst-status selected pod or pod group), or `null` at the root. It is resolved after ReplicaSet hiding and pod-group collapse, so it always names a visible node. Follow it to the root, stopping at a missing node, a repeat or 8 steps.
 - A PodGroup's problem summarises its members: `K of N pods: <reason>` with the message of the first such pod by name, prefixed with the pod name.
 - Problems change with the objects, so they arrive through the usual `graph_snapshot` / `graph_delta` (`updatedNodes`).
+
+## Policies, RBAC and Nodes
+
+- `applies`: NetworkPolicy to each selected Pod (or PodGroup). `allows`: Pod (or PodGroup) to a NetworkPolicy that admits its ingress, i.e. the pod is selected by the policy and matches an ingress peer. Egress rules appear in Overview text only, with no edges.
+- `grants`: RoleBinding / ClusterRoleBinding to its Role / ClusterRole. `subject`: binding to each ServiceAccount subject. `runsOn`: Pod (or PodGroup) to its Node.
+- ClusterRole, ClusterRoleBinding and Node appear only when connected to the scope (bound to a ServiceAccount or Role in it, or running one of its pods).
+- A Pod selected by any NetworkPolicy in its namespace carries the `policy` badge.
+- Node status: `ok` when Ready, `err` when the Ready condition is not `True`, `warn` when Ready but `MemoryPressure`, `DiskPressure`, `PIDPressure` or `NetworkUnavailable` is `True` (the condition is added to the badges). A Pending/Unknown pod on a red node gets the node as its problem `cause`.
+- `namespaceSelector` peers are matched on the `kubernetes.io/metadata.name` label only (Namespaces are not watched); other namespace labels match nothing, though the rule text still lists them.
+- Fixture: `graph_extras.json`.
 
 ## Table
 
