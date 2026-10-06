@@ -1,9 +1,16 @@
 # Automatic updates
 
 Installed copies check `https://github.com/skensell201/wiring/releases/latest/download/latest.json`
-10 seconds after launch and every 6 hours (and, on macOS only, on **Wiring → Check for Updates…**; Windows has automatic checks only). That URL only
+(`plugins.updater.endpoints` in `src-tauri/tauri.conf.json`, read by `tauri-plugin-updater`)
+10 seconds after launch and every 6 hours (and, on macOS only, on **Wiring → Check for Updates…**; Windows has automatic checks only).
+`pnpm tauri dev` makes no automatic checks. That URL only
 resolves to the latest **published** release, so a draft is never offered: publishing the draft is
 the release gate.
+
+An offered update shows **Update X.Y.Z** in the header. **Install and restart** downloads it,
+verifies its signature, installs it and relaunches; **Later** hides the offer until Wiring restarts or you check by hand.
+On Windows the update is the NSIS `-setup.exe` (the workflow sets `updaterJsonPreferNsis`), run in
+passive mode (`plugins.updater.windows.installMode`).
 
 ## Signing
 

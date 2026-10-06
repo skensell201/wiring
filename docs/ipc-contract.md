@@ -75,7 +75,7 @@ Argument names are camelCase on the JS side; Tauri maps them to the Rust snake_c
 | `forwards_changed` | `Forward[]` | Every running forward, ordered by id, after each start, stop and status change (see [Port-forward](#port-forward)). Empty after a disconnect. |
 | `custom_table` | `CustomTable` | The full rows of the live custom table after a change (debounced); see [Custom resources](#custom-resources) |
 | `helm_changed` | `null` | A Helm storage Secret (`type: helm.sh/release.v1`) was added, changed or deleted — at most one per debounced flush. Those Secrets are not graph nodes, so no `graph_delta` says it; re-read `helm_releases` (and an open `helm_release`). See [Helm](#helm) |
-| `metrics_updated` | `{ state: "pending" \| "available" \| "unavailable" \| "forbidden" }` | After each metrics-server sample of the selected namespace (every 15 s), and once when the Metrics API turns out to be missing (404 → `unavailable`) or forbidden (403 → `forbidden`), after which polling stops for that namespace session. Three failed polls in a row before any sample (a registered but unhealthy metrics-server) also send `unavailable`, with the Overview note "metrics-server not responding"; polling continues and a sample sends `available`. A sample older than 60 s adds "(stale)" to the Overview usage rows. Refetch the open Pod / Deployment / StatefulSet / DaemonSet table and the selected details. Usage badges arrive as an ordinary `graph_delta`. |
+| `metrics_updated` | `{ state: "pending" \| "available" \| "unavailable" \| "forbidden" }` | After each metrics-server sample of the selected namespaces (every 15 s), and once when the Metrics API turns out to be missing (404 → `unavailable`) or forbidden (403 → `forbidden`), after which polling stops for that namespace session. Three failed polls in a row before any sample (a registered but unhealthy metrics-server) also send `unavailable`, with the Overview note "metrics-server not responding"; polling continues and a sample sends `available`. A sample older than 60 s adds "(stale)" to the Overview usage rows. Refetch the open Pod / Deployment / StatefulSet / DaemonSet table and the selected details. Usage badges arrive as an ordinary `graph_delta`. |
 
 ### Ordering rules the frontend must follow
 
@@ -197,10 +197,12 @@ The backend stores `extraKubeconfigs: string[]` in `settings.json` (tauri-plugin
 | `lastNamespace` | `Record<string, string>` | frontend | Last selected namespace, keyed by context name |
 | `lastScope` | `Record<string, "all" \| string[]>` | frontend | Last selected scope per context; supersedes `lastNamespace`, which is still read once for migration |
 | `sidebarCollapsed` | `boolean` | frontend | Whether the Navigator is collapsed to its icon rail |
+| `detailsHeight` | `number` | frontend | Details panel height in px, once resized |
 
 ## Security notes
 
-- `tauri.conf.json` ships with `"csp": null`; the frontend plan must set a policy once its asset needs are known.
+- `tauri.conf.json` sets a CSP that allows only the app's own scripts, styles (plus inline styles), images and fonts (plus `data:`), and IPC (`connect-src ipc: http://ipc.localhost`).
+- The webview's capability (`src-tauri/capabilities/default.json`) grants only core events and window dragging, the store, and the open/save dialogs. Files, the browser, the updater and relaunching are reached through the commands above, never directly.
 - Secret YAML in `get_object` includes base64 `data` (accepted for the MVP).
 
 ## Logs
@@ -213,12 +215,7 @@ Container logs stream through a Tauri `Channel` passed to `start_logs`, not thro
 |---|---|---|
 | `start_logs` | `{ nodeId, container: string \| null, previous: bool, timestamps: bool, onMessage: Channel<LogMessage> }` | `sessionId: number` |
 | `stop_logs` | `{ sessionId }` | `null` |
-| `exec_pods` | `{ nodeId }` | `ExecPod[]` — running pods of a Pod / Deployment / StatefulSet / DaemonSet / Job / PodGroup with their regular containers; other kinds `invalid` |
-| `start_exec` | `{ nodeId, pod, container, cols, rows, onMessage: Channel<ExecMessage> }` | `number` session id; see [Exec](#exec) |
-| `exec_input` | `{ sessionId, data }` | `null` — `data` is base64 keystrokes; not base64 → `invalid` |
-| `exec_resize` | `{ sessionId, cols, rows }` | `null` |
-| `stop_exec` | `{ sessionId }` | `null` — nothing reaches the channel afterwards |
-| `save_text` | `{ path, text }` | `null` — writes a file chosen with the save dialog |
+| `save_text` | `{ path, text }` | `null` — writes a file chosen with the save dialog (the log download) |
 
 `nodeId` may be a `Pod`, `Deployment`, `StatefulSet`, `DaemonSet`, `Job`, `CronJob` or `PodGroup`; anything else is `invalid`. A selection that resolves to no container at all (an unknown `container`, a workload without pods) is `notFound`, so a session always has something to stream. Each `(pod, container)` the node stands for is one stream (`tail_lines=500`, `follow` unless `previous`). Pods that appear or disappear while streaming start/stop their streams, and a container that restarts gets a stream for its new run. At most 64 streams per session.
 
@@ -235,6 +232,16 @@ Container logs stream through a Tauri `Channel` passed to `start_logs`, not thro
 `ended` means the stream is over, whether the server closed it or the session stopped it because its pod (or that run of its container) went away. Batches arrive at most every 50 ms or every 256 lines. After `stop_logs` nothing more is sent on that channel. Fixture: `log_message.json`.
 
 ## Exec
+
+Like logs, a shell streams through a Tauri `Channel` passed to `start_exec`.
+
+| Command | Args | Returns |
+|---|---|---|
+| `exec_pods` | `{ nodeId }` | `ExecPod[]` (`{ name, containers }`) — running pods of a Pod / Deployment / StatefulSet / DaemonSet / Job / PodGroup with their regular containers; other kinds `invalid` |
+| `start_exec` | `{ nodeId, pod, container, cols, rows, onMessage: Channel<ExecMessage> }` | `number` session id |
+| `exec_input` | `{ sessionId, data }` | `null` — `data` is base64 keystrokes; not base64 → `invalid` |
+| `exec_resize` | `{ sessionId, cols, rows }` | `null` |
+| `stop_exec` | `{ sessionId }` | `null` — nothing reaches the channel afterwards |
 
 `start_exec` checks the request against the cached store (`pod` must be a running pod of `nodeId`, `container` one of its regular containers — otherwise `invalid` / `notFound`) and returns at once. The session then opens `sh -c "command -v bash >/dev/null && exec bash || exec sh"` with a TTY of `cols`x`rows` (each clamped to 1...1000) and pushes `ExecMessage`s (tagged by `type`) through the channel:
 

@@ -17,7 +17,7 @@
 
 ![The graph of the shop namespace, with the web Deployment selected and its wiring highlighted](docs/images/graph.png)
 
-Wiring's main view is a live graph of a namespace: **Ingress → Service → Deployment → Pod**, plus the ConfigMaps, Secrets, PersistentVolumeClaims, ServiceAccounts and HorizontalPodAutoscalers each workload uses. Select an object to highlight what it is connected to. From the same window you can read and edit its YAML, check its events and stream its logs.
+Wiring's main view is a live graph of a namespace: **Ingress → Service → Deployment → Pod**, plus the ConfigMaps, Secrets, PersistentVolumeClaims, ServiceAccounts and HorizontalPodAutoscalers each workload uses. Select an object to highlight what it is connected to. From the same window you can read and edit its YAML, check its events, stream its logs, open a shell in it and forward a port to it.
 
 It is built with [Tauri 2](https://tauri.app), React and Rust ([kube-rs](https://kube.rs)), and runs on macOS and Windows.
 
@@ -25,6 +25,7 @@ It is built with [Tauri 2](https://tauri.app), React and Rust ([kube-rs](https:/
 
 - [Install](#install)
 - [Features](#features)
+- [Keyboard shortcuts](#keyboard-shortcuts)
 - [Try it on a demo cluster](#try-it-on-a-demo-cluster)
 - [Development](#development)
 - [Project layout](#project-layout)
@@ -76,7 +77,7 @@ Wiring reads your kubeconfig from `~/.kube/config`, or from `KUBECONFIG` when it
 
 **Helm.** The **Helm** section opens its own view: a table of the releases in the selected namespaces, read from Helm 3's release Secrets, with chart and version, app version, revision, status and when it was last deployed. The list follows changes live, such as new revisions and status changes. Select a release to see its tabs below the table: **Overview**, the user-supplied **Values**, the **History** of stored revisions, the chart's **Notes**, and the **Resources** it installed that exist in the cluster; opening one of those shows it in the details panel. Its objects are highlighted on the graph, whose header reads `Release web highlighted · Clear`. Closing the release, **Clear** or switching namespaces removes the highlight. Wiring reads releases only: it never installs, upgrades or rolls back. Values can contain credentials, so Wiring never logs them. Helm's release Secrets are left out of the graph and the Secrets table. **Show Helm storage** in the Secrets table reveals them.
 
-**Details panel.** The panel shows **Overview**, **YAML** and **Events** tabs for the selected object, plus **Logs** for pods and workloads. Drag its top edge to resize it (or focus the edge and use <kbd>↑</kbd>/<kbd>↓</kbd>). Maximise it with ⤢ and restore it with <kbd>Esc</kbd>.
+**Details panel.** The panel shows **Overview**, **YAML** and **Events** tabs for the selected object, plus **Logs** and **Terminal** for pods and workloads, and **History** for Deployments, StatefulSets and DaemonSets. Drag its top edge to resize it (or focus the edge and use <kbd>↑</kbd>/<kbd>↓</kbd>). Maximise it with ⤢ and restore it with <kbd>Esc</kbd>.
 
 **Editing:**
 1. **Edit** on the YAML tab opens the object in an editor.
@@ -106,6 +107,23 @@ While a rollout runs, the node shows `rolling updated/desired`. A Deployment tha
 **Terminal.** Pods and workloads (Deployment, StatefulSet, DaemonSet, Job and pod groups) get a **Terminal** tab. Pick the pod and container, then **Connect** to open a shell in it (`bash` when the image has it, otherwise `sh`). It is a full terminal, with colours, cursor keys, resizing with the panel, and copy with ⌘C / Ctrl+Shift+C. The terminal keeps Tab for the shell; press Ctrl+Shift+Tab to move focus back to the toolbar. The session ends with `exit`, **Disconnect**, or when you select something else. Images without a shell (distroless) say so.
 
 ![The Deployments table with live logs of the web Deployment, merged across its three pods](docs/images/logs.png)
+
+**Metrics.** When the cluster runs metrics-server, the Pod, Deployment, StatefulSet and DaemonSet tables get CPU and Memory columns in `kubectl top` style (a workload sums its pods), and Overview shows usage against the summed requests and limits. A pod or workload at 80 % or more of a CPU or memory limit gets a `cpu 85%` / `mem 92%` badge on the graph. Usage is sampled every 15 s and never changes an object's status. Without metrics-server, or without access to pod metrics, Overview says so.
+
+**Updates.** Wiring checks for a new release 10 seconds after launch and every 6 hours; on macOS you can also check from **Wiring → Check for Updates…**. When one is available, the header shows **Update X.Y.Z**. Its dialog shows the release notes, with **Install and restart** or **Later**.
+
+## Keyboard shortcuts
+
+| Keys | Action |
+|---|---|
+| <kbd>⌘K</kbd> / <kbd>Ctrl+K</kbd> | Focus the search box |
+| <kbd>⌘S</kbd> / <kbd>Ctrl+S</kbd> | While editing YAML, review the diff |
+| <kbd>Esc</kbd> | Close the innermost layer: a menu or dialog, then the maximised details panel, then the diff review, then the editor, then the selection |
+| <kbd>↑</kbd> / <kbd>↓</kbd>, <kbd>Enter</kbd> | In a table, move between rows; jump to the object in the graph |
+| <kbd>↑</kbd> / <kbd>↓</kbd> on the panel's top edge | Resize the details panel |
+| <kbd>Enter</kbd> / <kbd>Shift+Enter</kbd> | In the log search, next / previous match |
+| <kbd>⌘C</kbd> / <kbd>Ctrl+Shift+C</kbd> | In the terminal, copy the selection |
+| <kbd>Ctrl+Shift+Tab</kbd> | Move focus out of the terminal |
 
 ## Try it on a demo cluster
 
@@ -154,23 +172,37 @@ src/                     React frontend
   features/
     cluster/             header, namespace picker
     onboarding/          welcome, connecting and connection-failure panes
-    navigator/           sidebar: clusters and the resource tree
+    navigator/           sidebar: clusters, the resource tree, Custom Resources, Helm
     graph/               React Flow canvas, nodes, edges, layout, kind chips
-    table/               per-kind tables
-    details/             details panel: Overview, YAML, Events
+    table/               per-kind and custom resource tables
+    details/             details panel: Overview, YAML, Events, History
     editor/              YAML editor, diff review, Create dialog
+    actions/             Actions menu, Scale and Restart dialogs
     logs/                Logs tab, virtualised log view, ANSI rendering
+    exec/                Terminal tab (xterm.js)
+    forward/             Port-forward dialog, running-forwards popover
     helm/                Helm releases view
+    update/              update checks, Update pill and dialog
   shared/                IPC types and commands, UI primitives, empty states
   styles/theme.css       design tokens (colours, type, radii)
 src-tauri/               Rust backend
-  src/session/           per-context watches, reducer, writes
+  src/commands.rs        the IPC commands
+  src/session/           per-context watches, reducer, writes, rollouts, metrics polling
+  src/store/             in-memory object cache
   src/graph/             graph model, relations, status, table rows
   src/logs/              log sessions, stream targets, pumps
+  src/exec/              shell sessions
+  src/forward/           port-forwards
+  src/metrics/           metrics-server quantities and usage
+  src/custom/            custom resource ids, tables and requests
+  src/discovery.rs       custom resource kinds the cluster serves
+  src/helm.rs            Helm releases from their storage Secrets
   src/kubeconfig.rs      context discovery
+  src/shell_path.rs      login shell PATH for kubeconfig exec plugins
+  src/updates.rs         self-update and the macOS menu
   tests/                 IPC contract tests, live smoke test
 examples/demo/           demo namespaces and RBAC for a local cluster
-docs/                    design specs, plans, IPC contract
+docs/                    design specs, plans, IPC contract, release docs
 ```
 
 ## Documentation
@@ -182,6 +214,15 @@ docs/                    design specs, plans, IPC contract
 | [Navigator and tables design](docs/superpowers/specs/2026-09-18-navigator-tables-design.md) | The sidebar, per-kind tables and RBAC handling |
 | [YAML editing design](docs/superpowers/specs/2026-09-18-yaml-editing-design.md) | Edit, diff, apply, conflicts, Create and Delete |
 | [Pod logs design](docs/superpowers/specs/2026-09-21-pod-logs-design.md) | Log sessions, merging, previous runs and the log view |
+| [Problem explanation design](docs/superpowers/specs/2026-10-05-problem-explain-design.md) | Problem reasons, messages and the cause chain |
+| [Workload actions design](docs/superpowers/specs/2026-10-05-workload-actions-design.md) | Scale, restart, rollout history and rollback |
+| [Port-forward design](docs/superpowers/specs/2026-10-05-port-forward-design.md) | Forward targets, pod selection and the forwards list |
+| [Metrics design](docs/superpowers/specs/2026-10-05-metrics-design.md) | metrics-server polling, usage columns and badges |
+| [Updater design](docs/superpowers/specs/2026-10-05-updater-design.md) | Update checks, the feed and installing |
+| [Graph extras design](docs/superpowers/specs/2026-10-06-graph-extras-design.md) | NetworkPolicies, RBAC and Nodes on the graph |
+| [Multi-namespace design](docs/superpowers/specs/2026-10-06-multi-namespace-design.md) | Namespace scopes, lanes and partial kinds |
+| [Exec terminal design](docs/superpowers/specs/2026-10-06-exec-terminal-design.md) | Shell sessions and the Terminal tab |
+| [Onboarding design](docs/superpowers/specs/2026-10-06-onboarding-design.md) | The welcome screen, connection failures and empty states |
 | [Custom resources and Helm design](docs/superpowers/specs/2026-10-06-crds-helm-design.md) | Discovery, the generic table, CR owners on the graph, Helm releases |
 | [Code signing](docs/code-signing.md) | Signing and notarizing the macOS and Windows installers in CI |
 | [Automatic updates](docs/updates.md) | The updater key and secrets, the update feed, checking a release |
@@ -192,6 +233,15 @@ These are the implementation plans behind each feature:
 - [navigator and tables](docs/superpowers/plans/2026-09-18-navigator-tables.md)
 - [YAML editing](docs/superpowers/plans/2026-09-18-yaml-editing.md)
 - [pod logs](docs/superpowers/plans/2026-09-21-pod-logs.md)
+- [problem explanation](docs/superpowers/plans/2026-10-05-problem-explain.md)
+- [workload actions](docs/superpowers/plans/2026-10-05-workload-actions.md)
+- [port-forward](docs/superpowers/plans/2026-10-05-port-forward.md)
+- [metrics](docs/superpowers/plans/2026-10-05-metrics.md)
+- [updater](docs/superpowers/plans/2026-10-05-updater.md)
+- [graph extras](docs/superpowers/plans/2026-10-06-graph-extras.md)
+- [multi-namespace](docs/superpowers/plans/2026-10-06-multi-namespace.md)
+- [exec terminal](docs/superpowers/plans/2026-10-06-exec-terminal.md)
+- [onboarding](docs/superpowers/plans/2026-10-06-onboarding.md)
 - [custom resources and Helm](docs/superpowers/plans/2026-10-06-crds-helm.md)
 
 ## Releasing
