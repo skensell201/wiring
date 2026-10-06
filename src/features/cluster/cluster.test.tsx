@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { initialState, useAppStore } from "../../app/store";
 import { Header } from "./Header";
@@ -232,5 +232,28 @@ describe("Header", () => {
     render(<Header />);
     fireEvent.change(screen.getByPlaceholderText(/search/i), { target: { value: "web" } });
     expect(useAppStore.getState().search).toBe("web");
+  });
+});
+
+describe("NamespacePicker on request", () => {
+  it("opens when an empty state asks for it", () => {
+    useAppStore.setState({ connection: { ...initialState().connection, context: "prod", namespaces: ["blog", "shop"], scope: null } });
+    render(<NamespacePicker />);
+    expect(screen.queryByRole("dialog", { name: "Namespaces" })).toBeNull();
+    act(() => useAppStore.getState().openNamespacePicker());
+    expect(screen.getByRole("dialog", { name: "Namespaces" })).toBeInTheDocument();
+  });
+
+  it("does not open for a request made before it mounted", () => {
+    useAppStore.setState({ namespacePickerSeq: 3, connection: { ...initialState().connection, context: "prod", namespaces: ["shop"], scope: null } });
+    render(<NamespacePicker />);
+    expect(screen.queryByRole("dialog", { name: "Namespaces" })).toBeNull();
+  });
+
+  it("focuses the free-text field when there is no list to show", () => {
+    useAppStore.setState({ connection: { ...initialState().connection, context: "prod", namespaces: [], canListNamespaces: false, scope: null } });
+    render(<NamespacePicker />);
+    act(() => useAppStore.getState().openNamespacePicker());
+    expect(screen.getByRole("textbox", { name: "Namespace" })).toHaveFocus();
   });
 });
