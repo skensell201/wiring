@@ -1,0 +1,33 @@
+# The smoke test's only cluster-scoped object; tests/smoke.rs deletes it even when the run fails.
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: wiringsmokes.wiringsmoke.example.com
+spec:
+  group: wiringsmoke.example.com
+  scope: Namespaced
+  names:
+    plural: wiringsmokes
+    singular: wiringsmoke
+    kind: WiringSmoke
+    listKind: WiringSmokeList
+  versions:
+    - name: v1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              properties:
+                size:
+                  type: string
+      additionalPrinterColumns:
+        - name: Size
+          type: string
+          jsonPath: .spec.size
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp

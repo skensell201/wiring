@@ -1,5 +1,5 @@
 import { Channel, invoke } from "./tauri";
-import type { ConnectInfo, ContextInfo, ExecMessage, ExecPod, ExecRequest, Forward, Kind, LogMessage, LogRequest, NamespaceScope, NodeId, ObjectDetails, PortOption, Revision, Table, UpdateCheck } from "./types";
+import type { ConnectInfo, ContextInfo, CustomKind, CustomTable, HelmRelease, HelmReleaseDetails, ResourceRef, ExecMessage, ExecPod, ExecRequest, Forward, Kind, LogMessage, LogRequest, NamespaceScope, NodeId, ObjectDetails, PortOption, Revision, Table, UpdateCheck } from "./types";
 import { toAppError } from "./types";
 
 async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
@@ -22,7 +22,15 @@ export const commands = {
   getObject: (nodeId: NodeId) => call<ObjectDetails>("get_object", { nodeId }),
   watchEvents: (nodeId: NodeId | null) => call<null>("watch_events", { nodeId }),
   deniedKinds: () => call<Kind[]>("denied_kinds"),
-  listRows: (kind: Kind) => call<Table>("list_rows", { kind }),
+  /** `includeHelmStorage` only matters for Secrets: Helm's release records are hidden unless asked for. */
+  listRows: (kind: Kind, includeHelmStorage = false) => call<Table>("list_rows", { kind, includeHelmStorage }),
+  customKinds: () => call<CustomKind[]>("custom_kinds"),
+  refreshCustomKinds: () => call<CustomKind[]>("refresh_custom_kinds"),
+  /** Lists the kind and keeps it live (`custom_table` events) until stopCustom or a scope switch. */
+  listCustom: (resource: ResourceRef) => call<CustomTable>("list_custom", { resource }),
+  stopCustom: () => call<null>("stop_custom"),
+  helmReleases: () => call<HelmRelease[]>("helm_releases"),
+  helmRelease: (namespace: string, name: string) => call<HelmReleaseDetails>("helm_release", { namespace, name }),
   updateObject: (nodeId: NodeId, yaml: string, force: boolean) => call<ObjectDetails>("update_object", { nodeId, yaml, force }),
   createObject: (namespace: string, yaml: string) => call<NodeId>("create_object", { namespace, yaml }),
   deleteObject: (nodeId: NodeId) => call<null>("delete_object", { nodeId }),

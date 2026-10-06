@@ -32,7 +32,7 @@ function CanvasInner() {
   const s = useAppStore(
     useShallow((s) => ({
       nodes: s.nodes, edges: s.edges, tooLarge: s.tooLarge, graphReady: s.graphReady, hiddenKinds: s.hiddenKinds,
-      search: s.search, hoveredId: s.hoveredId, selectedId: s.selectedId, expandedGroups: s.expandedGroups,
+      search: s.search, hoveredId: s.hoveredId, selectedId: s.selectedId, expandedGroups: s.expandedGroups, highlightIds: s.highlightIds,
       scope: s.connection.scope, namespaces: s.connection.namespaces, context: s.connection.context, focusRequest: s.focusRequest,
       select: s.select, openActionsMenu: s.openActionsMenu, setHovered: s.setHovered, toggleGroup: s.toggleGroup,
       clearFocusRequest: s.clearFocusRequest,
@@ -43,7 +43,7 @@ function CanvasInner() {
     const { lanes, nodes, edges } = toFlow(s);
     // Lanes first, so their frames sit behind the nodes in DOM order too (they also carry zIndex -1).
     return { nodes: lanes.length > 0 ? [...lanes, ...nodes] : (nodes as FlowNode[]), edges };
-  }, [s.nodes, s.edges, s.hiddenKinds, s.search, s.hoveredId, s.selectedId, s.expandedGroups]);
+  }, [s.nodes, s.edges, s.hiddenKinds, s.search, s.hoveredId, s.selectedId, s.expandedGroups, s.highlightIds]);
 
   const { fitView } = useReactFlow();
   const nodesInitialized = useNodesInitialized();

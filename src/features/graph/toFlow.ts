@@ -47,6 +47,8 @@ export interface ToFlowInput {
   hoveredId: NodeId | null;
   selectedId: NodeId | null;
   expandedGroups: Set<NodeId>;
+  /** The selected Helm release's objects: everything else is dimmed while it is non-empty. */
+  highlightIds?: Set<NodeId>;
 }
 
 // The store replaces a GraphNode/GraphEdge object whenever its content changes, so object
@@ -163,6 +165,15 @@ export function toFlow(input: ToFlowInput): { lanes: LaneFlowNode[]; nodes: Reso
   const onPath = new Set(path.length > 1 ? path : []);
   const pathLinks = new Set(onPath.size > 0 ? path.slice(1).flatMap((to, i) => [`${path[i]}\n${to}`, `${to}\n${path[i]}`]) : []);
 
+  const highlight = input.highlightIds ?? new Set<NodeId>();
+  // A release's pods are usually collapsed into their owner's PodGroup (`PodGroup/<ns>/<Kind>/<name>`).
+  const inRelease = (id: NodeId): boolean => {
+    if (highlight.has(id)) return true;
+    if (!id.startsWith("PodGroup/")) return false;
+    const [, ns, ownerKind, ...name] = id.split("/");
+    return highlight.has(`${ownerKind}/${ns}/${name.join("/")}`);
+  };
+
   const nodes: ResourceFlowNode[] = visible.map((node) => ({
     id: node.id,
     type: "resource",
@@ -173,7 +184,7 @@ export function toFlow(input: ToFlowInput): { lanes: LaneFlowNode[]; nodes: Reso
     width: NODE_WIDTH,
     height: NODE_HEIGHT,
     selected: node.id === input.selectedId,
-    data: nodeData(node, !matches(node), input.expandedGroups.has(node.id), onPath.has(node.id) ? tone : undefined),
+    data: nodeData(node, !matches(node) || (highlight.size > 0 && !inRelease(node.id) && !onPath.has(node.id) && node.id !== input.selectedId), input.expandedGroups.has(node.id), onPath.has(node.id) ? tone : undefined),
   }));
 
   // hoveredId can outlive its node (a delta removed it before the mouse moved), and a hover that

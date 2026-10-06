@@ -39,6 +39,9 @@ pub enum Kind {
     Node,
     /// Synthetic node kind: a collapsed group of pods. Never stored.
     PodGroup,
+    /// Synthetic node kind: a custom resource (`Custom/<group>/<version>/<kind>/<ns>/<name>`).
+    /// Never watched for the graph and never stored.
+    Custom,
 }
 
 impl Kind {
@@ -90,6 +93,7 @@ impl Kind {
             Kind::ClusterRoleBinding => "ClusterRoleBinding",
             Kind::Node => "Node",
             Kind::PodGroup => "PodGroup",
+            Kind::Custom => "Custom",
         }
     }
 

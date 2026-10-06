@@ -1,4 +1,5 @@
-import type { Kind } from "../../shared/ipc/types";
+import { parseCustomId } from "../../shared/customId";
+import type { Kind, NodeId } from "../../shared/ipc/types";
 
 /** Short label + letter used in the node icon. Order = chip order. */
 export const KIND_META: Record<Kind, { label: string; letter: string; short: string }> = {
@@ -24,14 +25,22 @@ export const KIND_META: Record<Kind, { label: string; letter: string; short: str
   ClusterRole: { label: "ClusterRole", letter: "CR", short: "ClusterRole" },
   ClusterRoleBinding: { label: "ClusterRoleBinding", letter: "CRB", short: "CRB" },
   Node: { label: "Node", letter: "N", short: "Node" },
+  Custom: { label: "Custom", letter: "C", short: "Custom" },
 };
 
 /** Kinds shown as filter chips (PodGroup follows Pod). */
 export const CHIP_KINDS: Kind[] = [
   "Ingress", "Service", "Deployment", "StatefulSet", "DaemonSet", "ReplicaSet", "Job", "CronJob", "Pod",
   "ConfigMap", "Secret", "PersistentVolumeClaim", "PersistentVolume", "ServiceAccount", "HorizontalPodAutoscaler",
-  "NetworkPolicy", "Role", "RoleBinding", "ClusterRole", "ClusterRoleBinding", "Node",
+  "NetworkPolicy", "Role", "RoleBinding", "ClusterRole", "ClusterRoleBinding", "Node", "Custom",
 ];
 
 /** Workload kinds get the gradient icon; everything else a muted one. */
 export const GRADIENT_KINDS = new Set<Kind>(["Deployment", "StatefulSet", "DaemonSet", "Job", "CronJob", "Ingress"]);
+
+/** The kind name to show for a node: a custom resource's own kind (`Certificate`), else the
+ *  built-in label. */
+export function kindLabel(id: NodeId, kind: Kind): string {
+  if (kind === "Custom") return parseCustomId(id)?.kind ?? KIND_META.Custom.label;
+  return KIND_META[kind].label;
+}

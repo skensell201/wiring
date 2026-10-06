@@ -1,5 +1,5 @@
 import { KINDS, type GraphEdge, type GraphNode, type Kind, type NodeId } from "../../shared/ipc/types";
-import { KIND_META } from "../graph/kindMeta";
+import { kindLabel } from "../graph/kindMeta";
 
 /** Mirrors the backend's bound on a manual scale. */
 export const MAX_REPLICAS = 10_000;
@@ -31,7 +31,7 @@ export function kindOf(id: NodeId): Kind | null {
 export function describeId(id: NodeId): string {
   const kind = kindOf(id);
   const name = id.split("/").pop() ?? id;
-  return kind ? `${KIND_META[kind].label} ${name}` : name;
+  return kind ? `${kindLabel(id, kind)} ${name}` : name;
 }
 
 /** The desired replica count from a workload node's first badge (`ready/desired`); 1 if unknown. */

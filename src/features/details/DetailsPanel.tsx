@@ -6,7 +6,8 @@ import { KINDS, type GraphNode, type Kind, type NodeId } from "../../shared/ipc/
 import { settings } from "../../shared/settings";
 import { ConfirmDialog } from "../../shared/ui/ConfirmDialog";
 import { actionsFor, kindOf, ROLLOUT_KINDS } from "../actions/actionKinds";
-import { KIND_META } from "../graph/kindMeta";
+import { parseCustomId } from "../../shared/customId";
+import { kindLabel } from "../graph/kindMeta";
 import { TerminalTab } from "../exec/TerminalTab";
 import { LogsTab } from "../logs/LogsTab";
 import { EventsTab } from "./EventsTab";
@@ -30,6 +31,8 @@ const LOG_KINDS: ReadonlySet<Kind> = new Set<Kind>(["Pod", "Deployment", "Statef
  *  node (a pod collapsed into a PodGroup, a hidden single ReplicaSet). Ids are `Kind/ns/name`,
  *  `Kind/name` for cluster-scoped kinds and `PodGroup/ns/OwnerKind/owner` for groups. */
 export function headingFromId(id: NodeId): { name: string; kind: Kind | null; namespace: string | null } {
+  const custom = parseCustomId(id);
+  if (custom) return { name: custom.name, kind: "Custom", namespace: custom.namespace };
   const [head, ...rest] = id.split("/");
   const kind = (KINDS as readonly string[]).includes(head) ? (head as Kind) : null;
   if (rest.length === 0) return { name: id, kind: null, namespace: null };
@@ -46,7 +49,7 @@ function deleteWording(id: NodeId, node: GraphNode | undefined): { title: string
     const count = node?.group?.count ?? 0;
     return { title: `Delete ${count} ${count === 1 ? "pod" : "pods"} of ${ownerKind} ${owner}?`, body: "The controller will recreate them." };
   }
-  const label = h.kind ? `${KIND_META[h.kind].label} ` : "";
+  const label = h.kind ? `${kindLabel(id, h.kind)} ` : "";
   return { title: `Delete ${label}${h.name}?`, body: "This cannot be undone." };
 }
 
@@ -142,7 +145,7 @@ export function DetailsPanel() {
         {heading && (
           <div className="ml-auto flex items-baseline gap-2">
             <span className="text-sm font-medium text-text-hi">{heading.name}</span>
-            {heading.kind && <span className="text-xs text-text-muted">{KIND_META[heading.kind].label}{heading.namespace ? ` · ${heading.namespace}` : ""}</span>}
+            {heading.kind && <span className="text-xs text-text-muted">{kindLabel(selectedId ?? "", heading.kind)}{heading.namespace ? ` · ${heading.namespace}` : ""}</span>}
           </div>
         )}
         {selectedId && actionsFor(kindOf(selectedId)).some((a) => a !== "delete") && (

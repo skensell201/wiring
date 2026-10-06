@@ -387,3 +387,111 @@ fn exec_message_and_pod() {
         },
     );
 }
+
+fn cert_ref() -> wiring_lib::discovery::ResourceRef {
+    wiring_lib::discovery::ResourceRef {
+        group: "cert-manager.io".into(),
+        version: "v1".into(),
+        kind: "Certificate".into(),
+        plural: "certificates".into(),
+        namespaced: true,
+    }
+}
+
+#[test]
+fn custom_kind_and_table() {
+    use wiring_lib::custom::CustomTable;
+    use wiring_lib::discovery::{CustomKind, PrinterColumn};
+    use wiring_lib::graph::rows::{Table, TableCell, TableColumn, TableRow};
+    assert_matches(
+        "custom_kind",
+        &CustomKind {
+            resource: cert_ref(),
+            columns: vec![PrinterColumn {
+                name: "Ready".into(),
+                json_path: ".status.conditions[?(@.type==\"Ready\")].status".into(),
+                type_: "string".into(),
+            }],
+        },
+    );
+    let column = |key: &str, label: &str| TableColumn {
+        key: key.into(),
+        label: label.into(),
+        numeric: false,
+    };
+    let cell = |text: &str| TableCell {
+        text: text.into(),
+        status: None,
+    };
+    assert_matches(
+        "custom_table",
+        &CustomTable {
+            resource: cert_ref(),
+            table: Table {
+                kind: Kind::Custom,
+                columns: vec![
+                    column("name", "Name"),
+                    column("c0", "Ready"),
+                    TableColumn {
+                        numeric: true,
+                        ..column("age", "Age")
+                    },
+                ],
+                rows: vec![TableRow {
+                    node_id: "Custom/cert-manager.io/v1/Certificate/shop/web-tls".into(),
+                    status: Status::Ok,
+                    cells: vec![cell("web-tls"), cell("True"), cell("3d")],
+                }],
+            },
+            error: None,
+        },
+    );
+}
+
+#[test]
+fn helm_release_and_details() {
+    use wiring_lib::helm::{HelmRelease, HelmReleaseDetails, HelmRevision};
+    let release = HelmRelease {
+        name: "web".into(),
+        namespace: "shop".into(),
+        chart: "web-1.4.2".into(),
+        app_version: "2.0.1".into(),
+        revision: 3,
+        status: "deployed".into(),
+        health: Status::Ok,
+        updated: Some("2026-10-06T09:30:00Z".into()),
+    };
+    assert_matches("helm_release", &release);
+    assert_matches(
+        "helm_release_details",
+        &HelmReleaseDetails {
+            release,
+            description: "Upgrade complete".into(),
+            first_deployed: Some("2026-10-01T08:00:00Z".into()),
+            last_deployed: Some("2026-10-06T09:30:00Z".into()),
+            values: "replicaCount: 2\n".into(),
+            notes: "Visit http://web.shop\n".into(),
+            history: vec![
+                HelmRevision {
+                    revision: 3,
+                    chart: "web-1.4.2".into(),
+                    app_version: "2.0.1".into(),
+                    status: "deployed".into(),
+                    health: Status::Ok,
+                    updated: Some("2026-10-06T09:30:00Z".into()),
+                    description: "Upgrade complete".into(),
+                },
+                HelmRevision {
+                    revision: 2,
+                    chart: "web-1.4.1".into(),
+                    app_version: "2.0.0".into(),
+                    status: "superseded".into(),
+                    health: Status::Unknown,
+                    updated: Some("2026-10-03T09:30:00Z".into()),
+                    description: "Upgrade complete".into(),
+                },
+            ],
+            resources: vec!["ConfigMap/shop/web-cfg".into(), "Deployment/shop/web".into()],
+        },
+    );
+}

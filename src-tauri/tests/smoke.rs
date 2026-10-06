@@ -1,17 +1,28 @@
 //! End-to-end: apply a fixture namespace, run a headless Session, assert the graph, then
 //! exercise the write path (update / conflict / create / delete / PodGroup delete), the rollout
-//! actions (scale / restart / history / rollback) and log streaming (start / lines / stop / invalid kind).
+//! actions (scale / restart / history / rollback), log streaming (start / lines / stop / invalid kind),
+//! and, on docker-desktop only, custom resources (discovery / table / watch / edit / create / delete /
+//! CR owner on the graph) and Helm releases (list / details / hidden storage Secret). That phase
+//! creates `crd/wiringsmokes.wiringsmoke.example.com`, the only cluster-scoped object the test
+//! makes, and always deletes it, also when the run fails; on any other context it is skipped.
 //! Run: WIRING_SMOKE_CONTEXT=docker-desktop cargo test --test smoke -- --ignored --nocapture
 
 use std::collections::HashSet;
+use std::io::Write as _;
 use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
 
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
+use flate2::write::GzEncoder;
+use flate2::Compression;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc::{self, UnboundedReceiver};
+use tokio::sync::Mutex;
+use wiring_lib::custom::id::CustomId;
+use wiring_lib::custom::{ops, CustomTable};
+use wiring_lib::discovery;
 use wiring_lib::error::ErrorKind;
 use wiring_lib::exec::session::ExecRequest;
 use wiring_lib::exec::{ExecMessage, ExecPod};
@@ -20,6 +31,8 @@ use wiring_lib::graph::{Graph, GraphDelta, Problem, Relation, Status};
 use wiring_lib::kubeconfig;
 use wiring_lib::logs::session::LogRequest;
 use wiring_lib::logs::LogMessage;
+use wiring_lib::manifest;
+use wiring_lib::session::custom::{list_custom, resolve_kind};
 use wiring_lib::session::emitter::{ChannelEmitter, ConnectionState, OutEvent};
 use wiring_lib::session::rollout::Revision;
 use wiring_lib::session::scope::NamespaceScope;
@@ -123,7 +136,7 @@ const GROUP_ID: &str = "PodGroup/wiring-smoke/Deployment/web";
 /// the `talker` pod is left out.
 fn pod_names(session: &Session) -> Vec<String> {
     session
-        .list_rows(Kind::Pod)
+        .list_rows(Kind::Pod, false)
         .rows
         .into_iter()
         .map(|r| r.node_id.trim_start_matches("Pod/wiring-smoke/").to_owned())
@@ -157,7 +170,7 @@ async fn exercise_metrics(session: &Session, context: &str) {
     // docker-desktop node it can take a few minutes.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(240);
     loop {
-        let table = session.list_rows(Kind::Pod);
+        let table = session.list_rows(Kind::Pod, false);
         let cpu = table
             .columns
             .iter()
@@ -646,7 +659,7 @@ async fn exercise_scopes(session: &mut Session, rx: &mut UnboundedReceiver<OutEv
         "both namespaces in one graph: {:?}",
         graph.nodes.iter().map(|n| &n.id).collect::<Vec<_>>()
     );
-    let table = session.list_rows(Kind::ConfigMap);
+    let table = session.list_rows(Kind::ConfigMap, false);
     assert_eq!(table.columns[0].key, "namespace", "{:?}", table.columns);
     assert!(table.rows.iter().any(|r| r.cells[0].text == NAMESPACE_B), "{:?}", table.rows);
 
@@ -663,6 +676,277 @@ async fn exercise_scopes(session: &mut Session, rx: &mut UnboundedReceiver<OutEv
         graph.nodes.len(),
         graph.too_large.as_ref().map(|t| t.nodes)
     );
+}
+
+const SMOKE_CRD: &str = "wiringsmokes.wiringsmoke.example.com";
+const SMOKE_CR: &str = "Custom/wiringsmoke.example.com/v1/WiringSmoke/wiring-smoke/alpha";
+const SMOKE_RELEASE: &str = "smoke-rel";
+
+/// Deletes the smoke CRD (and with it every WiringSmoke) when dropped: at the end of the test,
+/// and when anything before that panics. Never panics itself.
+struct CrdGuard {
+    context: String,
+}
+
+impl Drop for CrdGuard {
+    fn drop(&mut self) {
+        let status = Command::new("kubectl")
+            .args([
+                "--context",
+                &self.context,
+                "delete",
+                "crd",
+                SMOKE_CRD,
+                "--ignore-not-found",
+                "--wait=false",
+            ])
+            .status();
+        if !status.is_ok_and(|s| s.success()) {
+            eprintln!("could not delete crd/{SMOKE_CRD}; delete it by hand");
+        }
+    }
+}
+
+/// Creates the smoke CRD and its CR, or `None` (creating nothing) off docker-desktop.
+fn install_smoke_crd(context: &str) -> Option<CrdGuard> {
+    if context != "docker-desktop" {
+        eprintln!("skipping the custom resource and Helm phase: it only runs against docker-desktop");
+        return None;
+    }
+    // The guard exists before the CRD does, so a failing apply below still cleans up.
+    let guard = CrdGuard {
+        context: context.to_string(),
+    };
+    kubectl(
+        context,
+        &["delete", "crd", SMOKE_CRD, "--ignore-not-found", "--wait=true", "--timeout=60s"],
+    );
+    kubectl(
+        context,
+        &["apply", "-f", concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/smoke-crd.yaml")],
+    );
+    kubectl(
+        context,
+        &["wait", "--for=condition=Established", &format!("crd/{SMOKE_CRD}"), "--timeout=60s"],
+    );
+    kubectl(
+        context,
+        &["apply", "-f", concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/smoke-cr.yaml")],
+    );
+    Some(guard)
+}
+
+/// A Helm 3 storage Secret for `smoke-rel` revision 1, built the way Helm writes one:
+/// `data.release` = base64(base64(gzip(json))).
+fn helm_secret_yaml() -> String {
+    let release = serde_json::json!({
+        "name": SMOKE_RELEASE, "namespace": NAMESPACE, "version": 1,
+        "info": { "first_deployed": "2026-10-06T10:00:00Z", "last_deployed": "2026-10-06T10:00:00Z",
+                  "description": "Install complete", "status": "deployed", "notes": "smoke notes" },
+        "chart": { "metadata": { "name": "smoke", "version": "0.1.0", "appVersion": "1.0" } },
+        "config": { "replicaCount": 1 }
+    });
+    let mut gz = GzEncoder::new(Vec::new(), Compression::default());
+    gz.write_all(&serde_json::to_vec(&release).unwrap()).unwrap();
+    let record = STANDARD.encode(STANDARD.encode(gz.finish().unwrap()));
+    format!(
+        "apiVersion: v1\nkind: Secret\ntype: helm.sh/release.v1\nmetadata:\n  name: sh.helm.release.v1.{SMOKE_RELEASE}.v1\n  labels:\n    name: {SMOKE_RELEASE}\n    owner: helm\n    status: deployed\n    version: \"1\"\ndata:\n  release: {record}\n"
+    )
+}
+
+/// Wait for a `custom_table` event whose rows satisfy `ok`, applying graph events on the way.
+async fn custom_table_until(
+    rx: &mut UnboundedReceiver<OutEvent>,
+    graph: &mut Graph,
+    deadline: tokio::time::Instant,
+    ok: impl Fn(&CustomTable) -> bool,
+) -> bool {
+    loop {
+        let Ok(ev) = tokio::time::timeout_at(deadline, rx.recv()).await else {
+            return false;
+        };
+        match ev.expect("emitter open") {
+            OutEvent::CustomTable(t) if ok(&t) => return true,
+            OutEvent::GraphSnapshot(g) => *graph = g,
+            OutEvent::GraphDelta(d) => apply_delta(graph, d),
+            _ => {}
+        }
+    }
+}
+
+/// The smoke CRD's kind, table, live watch, edits, and a CR owner on the graph.
+/// Takes the session by value: discovery and the table go through the commands' own entry
+/// points, which work on the app's `Mutex<Option<Session>>`.
+async fn exercise_custom(session: Session, rx: &mut UnboundedReceiver<OutEvent>, graph: &mut Graph, context: &str) -> Session {
+    // Discovery finds the smoke kind with its printer columns.
+    let sessions = Mutex::new(Some(session));
+    let bound = resolve_kind(&sessions, "wiringsmoke.example.com", "", "WiringSmoke", discovery::discover)
+        .await
+        .expect("the smoke CRD is discovered");
+    let (kind, client) = (bound.kind, bound.client);
+    assert!(kind.resource.namespaced);
+    assert_eq!(kind.resource.plural, "wiringsmokes");
+    assert_eq!(kind.resource.version, "v1");
+    assert_eq!(
+        kind.columns.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+        vec!["Size", "Age"]
+    );
+
+    // Its table (Name, Size, Age), then the live watch the list started.
+    let listed = kind.clone();
+    let table = list_custom(&sessions, move || async move { Ok(listed) }).await.unwrap();
+    let row = table
+        .table
+        .rows
+        .iter()
+        .find(|r| r.node_id == SMOKE_CR)
+        .unwrap_or_else(|| panic!("alpha in {:?}", table.table.rows));
+    assert_eq!(row.cells.get(1).map(|c| c.text.as_str()), Some("small"), "{:?}", row.cells);
+    let mut session = sessions.into_inner().expect("the session is still there");
+    assert_eq!(session.open_custom(), Some(&kind.resource));
+    kubectl(
+        context,
+        &[
+            "-n",
+            NAMESPACE,
+            "patch",
+            "wiringsmoke",
+            "alpha",
+            "--type=merge",
+            "-p",
+            r#"{"spec":{"size":"medium"}}"#,
+        ],
+    );
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    let ok = custom_table_until(rx, graph, deadline, |t| {
+        t.resource == kind.resource
+            && t.table
+                .rows
+                .iter()
+                .any(|r| r.node_id == SMOKE_CR && r.cells.get(1).is_some_and(|c| c.text == "medium"))
+    })
+    .await;
+    assert!(ok, "the watched custom table never showed the patch");
+    session.stop_custom();
+    assert!(session.open_custom().is_none());
+
+    // YAML edit through the dynamic API, and a stale edit is a conflict.
+    let id = CustomId::parse(SMOKE_CR).unwrap();
+    let details = ops::get(&client, &kind, &id).await.unwrap();
+    assert!(details.yaml.contains("kind: WiringSmoke"), "{}", details.yaml);
+    let edited = details.yaml.replace("size: medium", "size: large");
+    assert_ne!(edited, details.yaml, "{}", details.yaml);
+    let saved = ops::update(&client, &kind, &id, &edited, false).await.unwrap();
+    assert!(saved.yaml.contains("size: large"), "{}", saved.yaml);
+    let stale = ops::update(&client, &kind, &id, &edited, false).await.unwrap_err();
+    assert_eq!(stale.kind, ErrorKind::Conflict, "{stale:?}");
+
+    // Create and delete a second one; the selected namespace fills in the missing one.
+    let beta =
+        manifest::parse_raw("apiVersion: wiringsmoke.example.com/v1\nkind: WiringSmoke\nmetadata:\n  name: beta\nspec:\n  size: tiny\n")
+            .unwrap();
+    let beta_id = ops::create(&client, &kind, beta, NAMESPACE).await.unwrap();
+    assert_eq!(beta_id, "Custom/wiringsmoke.example.com/v1/WiringSmoke/wiring-smoke/beta");
+    let beta_id = CustomId::parse(&beta_id).unwrap();
+    ops::delete(&client, &kind, &beta_id).await.unwrap();
+    ops::delete(&client, &kind, &beta_id).await.unwrap(); // already gone is not an error
+
+    // A ConfigMap owned by the CR puts the CR on the graph as its owner.
+    let uid = serde_yaml_ng::from_str::<serde_json::Value>(&saved.yaml).unwrap()["metadata"]["uid"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    session
+        .create_object(
+            NAMESPACE,
+            &format!(
+                "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: cr-child\n  ownerReferences:\n  - apiVersion: wiringsmoke.example.com/v1\n    kind: WiringSmoke\n    name: alpha\n    uid: {uid}\ndata:\n  a: b\n"
+            ),
+        )
+        .await
+        .unwrap();
+    let child = format!("ConfigMap/{NAMESPACE}/cr-child");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    let ok = graph_until(rx, graph, deadline, |g| {
+        g.node(SMOKE_CR).is_some_and(|n| n.kind == Kind::Custom)
+            && g.edges
+                .iter()
+                .any(|e| e.source == SMOKE_CR && e.target == child && e.relation == Relation::Owns)
+    })
+    .await;
+    assert!(
+        ok,
+        "the CR owner never reached the graph: {:?}",
+        graph.nodes.iter().map(|n| &n.id).collect::<Vec<_>>()
+    );
+    session
+}
+
+/// A Helm release (one annotated ConfigMap and its storage Secret): listed with its details, and
+/// the storage Secret kept out of the graph and, unless asked for, the Secrets table.
+async fn exercise_helm(session: &Session, rx: &mut UnboundedReceiver<OutEvent>, graph: &mut Graph) {
+    // The Secret first, and in the store before the ConfigMap is created: Secrets and
+    // ConfigMaps are separate watch streams, so only this order makes the graph that first
+    // shows helm-cfg one built from a store that already held the Secret.
+    session.create_object(NAMESPACE, &helm_secret_yaml()).await.unwrap();
+    let storage = format!("sh.helm.release.v1.{SMOKE_RELEASE}.v1");
+    let names = |include: bool| -> Vec<String> {
+        session
+            .list_rows(Kind::Secret, include)
+            .rows
+            .into_iter()
+            .filter_map(|r| r.cells.first().map(|c| c.text.clone()))
+            .collect()
+    };
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    while !names(true).contains(&storage) {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the storage Secret never reached the store: {:?}",
+            names(true)
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    session
+        .create_object(
+            NAMESPACE,
+            &format!("apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: helm-cfg\n  annotations:\n    meta.helm.sh/release-name: {SMOKE_RELEASE}\n    meta.helm.sh/release-namespace: {NAMESPACE}\n"),
+        )
+        .await
+        .unwrap();
+    let helm_cfg = format!("ConfigMap/{NAMESPACE}/helm-cfg");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    let ok = graph_until(rx, graph, deadline, |g| has_node(g, &helm_cfg)).await;
+    assert!(ok, "helm-cfg never reached the graph");
+    assert!(graph.node(&format!("Secret/{NAMESPACE}/{storage}")).is_none());
+    assert!(!names(false).contains(&storage), "{:?}", names(false));
+
+    let shared = session.shared_handle();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    let release = loop {
+        if let Some(r) = shared.helm_releases().into_iter().find(|r| r.name == SMOKE_RELEASE) {
+            if shared
+                .helm_release(NAMESPACE, SMOKE_RELEASE)
+                .is_ok_and(|d| d.resources.contains(&helm_cfg))
+            {
+                break r;
+            }
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the Helm release never listed with its ConfigMap: {:?}",
+            shared.helm_releases()
+        );
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    };
+    assert_eq!(
+        (release.chart.as_str(), release.revision, release.health),
+        ("smoke-0.1.0", 1, Status::Ok),
+        "{release:?}"
+    );
+    let d = shared.helm_release(NAMESPACE, SMOKE_RELEASE).unwrap();
+    assert_eq!(d.values, "replicaCount: 1\n");
+    assert_eq!(d.notes, "smoke notes");
 }
 
 /// Prints how long each phase took (and the total), to spot the slow ones in CI logs.
@@ -702,6 +986,7 @@ async fn graph_snapshot_reflects_applied_fixture() {
         &context,
         &["apply", "-f", concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/smoke-b.yaml")],
     );
+    let crd_guard = install_smoke_crd(&context);
     kubectl(
         &context,
         &["-n", NAMESPACE, "rollout", "status", "deployment/web", "--timeout=180s"],
@@ -790,10 +1075,18 @@ async fn graph_snapshot_reflects_applied_fixture() {
     phases.done("exec");
     exercise_metrics(&session, &context).await;
     phases.done("metrics");
+    // Before the scopes phase, which switches the scope away from the smoke namespace.
+    if crd_guard.is_some() {
+        session = exercise_custom(session, &mut rx, &mut graph, &context).await;
+        phases.done("custom resources");
+        exercise_helm(&session, &mut rx, &mut graph).await;
+        phases.done("helm");
+    }
     exercise_scopes(&mut session, &mut rx, &mut graph).await;
     phases.done("scopes");
 
     session.shutdown().await;
     kubectl(&context, &["delete", "namespace", NAMESPACE, "--wait=false"]);
     kubectl(&context, &["delete", "namespace", NAMESPACE_B, "--wait=false"]);
+    drop(crd_guard); // deletes the smoke CRD; on a panic above, unwinding drops it too
 }

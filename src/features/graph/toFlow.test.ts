@@ -253,3 +253,44 @@ describe("toFlow", () => {
     });
   });
 });
+
+it("hides custom resource owners and their owns edges with the Custom chip", () => {
+  const cr = n("Custom/cert-manager.io/v1/Certificate/p/tls", "Custom");
+  const secret = n("Secret/p/tls", "Secret");
+  const owns = e(cr.id, secret.id, "owns");
+  const input = { nodes: new Map([cr, secret].map((x) => [x.id, x])), edges: new Map([[owns.id, owns]]), search: "", hoveredId: null, expandedGroups: new Set<string>(), selectedId: null };
+  expect(toFlow({ ...input, hiddenKinds: new Set<Kind>() }).edges).toHaveLength(1);
+  const f = toFlow({ ...input, hiddenKinds: new Set<Kind>(["Custom"]) });
+  expect(f.nodes.map((x) => x.id)).toEqual([secret.id]);
+  expect(f.edges).toHaveLength(0);
+});
+
+describe("release highlight", () => {
+  const n = (id: string, kind: GraphNode["kind"]): GraphNode => ({ id, kind, namespace: "shop", name: id.split("/").pop()!, status: "ok", badges: [], group: null });
+  const dep = n("Deployment/shop/web", "Deployment");
+  const group = n("PodGroup/shop/Deployment/web", "PodGroup");
+  const other = n("ConfigMap/shop/other", "ConfigMap");
+  const input = {
+    nodes: new Map([dep, group, other].map((x) => [x.id, x])), edges: new Map(), hiddenKinds: new Set<GraphNode["kind"]>(), search: "",
+    hoveredId: null, selectedId: null, expandedGroups: new Set<string>(),
+  };
+
+  it("dims everything outside the release, counting a member's pod group as a member", () => {
+    const f = toFlow({ ...input, highlightIds: new Set([dep.id]) });
+    const dimmed = Object.fromEntries(f.nodes.map((x) => [x.id, x.data.dimmed]));
+    expect(dimmed).toEqual({ [dep.id]: false, [group.id]: false, [other.id]: true });
+  });
+
+  it("dims nothing without a highlight", () => {
+    expect(toFlow(input).nodes.every((x) => !x.data.dimmed)).toBe(true);
+  });
+
+  it("keeps the selected node and its problem path lit outside the release", () => {
+    const bad: GraphNode = { ...n("Deployment/shop/bad", "Deployment"), status: "warn", problem: { reason: "not ready", message: null, cause: "Pod/shop/bad-1" } };
+    const pod: GraphNode = { ...n("Pod/shop/bad-1", "Pod"), status: "err", problem: { reason: "CrashLoopBackOff", message: null, cause: null } };
+    const f = toFlow({ ...input, nodes: new Map([dep, other, bad, pod].map((x) => [x.id, x])), selectedId: bad.id, highlightIds: new Set([dep.id]) });
+    const dimmed = Object.fromEntries(f.nodes.map((x) => [x.id, x.data.dimmed]));
+    expect(dimmed).toEqual({ [dep.id]: false, [other.id]: true, [bad.id]: false, [pod.id]: false });
+  });
+});
+

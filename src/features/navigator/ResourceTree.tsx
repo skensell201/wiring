@@ -1,16 +1,14 @@
-import { ChevronDown, ChevronRight, Waypoints } from "lucide-react";
-import { useMemo, useState, type ReactNode } from "react";
+import { Waypoints } from "lucide-react";
+import { useMemo, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { kindStats, useAppStore } from "../../app/store";
 import type { Kind, Status } from "../../shared/ipc/types";
 import { Dot } from "../../shared/ui/Dot";
-import { KIND_PLURAL, SECTIONS, type Section } from "./kindTree";
+import { CustomSection } from "./CustomSection";
+import { HelmSection } from "./HelmSection";
+import { KIND_PLURAL, SECTIONS } from "./kindTree";
 import { SectionLabel } from "./SectionLabel";
-import { SECTION_ICONS } from "./sectionIcons";
-
-const ROW = "flex h-8 w-full items-center gap-2.5 rounded-lg pr-3 text-left text-sm";
-const ACTIVE = "inset-hairline bg-surface text-text-hi";
-const IDLE = "text-text-dim hover:bg-surface hover:text-text-hi";
+import { ACTIVE, IDLE, ROW, SectionGroup } from "./treeParts";
 
 /** Overview plus the resource categories, each kind with its live count and worst status. */
 export function ResourceTree() {
@@ -45,22 +43,8 @@ export function ResourceTree() {
           ))}
         </SectionGroup>
       ))}
-    </div>
-  );
-}
-
-function SectionGroup({ section, open, onToggle, children }: { section: Section; open: boolean; onToggle: () => void; children: ReactNode }) {
-  const Icon = SECTION_ICONS[section.id];
-  const Chevron = open ? ChevronDown : ChevronRight;
-  return (
-    <div className="mt-3">
-      <button type="button" aria-expanded={open} onClick={onToggle}
-        className="flex w-full items-center gap-2 rounded-lg px-3 py-1 text-xs font-medium text-text-muted hover:text-text">
-        <Chevron className="size-3 shrink-0" />
-        {Icon && <Icon className="size-3.5 shrink-0" />}
-        <span>{section.label}</span>
-      </button>
-      {open && children}
+      <CustomSection />
+      <HelmSection />
     </div>
   );
 }

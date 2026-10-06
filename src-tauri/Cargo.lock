@@ -6048,6 +6048,7 @@ version = "0.4.0"
 dependencies = [
  "base64 0.22.1",
  "dirs",
+ "flate2",
  "futures",
  "http",
  "k8s-openapi",

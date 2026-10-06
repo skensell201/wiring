@@ -2,7 +2,7 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { initialState, useAppStore } from "../../app/store";
 import { CreateDialog } from "./CreateDialog";
-import { template } from "./templates";
+import { customTemplate, template } from "./templates";
 
 // create_object answers with the new object's id, as the backend does; everything else with null.
 vi.mock("../../shared/ipc/tauri", () => ({ invoke: vi.fn(async (cmd: string) => (cmd === "create_object" ? "ConfigMap/shop/created" : null)), listen: vi.fn(async () => () => {}), Channel: class { onmessage: (m: unknown) => void = () => {}; } }));
@@ -91,5 +91,39 @@ describe("CreateDialog", () => {
     expect(screen.getByLabelText("Namespace").tagName).toBe("INPUT");
     fireEvent.change(screen.getByLabelText("Kind"), { target: { value: "PersistentVolume" } });
     expect(screen.queryByLabelText("Namespace")).toBeNull();
+  });
+
+  it("starts from the open custom kind's template, without the kind picker", () => {
+    const r = { group: "cert-manager.io", version: "v1", kind: "Certificate", plural: "certificates", namespaced: true };
+    useAppStore.setState({ view: { name: "custom", resource: r }, connection: { ...useAppStore.getState().connection, scope: ["shop"], namespaces: ["shop"] } });
+    useAppStore.getState().openCreate();
+    const d = useAppStore.getState().createDialog;
+    expect(d.custom).toEqual(r);
+    expect(d.buffer).toContain("kind: Certificate\n");
+    render(<CreateDialog />);
+    expect(screen.queryByRole("combobox", { name: /Kind/ })).toBeNull();
+    expect(screen.getByText("Certificate")).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "Namespace" })).toBeInTheDocument();
+  });
+
+  it("re-templates a custom kind for a new namespace; a cluster-scoped one has no namespace field", () => {
+    const r = { group: "cert-manager.io", version: "v1", kind: "Certificate", plural: "certificates", namespaced: true };
+    useAppStore.setState({ view: { name: "custom", resource: r }, connection: { ...useAppStore.getState().connection, scope: ["shop"], namespaces: ["shop", "blog"] } });
+    useAppStore.getState().openCreate();
+    useAppStore.getState().setCreateNamespace("blog");
+    expect(useAppStore.getState().createDialog.buffer).toBe(customTemplate(r, "blog"));
+    const issuer = { ...r, kind: "ClusterIssuer", plural: "clusterissuers", namespaced: false };
+    useAppStore.setState({ view: { name: "custom", resource: issuer } });
+    useAppStore.getState().openCreate();
+    render(<CreateDialog />);
+    expect(screen.queryByLabelText("Namespace")).toBeNull();
+    expect((screen.getByLabelText("Manifest") as HTMLTextAreaElement).value).toBe(customTemplate(issuer, "shop"));
+  });
+
+  it("an explicitly requested kind wins over the open custom kind", () => {
+    const r = { group: "cert-manager.io", version: "v1", kind: "Certificate", plural: "certificates", namespaced: true };
+    useAppStore.setState({ view: { name: "custom", resource: r } });
+    useAppStore.getState().openCreate("ConfigMap");
+    expect(useAppStore.getState().createDialog).toMatchObject({ custom: null, kind: "ConfigMap", buffer: template("ConfigMap", "shop") });
   });
 });

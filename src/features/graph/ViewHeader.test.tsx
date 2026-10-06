@@ -65,4 +65,13 @@ describe("ViewHeader", () => {
     render(<ViewHeader />);
     expect(screen.getByText(/1873 objects$/)).toBeInTheDocument();
   });
+
+  it("names the highlighted Helm release on the graph and clears it", () => {
+    useAppStore.setState({ helmSelected: { namespace: "shop", name: "web" }, highlightIds: new Set(["Deployment/shop/web"]) });
+    render(<ViewHeader />);
+    expect(screen.getByText(/highlighted/)).toHaveTextContent("Release web highlighted");
+    fireEvent.click(screen.getByRole("button", { name: "Clear" }));
+    expect(useAppStore.getState().highlightIds.size).toBe(0);
+    expect(screen.queryByText(/highlighted/)).toBeNull();
+  });
 });

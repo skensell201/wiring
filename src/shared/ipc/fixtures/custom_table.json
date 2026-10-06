@@ -1,0 +1,23 @@
+{
+  "resource": { "group": "cert-manager.io", "version": "v1", "kind": "Certificate", "plural": "certificates", "namespaced": true },
+  "table": {
+    "kind": "Custom",
+    "columns": [
+      { "key": "name", "label": "Name", "numeric": false },
+      { "key": "c0", "label": "Ready", "numeric": false },
+      { "key": "age", "label": "Age", "numeric": true }
+    ],
+    "rows": [
+      {
+        "nodeId": "Custom/cert-manager.io/v1/Certificate/shop/web-tls",
+        "status": "ok",
+        "cells": [
+          { "text": "web-tls", "status": null },
+          { "text": "True", "status": null },
+          { "text": "3d", "status": null }
+        ]
+      }
+    ]
+  },
+  "error": null
+}

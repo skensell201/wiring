@@ -6,7 +6,7 @@ export const KINDS = [
   "Deployment", "StatefulSet", "DaemonSet", "ReplicaSet", "Job", "CronJob", "Pod", "Service", "Ingress",
   "ConfigMap", "Secret", "PersistentVolumeClaim", "PersistentVolume", "ServiceAccount", "HorizontalPodAutoscaler",
   "NetworkPolicy", "Role", "RoleBinding", "ClusterRole", "ClusterRoleBinding", "Node",
-  "PodGroup",
+  "PodGroup", "Custom",
 ] as const;
 export type Kind = (typeof KINDS)[number];
 
@@ -75,6 +75,28 @@ export interface TableColumn { key: string; label: string; numeric: boolean }
 export interface TableCell { text: string; status: Status | null }
 export interface TableRow { nodeId: NodeId; status: Status; cells: TableCell[] }
 export interface Table { kind: Kind; columns: TableColumn[]; rows: TableRow[] }
+
+/** A custom kind as the dynamic API addresses it (`group` is empty for the core group). */
+export interface ResourceRef { group: string; version: string; kind: string; plural: string; namespaced: boolean }
+export interface PrinterColumn { name: string; jsonPath: string; type: string }
+export interface CustomKind { resource: ResourceRef; columns: PrinterColumn[] }
+/** `list_custom`'s answer and the `custom_table` event: the rows of one custom kind. */
+export interface CustomTable {
+  resource: ResourceRef; table: Table;
+  /** Null except on the last `custom_table` event of a table whose watch ended for good; the rows are then empty. */
+  error: string | null;
+}
+
+export interface HelmRelease {
+  name: string; namespace: string; chart: string; appVersion: string; revision: number;
+  /** Helm's own status (`deployed`, `failed`, `pending-upgrade`, …); `health` is its colour. */
+  status: string; health: Status; updated: string | null;
+}
+export interface HelmRevision { revision: number; chart: string; appVersion: string; status: string; health: Status; updated: string | null; description: string }
+export interface HelmReleaseDetails {
+  release: HelmRelease; description: string; firstDeployed: string | null; lastDeployed: string | null;
+  values: string; notes: string; history: HelmRevision[]; resources: NodeId[];
+}
 
 export interface LogLine { pod: string; container: string; text: string }
 export type LogMessage =
@@ -195,6 +217,27 @@ function isTableRowWithColumns(columns: number) {
 export function isTable(v: unknown): v is Table {
   return isObj(v) && oneOf(KINDS, v.kind) && arrayOf(v.columns, isTableColumn)
     && arrayOf(v.rows, isTableRowWithColumns(v.columns.length));
+}
+export function isResourceRef(v: unknown): v is ResourceRef {
+  return isObj(v) && isStr(v.group) && isStr(v.version) && isStr(v.kind) && isStr(v.plural) && typeof v.namespaced === "boolean";
+}
+const isPrinterColumn = (v: unknown): v is PrinterColumn => isObj(v) && isStr(v.name) && isStr(v.jsonPath) && isStr(v.type);
+export function isCustomKind(v: unknown): v is CustomKind {
+  return isObj(v) && isResourceRef(v.resource) && arrayOf(v.columns, isPrinterColumn);
+}
+export function isCustomTable(v: unknown): v is CustomTable {
+  return isObj(v) && isResourceRef(v.resource) && isTable(v.table) && v.table.kind === "Custom" && isStrOrNull(v.error);
+}
+export function isHelmRelease(v: unknown): v is HelmRelease {
+  return isObj(v) && isStr(v.name) && isStr(v.namespace) && isStr(v.chart) && isStr(v.appVersion) && typeof v.revision === "number"
+    && isStr(v.status) && oneOf(STATUSES, v.health) && isStrOrNull(v.updated);
+}
+const isHelmRevision = (v: unknown): v is HelmRevision =>
+  isObj(v) && typeof v.revision === "number" && isStr(v.chart) && isStr(v.appVersion) && isStr(v.status)
+  && oneOf(STATUSES, v.health) && isStrOrNull(v.updated) && isStr(v.description);
+export function isHelmReleaseDetails(v: unknown): v is HelmReleaseDetails {
+  return isObj(v) && isHelmRelease(v.release) && isStr(v.description) && isStrOrNull(v.firstDeployed) && isStrOrNull(v.lastDeployed)
+    && isStr(v.values) && isStr(v.notes) && arrayOf(v.history, isHelmRevision) && arrayOf(v.resources, isStr);
 }
 export function isConnectionState(v: unknown): v is ConnectionState { return oneOf(CONNECTION_STATES, v); }
 const isLogLine = (v: unknown): v is LogLine => isObj(v) && isStr(v.pod) && isStr(v.container) && isStr(v.text);

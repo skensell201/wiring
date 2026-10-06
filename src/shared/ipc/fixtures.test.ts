@@ -3,9 +3,13 @@ import appError from "./fixtures/app_error.json";
 import connectInfo from "./fixtures/connect_info.json";
 import connectionState from "./fixtures/connection_state.json";
 import contextInfo from "./fixtures/context_info.json";
+import customKind from "./fixtures/custom_kind.json";
+import customTable from "./fixtures/custom_table.json";
 import execMessage from "./fixtures/exec_message.json";
 import execPod from "./fixtures/exec_pod.json";
 import forward from "./fixtures/forward.json";
+import helmRelease from "./fixtures/helm_release.json";
+import helmReleaseDetails from "./fixtures/helm_release_details.json";
 import graph from "./fixtures/graph.json";
 import graphExtras from "./fixtures/graph_extras.json";
 import graphTooLarge from "./fixtures/graph_too_large.json";
@@ -21,12 +25,24 @@ import updateCheck from "./fixtures/update_check.json";
 import updateProgress from "./fixtures/update_progress.json";
 import {
   CONNECTION_STATES, ERROR_KINDS, KINDS, RELATIONS, STATUSES,
-  isAppError, isConnectInfo, isConnectionState, isContextInfo, isExecMessage, isExecPod, isForward, isGraph, isGraphDelta, isGraphNode, isLogMessage, isMetricsUpdate, isObjectDetails, isObjectEvents, isPortOption, isRevision, isTable, isUpdateCheck, isUpdateProgress,
+  isAppError, isConnectInfo, isConnectionState, isContextInfo, isCustomKind, isCustomTable, isHelmRelease, isHelmReleaseDetails, isExecMessage, isExecPod, isForward, isGraph, isGraphDelta, isGraphNode, isLogMessage, isMetricsUpdate, isObjectDetails, isObjectEvents, isPortOption, isRevision, isTable, isUpdateCheck, isUpdateProgress,
 } from "./types";
 
 // The JSON files are the contract shared with the Rust side (guarded there by
 // src-tauri/tests/ipc_fixtures.rs). These guards make sure the TS mirrors keep up.
 describe("IPC fixtures match the TypeScript types", () => {
+  it("custom_kind", () => expect(isCustomKind(customKind)).toBe(true));
+  it("custom_table", () => expect(isCustomTable(customTable)).toBe(true));
+  it("rejects a custom table of a built-in kind", () => expect(isCustomTable({ ...customTable, table: { ...customTable.table, kind: "Pod" } })).toBe(false));
+  it("accepts a custom table that ended with an error", () =>
+    expect(isCustomTable({ ...customTable, table: { ...customTable.table, rows: [] }, error: "No access to Certificate (RBAC)" })).toBe(true));
+  it("rejects a custom table without an error field", () => {
+    const { error: _error, ...rest } = customTable;
+    expect(isCustomTable(rest)).toBe(false);
+  });
+  it("helm_release", () => expect(isHelmRelease(helmRelease)).toBe(true));
+  it("rejects a helm release with an unknown health", () => expect(isHelmRelease({ ...helmRelease, health: "great" })).toBe(false));
+  it("helm_release_details", () => expect(isHelmReleaseDetails(helmReleaseDetails)).toBe(true));
   it("context_info", () => expect(isContextInfo(contextInfo)).toBe(true));
   it("connect_info", () => expect(isConnectInfo(connectInfo)).toBe(true));
   it("graph", () => expect(isGraph(graph)).toBe(true));
@@ -64,7 +80,7 @@ describe("IPC fixtures match the TypeScript types", () => {
   });
 
   it("enum lists match docs/ipc-contract.md", () => {
-    expect(KINDS).toHaveLength(22);
+    expect(KINDS).toHaveLength(23);
     expect(KINDS).toContain("PodGroup");
     expect(STATUSES).toEqual(["ok", "warn", "err", "unknown"]);
     expect(RELATIONS).toEqual(["owns", "selects", "routes", "mounts", "envFrom", "claims", "binds", "usesSA", "scales", "applies", "allows", "grants", "subject", "runsOn"]);

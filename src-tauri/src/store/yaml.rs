@@ -41,6 +41,7 @@ impl Object {
             Kind::ClusterRoleBinding => de!(ClusterRoleBinding),
             Kind::Node => de!(Node),
             Kind::PodGroup => Err("PodGroup is synthetic and cannot be loaded".into()),
+            Kind::Custom => Err("custom resources are not stored".into()),
         }
     }
 }

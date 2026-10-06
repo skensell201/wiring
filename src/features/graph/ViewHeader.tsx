@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { kindStats, useAppStore } from "../../app/store";
+import { refKey } from "../../shared/customId";
 import { scopeLabel } from "../../shared/scope";
 import type { Kind } from "../../shared/ipc/types";
 import { KIND_PLURAL, sectionOf } from "../navigator/kindTree";
@@ -9,11 +10,13 @@ import { KindChips } from "./KindChips";
 /** Title of the centre pane (the category above it for a table, the kind filter under it for the
  *  graph) plus the Graph | Table switch. */
 export function ViewHeader() {
-  const { view, nodes, tooLarge, table, scope, namespaces, lastTableKind, hiddenKinds, deniedKinds, showGraph, showTable, toggleKind } = useAppStore(
+  const { view, nodes, tooLarge, table, customTables, helmReleases, scope, namespaces, lastTableKind, hiddenKinds, deniedKinds, showGraph, showTable, toggleKind, release, highlighted, clearRelease } = useAppStore(
     useShallow((s) => ({
-      view: s.view, nodes: s.nodes, tooLarge: s.tooLarge, table: s.view.name === "table" ? s.tables.get(s.view.kind) : undefined, scope: s.connection.scope, namespaces: s.connection.namespaces,
+      view: s.view, nodes: s.nodes, tooLarge: s.tooLarge, table: s.view.name === "table" ? s.tables.get(s.view.kind) : undefined,
+      customTables: s.customTables, helmReleases: s.helmReleases, scope: s.connection.scope, namespaces: s.connection.namespaces,
       lastTableKind: s.lastTableKind, hiddenKinds: s.hiddenKinds, deniedKinds: s.deniedKinds,
       showGraph: s.showGraph, showTable: s.showTable, toggleKind: s.toggleKind,
+      release: s.helmSelected, highlighted: s.highlightIds.size > 0, clearRelease: s.clearRelease,
     })),
   );
   const stats = useMemo(
@@ -28,10 +31,18 @@ export function ViewHeader() {
     count = 0;
     if (tooLarge) count = tooLarge.nodes;
     else for (const s of stats.values()) count += s.count;
-  } else {
+  } else if (view.name === "table") {
     title = KIND_PLURAL[view.kind];
     eyebrow = sectionOf(view.kind)?.label ?? null;
     count = table ? table.rows.length : stats.get(view.kind)?.count ?? 0;
+  } else if (view.name === "custom") {
+    title = view.resource.kind;
+    eyebrow = view.resource.group || "core";
+    count = customTables.get(refKey(view.resource))?.rows.length ?? 0;
+  } else {
+    title = "Releases";
+    eyebrow = "Helm";
+    count = helmReleases?.length ?? 0;
   }
   const label = scopeLabel(scope, namespaces);
   const caption = `${label ? `${label} · ` : ""}${count} ${count === 1 ? "object" : "objects"}`;
@@ -48,12 +59,21 @@ export function ViewHeader() {
         {view.name === "graph" && (
           <div className="mt-3 pb-1">
             <KindChips hidden={hiddenKinds} denied={deniedKinds} present={present} onToggle={toggleKind} />
+            {release && highlighted && (
+              <div className="mt-2 flex items-center gap-2 text-xs text-text-muted">
+                <span>Release <span className="text-text-hi">{release.name}</span> highlighted</span>
+                <span aria-hidden>·</span>
+                <button type="button" onClick={clearRelease} className="font-medium text-accent hover:text-text-hi">Clear</button>
+              </div>
+            )}
           </div>
         )}
       </div>
       <div role="group" aria-label="View" className="ml-auto flex gap-6">
         <Segment active={view.name === "graph"} onClick={showGraph}>Graph</Segment>
-        <Segment active={view.name === "table"} disabled={tableKind === null} onClick={() => { if (tableKind) void showTable(tableKind); }}>Table</Segment>
+        {/* Active for every non-graph view; it only switches to a built-in table from the graph or a built-in table. */}
+        <Segment active={view.name !== "graph"} disabled={view.name === "graph" && tableKind === null}
+          onClick={() => { if ((view.name === "graph" || view.name === "table") && tableKind) void showTable(tableKind); }}>Table</Segment>
       </div>
     </div>
   );

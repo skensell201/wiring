@@ -20,8 +20,28 @@ fn invalid(message: impl Into<String>) -> AppError {
     AppError::new(ErrorKind::Invalid, message)
 }
 
-/// Parse exactly one YAML document with a watched `kind` and a `metadata.name`.
-pub fn parse(yaml: &str) -> AppResult<Manifest> {
+/// One parsed object of any kind (custom resources included), before its kind is resolved.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RawManifest {
+    pub api_version: Option<String>,
+    pub kind: String,
+    pub name: String,
+    pub namespace: Option<String>,
+    pub body: serde_json::Value,
+}
+
+/// Parse exactly one YAML document with a `kind` and a `metadata.name`.
+pub fn parse_raw(yaml: &str) -> AppResult<RawManifest> {
+    parse_raw_with(yaml, |name| {
+        if crate::custom::id::is_path_segment_name(name) {
+            Ok(())
+        } else {
+            Err(invalid(format!("metadata.name `{name}` is not a valid object name")))
+        }
+    })
+}
+
+fn parse_raw_with(yaml: &str, check_name: impl Fn(&str) -> AppResult<()>) -> AppResult<RawManifest> {
     let mut docs = Vec::new();
     for doc in serde_yaml_ng::Deserializer::from_str(yaml) {
         let value = serde_json::Value::deserialize(doc).map_err(|e| invalid(format!("YAML parse error: {e}")))?;
@@ -37,11 +57,12 @@ pub fn parse(yaml: &str) -> AppResult<Manifest> {
     if !body.is_object() {
         return Err(invalid("manifest must be a YAML mapping"));
     }
-    let kind_str = body
+    let kind = body
         .get("kind")
         .and_then(|k| k.as_str())
-        .ok_or_else(|| invalid("`kind` is missing"))?;
-    let kind = Kind::parse(kind_str).ok_or_else(|| invalid(format!("kind {kind_str} is not supported")))?;
+        .ok_or_else(|| invalid("`kind` is missing"))?
+        .to_string();
+    let api_version = body.get("apiVersion").and_then(Value::as_str).map(str::to_owned);
     let metadata = body.get("metadata").filter(|m| m.is_object());
     let name = match metadata.and_then(|m| m.get("name")) {
         None | Some(Value::Null) => return Err(invalid("`metadata.name` is missing")),
@@ -49,7 +70,7 @@ pub fn parse(yaml: &str) -> AppResult<Manifest> {
         Some(Value::String(name)) => name.clone(),
         Some(_) => return Err(invalid("metadata.name must be a string")),
     };
-    validate_dns_subdomain("metadata.name", &name)?;
+    check_name(&name)?;
     let namespace = match metadata.and_then(|m| m.get("namespace")) {
         None | Some(Value::Null) => None,
         Some(Value::String(ns)) if ns.is_empty() => None,
@@ -59,11 +80,24 @@ pub fn parse(yaml: &str) -> AppResult<Manifest> {
     if let Some(ns) = &namespace {
         validate_dns_subdomain("metadata.namespace", ns)?;
     }
-    Ok(Manifest {
+    Ok(RawManifest {
+        api_version,
         kind,
         name,
         namespace,
         body,
+    })
+}
+
+/// Parse exactly one YAML document with a watched `kind` and a `metadata.name`.
+pub fn parse(yaml: &str) -> AppResult<Manifest> {
+    let raw = parse_raw_with(yaml, |name| validate_dns_subdomain("metadata.name", name))?;
+    let kind = Kind::parse(&raw.kind).ok_or_else(|| invalid(format!("kind {} is not supported", raw.kind)))?;
+    Ok(Manifest {
+        kind,
+        name: raw.name,
+        namespace: raw.namespace,
+        body: raw.body,
     })
 }
 
@@ -260,5 +294,31 @@ mod tests {
 
         let pv = parse("apiVersion: v1\nkind: PersistentVolume\nmetadata:\n  name: pv-1\n  namespace: ignored\n").unwrap();
         assert!(ensure_matches(&pv, "PersistentVolume//pv-1").is_ok());
+    }
+
+    #[test]
+    fn parse_raw_accepts_any_kind_and_keeps_the_api_version() {
+        let m = parse_raw("apiVersion: cert-manager.io/v1\nkind: Certificate\nmetadata:\n  name: web-tls\n  namespace: shop\nspec: {}\n")
+            .unwrap();
+        assert_eq!(m.api_version.as_deref(), Some("cert-manager.io/v1"));
+        assert_eq!(
+            (m.kind.as_str(), m.name.as_str(), m.namespace.as_deref()),
+            ("Certificate", "web-tls", Some("shop"))
+        );
+        assert!(
+            parse("apiVersion: cert-manager.io/v1\nkind: Certificate\nmetadata:\n  name: web-tls\n")
+                .unwrap_err()
+                .message
+                .contains("not supported")
+        );
+    }
+
+    #[test]
+    fn raw_manifests_accept_path_segment_names_but_built_ins_stay_dns() {
+        let yaml = "apiVersion: x.io/v1\nkind: Thing\nmetadata:\n  name: Web:TLS\n  namespace: shop\n";
+        assert_eq!(parse_raw(yaml).unwrap().name, "Web:TLS");
+        assert!(parse_raw(&yaml.replace("Web:TLS", "a/b")).is_err());
+        let cm = "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: Web:TLS\n";
+        assert!(parse(cm).is_err());
     }
 }

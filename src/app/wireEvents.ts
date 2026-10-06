@@ -1,10 +1,21 @@
+import { refKey } from "../shared/customId";
 import { commands } from "../shared/ipc/commands";
 import { listenAll } from "../shared/ipc/events";
 import type { GraphDelta, Kind } from "../shared/ipc/types";
 import { kindOf, USAGE_KINDS } from "../features/actions/actionKinds";
 import { useUpdateStore } from "../features/update/updateStore";
 import { disconnectedState, requestDetailsRefresh, useAppStore } from "./store";
-import { cancelTableRefresh, scheduleTableRefresh } from "./tableRefresh";
+import { cancelTableRefresh, scheduleTableRefresh, TABLE_REFRESH_DEBOUNCE_MS } from "./tableRefresh";
+
+/** Its own debounce, not the table one: a release change must not cancel a pending table refresh. */
+let helmTimer: ReturnType<typeof setTimeout> | null = null;
+function scheduleHelmRefresh(): void {
+  if (helmTimer !== null) clearTimeout(helmTimer);
+  helmTimer = setTimeout(() => {
+    helmTimer = null;
+    void useAppStore.getState().refreshHelm();
+  }, TABLE_REFRESH_DEBOUNCE_MS);
+}
 
 /** Whether a delta changes rows that a `kind` table would show. `PodGroup` nodes collapse pods,
  *  so any PodGroup touched by the delta also counts as touching `Pod`. Single ReplicaSets are
@@ -26,6 +37,9 @@ export function wireEvents(): Promise<() => void> {
       s().applySnapshot(g);
       const view = s().view;
       if (view.name === "table") void s().refreshTable(view.kind);
+      // A scope switch stopped the custom watch and changed the Secrets Helm reads; re-list both.
+      if (view.name === "custom") void s().refreshCustom(view.resource);
+      if (view.name === "helm") void s().refreshHelm();
       // A too-large snapshot carries no nodes to diff the open details against; the backend sends
       // one per (debounced) rebuild, so it is the details' cue to reload too.
       if (g.tooLarge) requestDetailsRefresh();
@@ -42,6 +56,16 @@ export function wireEvents(): Promise<() => void> {
     forwards_changed: (forwards) => s().setForwards(forwards),
     update_progress: (p) => useUpdateStore.getState().setProgress(p),
     menu_check_updates: () => void useUpdateStore.getState().check(true),
+    // The releases are read from storage Secrets, which are no graph nodes: this is their only
+    // change signal. Re-read for the Helm view, or to keep the navigator's count fresh.
+    helm_changed: () => {
+      if (s().view.name === "helm" || s().helmReleases !== null) scheduleHelmRefresh();
+    },
+    // Only the table on screen: a late event of a table just left must not resurrect it.
+    custom_table: (t) => {
+      const view = s().view;
+      if (view.name === "custom" && refKey(view.resource) === refKey(t.resource)) s().applyCustomTable(t);
+    },
     metrics_updated: () => {
       const view = s().view;
       if (view.name === "table" && USAGE_KINDS.has(view.kind)) {

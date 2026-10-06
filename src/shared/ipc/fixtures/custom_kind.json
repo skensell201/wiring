@@ -1,0 +1,6 @@
+{
+  "resource": { "group": "cert-manager.io", "version": "v1", "kind": "Certificate", "plural": "certificates", "namespaced": true },
+  "columns": [
+    { "name": "Ready", "jsonPath": ".status.conditions[?(@.type==\"Ready\")].status", "type": "string" }
+  ]
+}

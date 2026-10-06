@@ -1,5 +1,6 @@
 //! One live connection to a cluster: watchers, store, graph, events.
 
+pub mod custom;
 pub mod emitter;
 pub mod metrics;
 pub mod reducer;
@@ -8,6 +9,8 @@ pub mod scope;
 pub mod shared;
 pub mod watch;
 pub mod write;
+
+pub(crate) use write::{delete_one, ensure_resource_version, kube_err, set_current_identity, with_strict_validation};
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
@@ -130,7 +133,19 @@ pub struct Session {
     /// The namespaces `connect` listed, which a forbidden cluster-wide watch falls back to;
     /// `None` when listing namespaces was forbidden, and then all namespaces is refused.
     namespaces: Option<Vec<String>>,
+    /// Custom kinds from discovery; `None` until the first `custom_kinds` call (discovery is lazy).
+    custom_kinds: Option<Vec<crate::discovery::CustomKind>>,
+    /// The watcher behind the open custom table, if any.
+    custom_watch: Option<custom::CustomWatch>,
+    /// Bumped by every custom table request and `stop_custom`; see `session::custom`.
+    custom_token: u64,
+    /// Where custom tables are listed and watched (the cluster; a fake in tests).
+    custom_source: Arc<dyn crate::custom::ops::Source>,
+    /// See `Session::generation`.
+    generation: u64,
 }
+
+static NEXT_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 impl Session {
     pub async fn connect(kubeconfig: Kubeconfig, context: &str, emitter: Arc<dyn Emitter>) -> AppResult<(Session, ConnectInfo)> {
@@ -176,7 +191,6 @@ impl Session {
         let execs = ExecSessions::new(Arc::new(KubeExec::new(client.clone())));
         let forwards = ForwardManager::new(Arc::new(KubeConnector::new(client.clone())), emitter.clone());
         Session {
-            client,
             shared: Shared::default(),
             ns_emitter: ClosableEmitter::new(emitter.clone()),
             emitter,
@@ -189,6 +203,12 @@ impl Session {
             execs,
             scope: None,
             namespaces: None,
+            custom_kinds: None,
+            custom_watch: None,
+            custom_token: 0,
+            custom_source: Arc::new(crate::custom::ops::KubeSource::new(client.clone())),
+            generation: NEXT_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            client,
         }
     }
 
@@ -287,10 +307,10 @@ impl Session {
         object_details(&store, &graph, node_id)
     }
 
-    pub fn list_rows(&self, kind: Kind) -> Table {
+    pub fn list_rows(&self, kind: Kind, include_helm_storage: bool) -> Table {
         let table = {
             let store = self.shared.store();
-            crate::graph::rows::table(&store, kind, k8s_openapi::jiff::Timestamp::now())
+            crate::graph::rows::table_filtered(&store, kind, k8s_openapi::jiff::Timestamp::now(), include_helm_storage)
         };
         if self.scope.as_ref().is_some_and(scope::NamespaceScope::is_multi) {
             crate::graph::rows::with_namespace_column(table)
@@ -309,12 +329,18 @@ impl Session {
         if kind == Kind::PodGroup {
             return Ok(());
         }
-        let uid = {
-            let store = self.shared.store();
-            store
-                .find(kind, ns.as_deref(), &name)
-                .and_then(|o| o.uid().map(str::to_owned))
-                .ok_or_else(|| AppError::new(ErrorKind::NotFound, format!("{node_id} not in store")))?
+        let selector = if kind == Kind::Custom {
+            let c = crate::custom::id::CustomId::parse(node_id)?;
+            custom_events_selector(&c)
+        } else {
+            let uid = {
+                let store = self.shared.store();
+                store
+                    .find(kind, ns.as_deref(), &name)
+                    .and_then(|o| o.uid().map(str::to_owned))
+                    .ok_or_else(|| AppError::new(ErrorKind::NotFound, format!("{node_id} not in store")))?
+            };
+            format!("involvedObject.uid={uid}")
         };
         // Cluster-scoped objects (e.g. PersistentVolume) have no namespace of their own; the
         // `involvedObject.uid` field selector below already narrows the watch to that one
@@ -326,7 +352,7 @@ impl Session {
         let emitter: Arc<dyn Emitter> = Arc::new(self.ns_emitter.clone());
         let node_id = node_id.to_string();
         self.events_task = Some(tokio::spawn(async move {
-            let cfg = watcher::Config::default().fields(&format!("involvedObject.uid={uid}"));
+            let cfg = watcher::Config::default().fields(&selector);
             let stream = watcher(api, cfg).default_backoff().boxed();
             forward_object_events(node_id, stream, emitter).await;
         }));
@@ -400,6 +426,7 @@ impl Session {
             session.close();
         }
         self.logs.clear();
+        self.stop_custom();
         // Close before aborting: an abort only lands at the task's next `.await`, and a
         // reducer mid-rebuild would otherwise still emit one snapshot of the old namespace.
         self.ns_emitter.close();
@@ -469,8 +496,34 @@ where
     }
 }
 
-/// `"Kind/ns/name"`; cluster-scoped `"Kind//name"`; PodGroup `"PodGroup/ns/OwnerKind/ownerName"`.
+/// `"Kind/ns/name"`; cluster-scoped `"Kind//name"`; PodGroup `"PodGroup/ns/OwnerKind/ownerName"`;
+/// custom resources `"Custom/group/version/kind/ns/name"` (see `custom::id`).
+/// Escape a value for a field selector: `\`, `,` and `=` are special there.
+fn escape_selector_value(v: &str) -> String {
+    let mut out = String::with_capacity(v.len());
+    for c in v.chars() {
+        if matches!(c, '\\' | ',' | '=') {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// Events of a custom resource, matched by kind, name and API version (no uid is stored).
+fn custom_events_selector(c: &crate::custom::id::CustomId) -> String {
+    format!(
+        "involvedObject.kind={},involvedObject.name={},involvedObject.apiVersion={}",
+        escape_selector_value(&c.kind),
+        escape_selector_value(&c.name),
+        escape_selector_value(&c.api_version())
+    )
+}
+
 pub fn parse_node_id(id: &str) -> AppResult<(Kind, Option<String>, String)> {
+    if let Some(c) = crate::custom::id::CustomId::of(id)? {
+        return Ok((Kind::Custom, c.namespace, c.name));
+    }
     let mut parts = id.splitn(3, '/');
     let (Some(kind), Some(ns), Some(name)) = (parts.next(), parts.next(), parts.next()) else {
         return Err(AppError::new(ErrorKind::NotFound, format!("malformed node id `{id}`")));
@@ -484,17 +537,20 @@ pub fn parse_node_id(id: &str) -> AppResult<(Kind, Option<String>, String)> {
     Ok((kind, ns, name.to_string()))
 }
 
+/// Graph neighbours of `node_id`, sorted and deduplicated.
+fn related_in(graph: &Graph, node_id: &str) -> Vec<NodeId> {
+    let mut r: Vec<NodeId> = graph
+        .edges_touching(node_id)
+        .map(|e| if e.source == node_id { e.target.clone() } else { e.source.clone() })
+        .collect();
+    r.sort();
+    r.dedup();
+    r
+}
+
 pub fn object_details(store: &Store, graph: &Graph, node_id: &str) -> AppResult<ObjectDetails> {
     let (kind, ns, name) = parse_node_id(node_id)?;
-    let related: Vec<NodeId> = {
-        let mut r: Vec<NodeId> = graph
-            .edges_touching(node_id)
-            .map(|e| if e.source == node_id { e.target.clone() } else { e.source.clone() })
-            .collect();
-        r.sort();
-        r.dedup();
-        r
-    };
+    let related = related_in(graph, node_id);
     if kind == Kind::PodGroup {
         let node = graph
             .node(node_id)
@@ -574,10 +630,31 @@ pub fn events_to_list(events: &BTreeMap<String, CoreEvent>) -> Vec<K8sEvent> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn selector_values_are_escaped() {
+        assert_eq!(escape_selector_value(r"a,b=c\d"), r"a\,b\=c\\d");
+        let c = crate::custom::id::CustomId::parse("Custom/x.io/v1/Thing/ns/a,b=c").unwrap();
+        assert_eq!(
+            custom_events_selector(&c),
+            r"involvedObject.kind=Thing,involvedObject.name=a\,b\=c,involvedObject.apiVersion=x.io/v1"
+        );
+    }
+
+    #[test]
+    fn custom_event_selector_names_the_api_group() {
+        let c = crate::custom::id::CustomId::parse("Custom/cert-manager.io/v1/Certificate/shop/web-tls").unwrap();
+        assert_eq!(
+            custom_events_selector(&c),
+            "involvedObject.kind=Certificate,involvedObject.name=web-tls,involvedObject.apiVersion=cert-manager.io/v1"
+        );
+        let core = crate::custom::id::CustomId::parse("Custom//v1/Thing/shop/a").unwrap();
+        assert!(custom_events_selector(&core).ends_with("involvedObject.apiVersion=v1"));
+    }
+
     use super::*;
     use crate::store::{Kind, Store};
 
-    fn offline_session() -> Session {
+    pub(super) fn offline_session() -> Session {
         use crate::session::emitter::ChannelEmitter;
         let (emitter, _rx) = ChannelEmitter::new();
         let client = Client::try_from(Config::new("https://127.0.0.1:1".parse().unwrap())).unwrap();
@@ -779,6 +856,19 @@ mod tests {
         );
         assert!(parse_node_id("garbage").is_err());
         assert!(parse_node_id("Namespace/x/y").is_err());
+    }
+
+    #[test]
+    fn parses_custom_node_ids() {
+        assert_eq!(
+            parse_node_id("Custom/cert-manager.io/v1/Certificate/shop/web-tls").unwrap(),
+            (Kind::Custom, Some("shop".to_string()), "web-tls".to_string())
+        );
+        assert_eq!(
+            parse_node_id("Custom/x.io/v1/Thing//t").unwrap(),
+            (Kind::Custom, None, "t".to_string())
+        );
+        assert!(parse_node_id("Custom/x.io/v1").is_err());
     }
 
     #[test]

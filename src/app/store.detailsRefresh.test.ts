@@ -192,3 +192,40 @@ describe("details refresh on graph changes", () => {
     }
   });
 });
+
+describe("details refresh on custom table updates", () => {
+  const CERT = "Custom/cert-manager.io/v1/Certificate/p/web-tls";
+  const resource = { group: "cert-manager.io", version: "v1", kind: "Certificate", plural: "certificates", namespaced: true };
+  const tableWith = (ids: string[]) => ({
+    kind: "Custom" as const, columns: [{ key: "name", label: "Name", numeric: false }],
+    rows: ids.map((nodeId) => ({ nodeId, status: "ok" as const, cells: [{ text: nodeId, status: null }] })),
+  });
+  function setupCustom(mode: "view" | "edit" = "view") {
+    useAppStore.setState({
+      ...initialState(), connection: { ...initialState().connection, scope: ["p"] }, view: { name: "custom", resource },
+      customTables: new Map([["cert-manager.io/v1/Certificate", tableWith([CERT])]]), selectedId: CERT,
+      details: { nodeId: CERT, data: { yaml: "old", summary: [], related: [] }, events: [], loading: false,
+        editor: mode === "view" ? viewEditor("old") : { ...viewEditor("old"), mode: "edit", buffer: "mine" } },
+    });
+  }
+
+  it("reloads the selected custom resource when its kind's table updates", async () => {
+    setupCustom();
+    useAppStore.getState().applyCustomTable({ resource, table: tableWith([CERT, "Custom/cert-manager.io/v1/Certificate/p/other"]), error: null });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(getObjectCalls()).toBe(1);
+    expect(useAppStore.getState().details?.data?.yaml).toBe("fresh 1");
+  });
+
+  it("leaves unsaved edits and other kinds' selections alone", async () => {
+    setupCustom("edit");
+    useAppStore.getState().applyCustomTable({ resource, table: tableWith([CERT]), error: null });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(useAppStore.getState().details?.editor.buffer).toBe("mine");
+    cancelDetailsRefresh();
+    setupCustom();
+    useAppStore.getState().applyCustomTable({ resource: { ...resource, kind: "Issuer", plural: "issuers" }, table: tableWith([]), error: null });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(getObjectCalls()).toBe(0);
+  });
+});

@@ -43,3 +43,9 @@ describe("actionKinds", () => {
     expect(hpaFor("Deployment/p/web", edges, new Map())).toEqual({ name: "web-hpa", min: null, max: null });
   });
 });
+
+describe("describeId for a custom resource", () => {
+  it("names its real kind and name", () => {
+    expect(describeId("Custom/cert-manager.io/v1/Certificate/shop/web-tls")).toBe("Certificate web-tls");
+  });
+});

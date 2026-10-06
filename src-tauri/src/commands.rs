@@ -10,15 +10,21 @@ use tauri_plugin_opener::OpenerExt;
 use tauri_plugin_store::StoreExt;
 use tokio::sync::Mutex;
 
+use crate::custom::id::CustomId;
+use crate::custom::{ops, CustomTable};
+use crate::discovery::{self, CustomKind, ResourceRef};
 use crate::error::{AppError, AppResult, ErrorKind};
 use crate::exec::session::ExecRequest;
 use crate::exec::{clamp_size, decode_input, ExecMessage, ExecPod};
 use crate::forward::{Forward, PortOption};
 use crate::graph::rows::Table;
 use crate::graph::NodeId;
+use crate::helm::{HelmRelease, HelmReleaseDetails};
 use crate::kubeconfig::{self, ContextInfo};
 use crate::logs::session::LogRequest;
 use crate::logs::LogMessage;
+use crate::manifest;
+use crate::session::custom::{self, BoundKind};
 use crate::session::emitter::{Emitter, OutEvent};
 use crate::session::rollout::Revision;
 use crate::session::{ConnectInfo, ObjectDetails, Session};
@@ -132,8 +138,75 @@ pub async fn set_expanded_groups(state: State<'_, AppState>, expanded_groups: Ve
         .await
 }
 
+/// `group`/`version`/`kind` resolved against the current session, with that session's client.
+async fn resolve_kind(state: &AppState, group: &str, version: &str, kind: &str) -> AppResult<BoundKind> {
+    custom::resolve_kind(&state.session, group, version, kind, discovery::discover).await
+}
+
+/// Graph neighbours of `node_id`, for a custom resource's details.
+async fn related_of(state: &AppState, generation: u64, node_id: &str) -> Vec<NodeId> {
+    let guard = state.session.lock().await;
+    guard
+        .as_ref()
+        .filter(|s| s.generation() == generation)
+        .map(|s| s.related(node_id))
+        .unwrap_or_default()
+}
+
+#[tauri::command]
+pub async fn custom_kinds(state: State<'_, AppState>) -> AppResult<Vec<CustomKind>> {
+    Ok(custom::custom_kinds(&state.session, false, discovery::discover).await?.0)
+}
+
+#[tauri::command]
+pub async fn refresh_custom_kinds(state: State<'_, AppState>) -> AppResult<Vec<CustomKind>> {
+    Ok(custom::custom_kinds(&state.session, true, discovery::discover).await?.0)
+}
+
+/// The rows of `resource` in the current scope; the table then stays live through
+/// `custom_table` events until `stop_custom`, another `list_custom` or a scope switch.
+#[tauri::command]
+pub async fn list_custom(state: State<'_, AppState>, resource: ResourceRef) -> AppResult<CustomTable> {
+    custom::list_custom(&state.session, || async {
+        Ok(resolve_kind(&state, &resource.group, &resource.version, &resource.kind).await?.kind)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn stop_custom(state: State<'_, AppState>) -> AppResult<()> {
+    let mut guard = state.session.lock().await;
+    if let Some(session) = guard.as_mut() {
+        session.stop_custom();
+    }
+    Ok(())
+}
+
+/// The store handle, taken under the session lock and released before the (possibly large)
+/// Helm records are decoded, so other commands are not blocked meanwhile.
+async fn shared_of(state: &AppState) -> AppResult<crate::session::shared::Shared> {
+    let mut guard = state.session.lock().await;
+    Ok(session_mut(&mut guard)?.shared_handle())
+}
+
+#[tauri::command]
+pub async fn helm_releases(state: State<'_, AppState>) -> AppResult<Vec<HelmRelease>> {
+    Ok(shared_of(&state).await?.helm_releases())
+}
+
+#[tauri::command]
+pub async fn helm_release(state: State<'_, AppState>, namespace: String, name: String) -> AppResult<HelmReleaseDetails> {
+    shared_of(&state).await?.helm_release(&namespace, &name)
+}
+
 #[tauri::command]
 pub async fn get_object(state: State<'_, AppState>, node_id: String) -> AppResult<ObjectDetails> {
+    if let Some(id) = CustomId::of(&node_id)? {
+        let bound = resolve_kind(&state, &id.group, &id.version, &id.kind).await?;
+        let mut details = ops::get(&bound.client, &bound.kind, &id).await?;
+        details.related = related_of(&state, bound.generation, &node_id).await;
+        return Ok(details);
+    }
     let mut guard = state.session.lock().await;
     let session = session_mut(&mut guard)?;
     session.get_object(&node_id)
@@ -161,14 +234,20 @@ pub async fn partial_kinds(state: State<'_, AppState>) -> AppResult<Vec<Kind>> {
 }
 
 #[tauri::command]
-pub async fn list_rows(state: State<'_, AppState>, kind: Kind) -> AppResult<Table> {
+pub async fn list_rows(state: State<'_, AppState>, kind: Kind, include_helm_storage: Option<bool>) -> AppResult<Table> {
     let mut guard = state.session.lock().await;
     let session = session_mut(&mut guard)?;
-    Ok(session.list_rows(kind))
+    Ok(session.list_rows(kind, include_helm_storage.unwrap_or(false)))
 }
 
 #[tauri::command]
 pub async fn update_object(state: State<'_, AppState>, node_id: String, yaml: String, force: bool) -> AppResult<ObjectDetails> {
+    if let Some(id) = CustomId::of(&node_id)? {
+        let bound = resolve_kind(&state, &id.group, &id.version, &id.kind).await?;
+        let mut details = ops::update(&bound.client, &bound.kind, &id, &yaml, force).await?;
+        details.related = related_of(&state, bound.generation, &node_id).await;
+        return Ok(details);
+    }
     let mut guard = state.session.lock().await;
     let session = session_mut(&mut guard)?;
     session.update_object(&node_id, &yaml, force).await
@@ -176,6 +255,12 @@ pub async fn update_object(state: State<'_, AppState>, node_id: String, yaml: St
 
 #[tauri::command]
 pub async fn create_object(state: State<'_, AppState>, namespace: String, yaml: String) -> AppResult<NodeId> {
+    let raw = manifest::parse_raw(&yaml)?;
+    if !crate::session::write::is_builtin_manifest(&raw) {
+        let (group, version) = ops::manifest_group_version(&raw).map(|(g, v)| (g.to_owned(), v.to_owned()))?;
+        let bound = resolve_kind(&state, &group, &version, &raw.kind).await?;
+        return ops::create(&bound.client, &bound.kind, raw, &namespace).await;
+    }
     let mut guard = state.session.lock().await;
     let session = session_mut(&mut guard)?;
     session.create_object(&namespace, &yaml).await
@@ -183,6 +268,10 @@ pub async fn create_object(state: State<'_, AppState>, namespace: String, yaml: 
 
 #[tauri::command]
 pub async fn delete_object(state: State<'_, AppState>, node_id: String) -> AppResult<()> {
+    if let Some(id) = CustomId::of(&node_id)? {
+        let bound = resolve_kind(&state, &id.group, &id.version, &id.kind).await?;
+        return ops::delete(&bound.client, &bound.kind, &id).await;
+    }
     let mut guard = state.session.lock().await;
     let session = session_mut(&mut guard)?;
     session.delete_object(&node_id).await
@@ -379,6 +468,12 @@ pub fn register(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wr
             denied_kinds,
             partial_kinds,
             list_rows,
+            custom_kinds,
+            refresh_custom_kinds,
+            list_custom,
+            stop_custom,
+            helm_releases,
+            helm_release,
             update_object,
             create_object,
             delete_object,

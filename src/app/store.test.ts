@@ -39,7 +39,7 @@ import { settings } from "../shared/settings";
 import { template } from "../features/editor/templates";
 import { logBuffer } from "../features/logs/logBuffer";
 import { initialLogs } from "../features/logs/logsState";
-import { applyDelta, applySnapshot, disconnectedState, initialState, kindStats, useAppStore, viewEditor, type AppState } from "./store";
+import { applyDelta, applySnapshot, describeNode, disconnectedState, initialState, kindStats, useAppStore, viewEditor, type AppState } from "./store";
 
 const node = (id: string, over: Partial<GraphNode> = {}): GraphNode => ({
   id, kind: "Pod", namespace: "p", name: id.split("/").pop()!, status: "ok", badges: ["Running"], group: null, ...over,
@@ -357,7 +357,7 @@ describe("views", () => {
     expect(useAppStore.getState().view).toEqual({ name: "graph" });
     await useAppStore.getState().showTable("Pod");
     expect(useAppStore.getState().view).toEqual({ name: "table", kind: "Pod" });
-    expect(invoke).toHaveBeenCalledWith("list_rows", { kind: "Pod" });
+    expect(invoke).toHaveBeenCalledWith("list_rows", { kind: "Pod", includeHelmStorage: false });
     expect(useAppStore.getState().tables.get("Pod")?.columns[0].key).toBe("name");
     useAppStore.getState().showGraph();
     expect(useAppStore.getState().view).toEqual({ name: "graph" });
@@ -1281,5 +1281,12 @@ describe("logs", () => {
     s = applyDelta(s, { addedNodes: [], updatedNodes: [], removedNodes: ["Pod/p/a"], addedEdges: [], removedEdges: [] });
     expect(s.selectedId).toBeNull();
     expect(s.detailsMaximized).toBe(false);
+  });
+});
+
+describe("describeNode", () => {
+  it("names a built-in kind and a custom resource's own kind", () => {
+    expect(describeNode("Pod/shop/web-1")).toBe("Pod web-1");
+    expect(describeNode("Custom/cert-manager.io/v1/Certificate/shop/web-tls")).toBe("Certificate web-tls");
   });
 });

@@ -5,7 +5,7 @@ import { KIND_META } from "../graph/kindMeta";
 import { LazyYamlEditor } from "./LazyYamlEditor";
 import { CREATABLE_KINDS, type CreatableKind } from "./templates";
 
-/** The **+ Create** modal: a kind picker, a templated manifest to edit and **Create**. */
+/** The **+ Create** modal: a kind picker (or the open custom kind), a templated manifest to edit and **Create**. */
 export function CreateDialog() {
   const { dialog, namespaces, setCreateNamespace, setCreateKind, setCreateBuffer, submitCreate, closeCreate } = useAppStore(useShallow((s) => ({
     dialog: s.createDialog, namespaces: s.connection.namespaces, setCreateNamespace: s.setCreateNamespace,
@@ -20,14 +20,20 @@ export function CreateDialog() {
         className="flex h-[min(640px,90vh)] w-[min(720px,90vw)] flex-col rounded-card border border-border bg-elevated p-8">
         <div className="mb-5 flex items-center gap-3">
           <h2 id="create-dialog-title" className="text-2xl font-semibold leading-[1.33] text-text-hi">Create</h2>
-          <label className="ml-auto flex items-center gap-2 text-xs text-text-muted">
-            Kind
-            <select value={dialog.kind} onChange={(e) => setCreateKind(e.target.value as CreatableKind)} disabled={dialog.submitting}
-              className="h-9 rounded-xl border border-border-strong bg-surface px-3 text-sm text-text-hi outline-none focus:border-accent">
-              {CREATABLE_KINDS.map((k) => <option key={k} value={k}>{KIND_META[k].label}</option>)}
-            </select>
-          </label>
-          {dialog.kind !== "PersistentVolume" && (
+          {dialog.custom ? (
+            <span className="ml-auto flex items-center gap-2 text-xs text-text-muted">
+              Kind <span className="text-sm text-text-hi">{dialog.custom.kind}</span>
+            </span>
+          ) : (
+            <label className="ml-auto flex items-center gap-2 text-xs text-text-muted">
+              Kind
+              <select value={dialog.kind} onChange={(e) => setCreateKind(e.target.value as CreatableKind)} disabled={dialog.submitting}
+                className="h-9 rounded-xl border border-border-strong bg-surface px-3 text-sm text-text-hi outline-none focus:border-accent">
+                {CREATABLE_KINDS.map((k) => <option key={k} value={k}>{KIND_META[k].label}</option>)}
+              </select>
+            </label>
+          )}
+          {(dialog.custom ? dialog.custom.namespaced : dialog.kind !== "PersistentVolume") && (
             <label className="flex items-center gap-2 text-xs text-text-muted">
               Namespace
               {namespaces.length > 0 ? (

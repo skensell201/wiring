@@ -48,6 +48,11 @@ pub enum OutEvent {
     ConnectionError(AppError),
     ForwardsChanged(Vec<Forward>),
     MetricsUpdated(MetricsUpdate),
+    /// Rows of the custom table that is open (see `custom::watch`).
+    CustomTable(crate::custom::CustomTable),
+    /// A Helm storage Secret changed (at most one per reducer flush): re-read `helm_releases`.
+    /// Those Secrets are no graph nodes, so no `GraphDelta` says it.
+    HelmChanged,
 }
 
 impl OutEvent {
@@ -64,6 +69,8 @@ impl OutEvent {
             OutEvent::ConnectionError(e) => ("connection_error", json(&e)),
             OutEvent::ForwardsChanged(f) => ("forwards_changed", json(&f)),
             OutEvent::MetricsUpdated(m) => ("metrics_updated", json(&m)),
+            OutEvent::CustomTable(t) => ("custom_table", json(&t)),
+            OutEvent::HelmChanged => ("helm_changed", serde_json::Value::Null),
         }
     }
 }
@@ -135,6 +142,34 @@ mod tests {
         let (name, payload) = OutEvent::ConnectionState(ConnectionState::Degraded).into_parts();
         assert_eq!(name, "connection_state");
         assert_eq!(payload, serde_json::json!("degraded"));
+    }
+
+    #[test]
+    fn custom_tables_are_emitted_as_custom_table() {
+        use crate::custom::CustomTable;
+        use crate::discovery::ResourceRef;
+        use crate::graph::rows::Table;
+        use crate::store::Kind;
+        let ev = OutEvent::CustomTable(CustomTable {
+            resource: ResourceRef {
+                group: "x.io".into(),
+                version: "v1".into(),
+                kind: "T".into(),
+                plural: "ts".into(),
+                namespaced: true,
+            },
+            table: Table {
+                kind: Kind::Custom,
+                columns: vec![],
+                rows: vec![],
+            },
+            error: None,
+        });
+        let (name, payload) = ev.into_parts();
+        assert_eq!(name, "custom_table");
+        assert_eq!(payload["resource"]["plural"], "ts");
+        assert_eq!(payload["table"]["kind"], "Custom");
+        assert!(payload["error"].is_null(), "error is always present, null when live");
     }
 
     #[test]
