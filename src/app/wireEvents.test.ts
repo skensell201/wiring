@@ -269,6 +269,29 @@ describe("metrics_updated", () => {
   });
 });
 
+describe("too-large snapshots", () => {
+  beforeEach(() => { vi.useFakeTimers(); cancelDetailsRefresh(); vi.mocked(invoke).mockClear(); });
+  afterEach(() => vi.useRealTimers());
+
+  it("refetch the visible table's rows and reload the open details", async () => {
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => (cmd === "get_object" ? { yaml: "kind: Pod\nb: 2", summary: [], related: [] } : null));
+    await wireEvents();
+    const refreshTable = vi.fn(async () => {});
+    const tooLarge = { nodes: 1873, kinds: [{ kind: "Pod" as const, count: 1873, worst: "ok" as const }] };
+    const data = { yaml: "kind: Pod", summary: [], related: [] };
+    useAppStore.setState({
+      connection: { ...initialState().connection, context: "prod", state: "connected", scope: ["p"] },
+      refreshTable, view: { name: "table", kind: "Pod" }, graphReady: true, tooLarge,
+      selectedId: "Pod/p/a", details: { nodeId: "Pod/p/a", data, events: [], loading: false, editor: viewEditor(data.yaml) },
+    });
+    hoisted.handlers!.graph_snapshot({ nodes: [], edges: [], tooLarge });
+    await vi.runAllTimersAsync();
+    expect(refreshTable).toHaveBeenCalledWith("Pod");
+    expect(vi.mocked(invoke).mock.calls.filter(([c]) => c === "get_object")).toEqual([["get_object", { nodeId: "Pod/p/a" }]]);
+    expect(useAppStore.getState().details?.data?.yaml).toBe("kind: Pod\nb: 2");
+  });
+});
+
 describe("update events", () => {
   it("routes download progress into the update store and the menu item into a manual check", async () => {
     const { initialUpdateState, useUpdateStore } = await import("../features/update/updateStore");

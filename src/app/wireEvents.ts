@@ -26,6 +26,9 @@ export function wireEvents(): Promise<() => void> {
       s().applySnapshot(g);
       const view = s().view;
       if (view.name === "table") void s().refreshTable(view.kind);
+      // A too-large snapshot carries no nodes to diff the open details against; the backend sends
+      // one per (debounced) rebuild, so it is the details' cue to reload too.
+      if (g.tooLarge) requestDetailsRefresh();
     },
     graph_delta: (d) => {
       s().applyDelta(d);

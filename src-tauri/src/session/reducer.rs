@@ -237,11 +237,12 @@ fn emit_kind_error(emitter: &Arc<dyn Emitter>, kind: Kind, error: &AppError) {
 }
 
 /// A change of the too-large state (or of its counts) goes out as a snapshot: deltas cannot say
-/// "the graph is not sent any more".
+/// "the graph is not sent any more". While the graph is too large every (debounced) rebuild goes
+/// out as one: its summarised diff is empty, but the tables — then the only view — refetch on it.
 fn emit_rebuild(shared: &Shared, emitter: &Arc<dyn Emitter>) {
     let before = shared.graph().too_large.clone();
     let (graph, delta) = shared.rebuild();
-    if graph.too_large != before {
+    if graph.too_large.is_some() || graph.too_large != before {
         emitter.emit(OutEvent::GraphSnapshot(graph));
     } else if !delta.is_empty() {
         emitter.emit(OutEvent::GraphDelta(delta));
@@ -459,13 +460,41 @@ mod tests {
             other => panic!("expected a too-large snapshot, got {other:?}"),
         }
         emit_rebuild(&shared, &emitter);
-        assert!(rx.try_recv().is_err(), "nothing changed");
+        assert!(
+            matches!(rx.try_recv().unwrap(), OutEvent::GraphSnapshot(g) if g.too_large.is_some()),
+            "every rebuild while too large is a snapshot"
+        );
         shared.store().remove(&cm("c0").key());
         shared.store().remove(&cm("c1").key());
         emit_rebuild(&shared, &emitter);
         assert!(
             matches!(rx.try_recv().unwrap(), OutEvent::GraphSnapshot(g) if g.too_large.is_none() && g.nodes.len() == crate::graph::MAX_GRAPH_NODES - 1)
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_pod_status_change_while_too_large_still_sends_a_snapshot() {
+        let shared = Shared::default();
+        let (emitter, mut rx) = ChannelEmitter::new();
+        let emitter: Arc<dyn Emitter> = Arc::new(emitter);
+        for i in 0..=crate::graph::MAX_GRAPH_NODES {
+            shared.store().upsert(cm(&format!("c{i}")));
+        }
+        shared.store().upsert(pod("p"));
+        emit_rebuild(&shared, &emitter);
+        assert!(matches!(rx.try_recv().unwrap(), OutEvent::GraphSnapshot(g) if g.too_large.is_some()));
+        let Object::Pod(mut p) = pod("p") else { unreachable!() };
+        // A change the per-kind counts and worst health do not reflect (the pod IP changes).
+        p.status = Some(k8s_openapi::api::core::v1::PodStatus {
+            pod_ip: Some("10.0.0.9".into()),
+            ..Default::default()
+        });
+        shared.store().upsert(Object::Pod(p));
+        emit_rebuild(&shared, &emitter);
+        match rx.try_recv() {
+            Ok(OutEvent::GraphSnapshot(g)) => assert!(g.too_large.is_some()),
+            other => panic!("expected a too-large snapshot so the tables refresh, got {other:?}"),
+        }
     }
 
     fn pod(name: &str) -> Object {
