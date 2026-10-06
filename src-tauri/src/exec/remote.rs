@@ -1,7 +1,7 @@
 //! The real `ExecConnector`: `kubectl exec -it` over the API server's websocket.
 
 use futures::future::BoxFuture;
-use futures::FutureExt;
+use futures::{FutureExt, SinkExt};
 use k8s_openapi::api::core::v1::Pod;
 use kube::api::{Api, AttachParams, TerminalSize};
 use kube::Client;
@@ -38,16 +38,12 @@ impl ExecConnector for KubeExec {
             let status = proc.take_status().ok_or("the exec stream has no status channel")?;
             let mut sizes = proc.terminal_size();
             if let Some(tx) = sizes.as_mut() {
-                let _ = tx.try_send(TerminalSize { width: cols, height: rows });
+                let _ = tx.send(TerminalSize { width: cols, height: rows }).await;
             }
             Ok(Process {
                 stdin: Box::new(stdin),
                 stdout: Box::new(stdout),
-                resize: Box::new(move |width, height| {
-                    if let Some(tx) = sizes.as_mut() {
-                        let _ = tx.try_send(TerminalSize { width, height });
-                    }
-                }),
+                sizes,
                 status: Box::pin(status),
                 keep: Box::new(proc),
             })

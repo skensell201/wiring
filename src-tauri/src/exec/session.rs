@@ -6,9 +6,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures::future::BoxFuture;
+use futures::SinkExt;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Status;
+use kube::api::TerminalSize;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
+
+/// kube's terminal-size sender (a bounded `futures` channel).
+pub type SizeSender = futures::channel::mpsc::Sender<TerminalSize>;
 
 use crate::session::watch::AbortOnDrop;
 
@@ -21,14 +26,13 @@ pub const STATUS_WAIT: Duration = Duration::from_secs(2);
 pub const TIMED_OUT: &str = "timed out connecting to the container";
 const READ_CHUNK: usize = 16 * 1024;
 
-pub type Resize = Box<dyn FnMut(u16, u16) + Send>;
-
 /// A started remote process as the session needs it: the kube `AttachedProcess` in the app, a
 /// pair of in-memory pipes in the tests.
 pub struct Process {
     pub stdin: Box<dyn AsyncWrite + Send + Unpin>,
     pub stdout: Box<dyn AsyncRead + Send + Unpin>,
-    pub resize: Resize,
+    /// The TTY size channel (kube's is bounded, 10 slots); `None` when the stream has none.
+    pub sizes: Option<SizeSender>,
     pub status: BoxFuture<'static, Option<Status>>,
     /// Owns the connection; dropping it closes the websocket.
     pub keep: Box<dyn Send>,
@@ -180,20 +184,23 @@ async fn pump(id: u32, p: Process, sink: Arc<ClosableExecSink>, input: mpsc::Unb
     let Process {
         stdin,
         stdout,
-        resize,
+        sizes,
         status,
         keep,
     } = p;
     let (data_tx, data_rx) = mpsc::unbounded_channel();
     let reader = read_stdout(id, stdout, &sink);
     let writer = write_stdin(stdin, data_rx);
-    let control = control(input, data_tx, resize);
+    let (size_tx, size_rx) = watch::channel((0, 0));
+    let control = control(input, data_tx, size_tx);
+    let resizer = forward_sizes(size_rx, sizes);
     tokio::select! {
         end = reader => if let ReadEnd::SinkGone = end { return },
         // stdin failed: the connection is going away, report how it ended.
         () = writer => {}
         // The session was stopped: its sink is closed, nothing more to say.
         () = control => return,
+        () = resizer => unreachable!("forward_sizes never resolves"),
     }
     let status = tokio::time::timeout(STATUS_WAIT, status).await.ok().flatten();
     let (code, message) = errors::ended(status.as_ref());
@@ -234,16 +241,32 @@ async fn write_stdin(mut stdin: Box<dyn AsyncWrite + Send + Unpin>, mut data: mp
 }
 
 /// Routes the session's input queue: data to the stdin writer (order kept), sizes to the
-/// process. Returns once the queue closes, i.e. the session was stopped.
-async fn control(mut input: mpsc::UnboundedReceiver<Input>, data: mpsc::UnboundedSender<Vec<u8>>, mut resize: Resize) {
+/// latest-size slot. Returns once the queue closes, i.e. the session was stopped.
+async fn control(mut input: mpsc::UnboundedReceiver<Input>, data: mpsc::UnboundedSender<Vec<u8>>, size: watch::Sender<(u16, u16)>) {
     while let Some(msg) = input.recv().await {
         match msg {
             Input::Data(bytes) => {
                 let _ = data.send(bytes);
             }
-            Input::Resize(cols, rows) => resize(cols, rows),
+            Input::Resize(cols, rows) => {
+                size.send_replace((cols, rows));
+            }
         }
     }
+}
+
+/// Forwards only the latest size to kube's bounded channel with an awaited send, so a burst
+/// is coalesced instead of overflowing and the final size is never dropped. Never resolves.
+async fn forward_sizes(mut latest: watch::Receiver<(u16, u16)>, sizes: Option<SizeSender>) {
+    if let Some(mut tx) = sizes {
+        while latest.changed().await.is_ok() {
+            let (width, height) = *latest.borrow_and_update();
+            if tx.send(TerminalSize { width, height }).await.is_err() {
+                break;
+            }
+        }
+    }
+    futures::future::pending::<()>().await
 }
 
 #[cfg(test)]
@@ -255,7 +278,6 @@ mod tests {
     use futures::FutureExt;
     use k8s_openapi::apimachinery::pkg::apis::meta::v1::{StatusCause, StatusDetails};
     use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::Mutex;
     use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream};
     use tokio::sync::{mpsc, oneshot};
 
@@ -270,7 +292,7 @@ mod tests {
     struct Ends {
         stdout: DuplexStream,
         stdin: DuplexStream,
-        resizes: Arc<Mutex<Vec<(u16, u16)>>>,
+        sizes: futures::channel::mpsc::Receiver<TerminalSize>,
         status: oneshot::Sender<Option<Status>>,
         dropped: Arc<AtomicBool>,
         size: (u16, u16),
@@ -300,14 +322,14 @@ mod tests {
                 }
                 let (stdout_remote, stdout_test) = tokio::io::duplex(1024);
                 let (stdin_remote, stdin_test) = tokio::io::duplex(1024);
-                let resizes = Arc::new(Mutex::new(Vec::new()));
+                // Like kube's terminal-size channel.
+                let (sizes_tx, sizes_rx) = futures::channel::mpsc::channel(10);
                 let (status_tx, status_rx) = oneshot::channel();
                 let dropped = Arc::new(AtomicBool::new(false));
-                let seen = resizes.clone();
                 ends.send(Ends {
                     stdout: stdout_test,
                     stdin: stdin_test,
-                    resizes,
+                    sizes: sizes_rx,
                     status: status_tx,
                     dropped: dropped.clone(),
                     size: (cols, rows),
@@ -316,7 +338,7 @@ mod tests {
                 Ok(Process {
                     stdin: Box::new(stdin_remote),
                     stdout: Box::new(stdout_remote),
-                    resize: Box::new(move |c, r| seen.lock().unwrap().push((c, r))),
+                    sizes: Some(sizes_tx),
                     status: Box::pin(async move { status_rx.await.ok().flatten() }),
                     keep: Box::new(DropFlag(dropped)),
                 })
@@ -349,6 +371,14 @@ mod tests {
 
     async fn next<T>(rx: &mut mpsc::UnboundedReceiver<T>) -> T {
         tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("in time")
+            .expect("open")
+    }
+
+    async fn next_size(rx: &mut futures::channel::mpsc::Receiver<TerminalSize>) -> TerminalSize {
+        use futures::StreamExt;
+        tokio::time::timeout(Duration::from_secs(5), rx.next())
             .await
             .expect("in time")
             .expect("open")
@@ -395,15 +425,9 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(&buf, b"ls\n");
-        // The queue is ordered: once the input sent after the resize has arrived, so has the resize.
         s.resize(id, 120, 40);
-        s.input(id, b"!".to_vec());
-        let mut mark = [0u8; 1];
-        tokio::time::timeout(Duration::from_secs(5), ends.stdin.read_exact(&mut mark))
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(ends.resizes.lock().unwrap().as_slice(), &[(120, 40)]);
+        let size = next_size(&mut ends.sizes).await;
+        assert_eq!((size.width, size.height), (120, 40));
     }
 
     /// A TTY echoes what it reads; with kube's 1 KiB pipes a large paste must not stall the
@@ -442,6 +466,30 @@ mod tests {
             }
         }
         assert_eq!(got, paste);
+    }
+
+    /// kube's size channel holds 10; a drag-resize burst must still deliver its final size.
+    #[tokio::test]
+    async fn the_final_size_of_a_resize_burst_always_arrives() {
+        let (s, mut ends_rx, _rx, id) = setup(Behaviour::Open);
+        let mut ends = next(&mut ends_rx).await;
+        for w in 1..=50 {
+            s.resize(id, w, 10);
+        }
+        s.resize(id, 200, 50);
+        // Let the session run with the channel full before anything is drained.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let mut seen = Vec::new();
+        loop {
+            let size = tokio::time::timeout(Duration::from_secs(2), futures::StreamExt::next(&mut ends.sizes))
+                .await
+                .unwrap_or_else(|_| panic!("the final size never arrived; saw {seen:?}"))
+                .expect("open");
+            seen.push((size.width, size.height));
+            if seen.last() == Some(&(200, 50)) {
+                break;
+            }
+        }
     }
 
     #[tokio::test]
