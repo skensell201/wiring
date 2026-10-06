@@ -6,6 +6,10 @@ use std::collections::BTreeSet;
 use crate::error::{AppError, AppResult, ErrorKind};
 use crate::store::Kind;
 
+/// The most namespaces an explicit set may name: each one costs a watch stream per kind (and a
+/// metrics list per tick), so beyond this All namespaces is the cheaper choice.
+pub const MAX_NAMESPACES: usize = 20;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NamespaceScope {
     All,
@@ -19,12 +23,18 @@ impl NamespaceScope {
     }
 
     /// The `select_namespaces` argument: `None` is all namespaces; a list is trimmed, deduplicated
-    /// and must name at least one valid namespace.
+    /// and must name between one and [`MAX_NAMESPACES`] valid namespaces.
     pub fn from_arg(namespaces: Option<Vec<String>>) -> AppResult<Self> {
         let Some(list) = namespaces else { return Ok(Self::All) };
         let set: BTreeSet<String> = list.into_iter().map(|n| n.trim().to_string()).filter(|n| !n.is_empty()).collect();
         if set.is_empty() {
             return Err(AppError::new(ErrorKind::Invalid, "pick at least one namespace"));
+        }
+        if set.len() > MAX_NAMESPACES {
+            return Err(AppError::new(
+                ErrorKind::Invalid,
+                format!("pick up to {MAX_NAMESPACES} namespaces, or All namespaces"),
+            ));
         }
         for ns in &set {
             crate::manifest::validate_dns_subdomain("namespace", ns)?;
@@ -108,6 +118,19 @@ mod tests {
             NamespaceScope::from_arg(Some(vec!["Bad/ns".into()])).unwrap_err().kind,
             ErrorKind::Invalid
         );
+    }
+
+    #[test]
+    fn from_arg_caps_explicit_sets_at_twenty_namespaces() {
+        let names = |n: usize| Some((0..n).map(|i| format!("ns-{i}")).collect::<Vec<_>>());
+        assert!(matches!(NamespaceScope::from_arg(names(MAX_NAMESPACES)).unwrap(), NamespaceScope::Set(s) if s.len() == 20));
+        let err = NamespaceScope::from_arg(names(MAX_NAMESPACES + 1)).unwrap_err();
+        assert_eq!(err.kind, ErrorKind::Invalid);
+        assert_eq!(err.message, "pick up to 20 namespaces, or All namespaces");
+        // Duplicates collapse before the count.
+        let mut dup = names(MAX_NAMESPACES).unwrap();
+        dup.push("ns-0".into());
+        assert!(NamespaceScope::from_arg(Some(dup)).is_ok());
     }
 
     #[test]
