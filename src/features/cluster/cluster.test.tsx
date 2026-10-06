@@ -136,15 +136,38 @@ describe("NamespacePicker", () => {
     expect(screen.getByText("Up to 20 \u2014 or pick All namespaces")).toBeTruthy();
   });
 
-  it("Space ticks, arrows move, Enter applies", () => {
+  it("Space ticks, arrows move, Enter outside a row applies the ticked set", () => {
     const selectScope = open();
+    const dialog = () => screen.getByRole("dialog", { name: "Namespaces" });
     const filter = screen.getByLabelText("Filter namespaces");
     fireEvent.keyDown(filter, { key: "ArrowDown" }); // All
-    fireEvent.keyDown(screen.getByRole("dialog", { name: "Namespaces" }), { key: "ArrowDown" }); // blog
-    fireEvent.keyDown(screen.getByRole("dialog", { name: "Namespaces" }), { key: " " });
+    fireEvent.keyDown(dialog(), { key: "ArrowDown" }); // blog
+    fireEvent.keyDown(dialog(), { key: " " });
     expect(screen.getByLabelText("Include blog")).toBeChecked();
-    fireEvent.keyDown(screen.getByRole("dialog", { name: "Namespaces" }), { key: "Enter" });
+    fireEvent.keyDown(dialog(), { key: "ArrowUp" }); // All
+    fireEvent.keyDown(dialog(), { key: "ArrowUp" }); // the filter
+    expect(filter).toHaveFocus();
+    fireEvent.keyDown(filter, { key: "Enter" });
     expect(selectScope).toHaveBeenCalledWith(["blog", "shop"]);
+  });
+
+  it("Enter on a namespace row or the All row applies that row, not the ticked set", () => {
+    const selectScope = open();
+    const dialog = () => screen.getByRole("dialog", { name: "Namespaces" });
+    fireEvent.keyDown(screen.getByLabelText("Filter namespaces"), { key: "ArrowDown" }); // All
+    fireEvent.keyDown(dialog(), { key: "ArrowDown" }); // blog
+    fireEvent.keyDown(dialog(), { key: " " }); // ticked: blog, shop
+    fireEvent.keyDown(dialog(), { key: "ArrowDown" }); // payments
+    expect(screen.getByRole("button", { name: "payments" })).toHaveFocus();
+    fireEvent.keyDown(dialog(), { key: "Enter" });
+    expect(selectScope).toHaveBeenLastCalledWith(["payments"]);
+
+    fireEvent.click(screen.getByRole("button", { name: "Namespace" }));
+    fireEvent.click(screen.getByLabelText("Include blog")); // ticked: blog, shop
+    fireEvent.keyDown(screen.getByLabelText("Filter namespaces"), { key: "ArrowDown" }); // All
+    expect(screen.getByRole("button", { name: /All namespaces/ })).toHaveFocus();
+    fireEvent.keyDown(dialog(), { key: "Enter" });
+    expect(selectScope).toHaveBeenLastCalledWith("all");
   });
 
   it("Escape closes it without reaching the global handler", () => {

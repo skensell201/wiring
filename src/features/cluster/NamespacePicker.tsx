@@ -107,8 +107,10 @@ export function NamespacePicker() {
       e.preventDefault();
       toggle(active.dataset.ns);
     } else if (e.key === "Enter") {
-      if (ticked.size > 0) { e.preventDefault(); apply([...ticked].sort()); }
+      // A row applies itself; anywhere else Enter applies the ticked set.
+      if (active?.dataset.all !== undefined) { e.preventDefault(); apply("all"); }
       else if (active?.dataset.ns) { e.preventDefault(); apply([active.dataset.ns]); }
+      else if (ticked.size > 0) { e.preventDefault(); apply([...ticked].sort()); }
     }
   };
 
@@ -127,7 +129,7 @@ export function NamespacePicker() {
             <input data-nav autoFocus aria-label="Filter namespaces" placeholder="Filter…" value={filter} onChange={(e) => setFilter(e.target.value)}
               className="mb-2 h-8 w-full rounded-lg border border-border-strong bg-surface px-2 text-sm text-text-hi outline-none focus:border-accent" />
             {canList && (
-              <button type="button" data-nav className={`${ROW} w-full`} onClick={() => apply("all")}>
+              <button type="button" data-nav data-all className={`${ROW} w-full`} onClick={() => apply("all")}>
                 <span className="w-4">{scope === "all" && <Check className="size-4 text-accent" />}</span>
                 All namespaces ({namespaces.length})
               </button>
