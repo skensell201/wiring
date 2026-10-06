@@ -23,6 +23,12 @@ describe("ResourceCard", () => {
     expect(screen.getByTitle("Double-click to expand")).toBeInTheDocument();
   });
 
+  it("labels a custom resource with its own kind", () => {
+    const cr: GraphNode = { ...node, id: "Custom/cert-manager.io/v1/Certificate/shop/web-tls", kind: "Custom", name: "web-tls", badges: [] };
+    render(<ResourceCard node={cr} dimmed={false} expanded={false} selected={false} />);
+    expect(screen.getByText("Certificate")).toBeInTheDocument();
+  });
+
   it("dims when asked", () => {
     render(<ResourceCard node={node} dimmed expanded={false} selected={false} />);
     expect(screen.getByTestId("resource-card")).toHaveAttribute("data-dimmed", "true");

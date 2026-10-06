@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { applySnapshot, initialState, useAppStore, viewEditor } from "../../app/store";
 import { settings } from "../../shared/settings";
-import { DetailsPanel } from "./DetailsPanel";
+import { DetailsPanel, headingFromId } from "./DetailsPanel";
 
 vi.mock("../../shared/ipc/tauri", () => ({ invoke: vi.fn(async () => null), listen: vi.fn(async () => () => {}), Channel: class { onmessage: (m: unknown) => void = () => {}; } }));
 vi.mock("../../shared/settings", () => ({
@@ -291,5 +291,28 @@ describe("DetailsPanel maximise", () => {
     render(<DetailsPanel />);
     expect(historyTab()).toHaveAttribute("aria-selected", "true");
     expect(useAppStore.getState().requestedTab).toBeNull();
+  });
+});
+
+describe("headingFromId for a custom resource", () => {
+  it("takes the namespace and name from the id, not the group", () => {
+    expect(headingFromId("Custom/cert-manager.io/v1/Certificate/shop/web-tls")).toEqual({ name: "web-tls", kind: "Custom", namespace: "shop" });
+    expect(headingFromId("Custom/cert-manager.io/v1/ClusterIssuer//le")).toEqual({ name: "le", kind: "Custom", namespace: null });
+  });
+});
+
+describe("DetailsPanel for a custom resource", () => {
+  it("shows the real kind in the related list and heading", () => {
+    const cr = { ...node, id: "Custom/cert-manager.io/v1/Certificate/shop/web-tls", kind: "Custom" as const, namespace: "shop", name: "web-tls" };
+    useAppStore.setState({
+      ...applySnapshot(initialState(), { nodes: [cr, node], edges: [] }),
+      selectedId: "Pod/p/web-1",
+      details: {
+        nodeId: "Pod/p/web-1", loading: false, editor: viewEditor("kind: Pod\n"),
+        data: { yaml: "kind: Pod\n", summary: [], related: ["Custom/cert-manager.io/v1/Certificate/shop/web-tls"] }, events: [],
+      },
+    });
+    render(<DetailsPanel />);
+    expect(screen.getByRole("button", { name: /Certificate.*web-tls/ })).toBeInTheDocument();
   });
 });

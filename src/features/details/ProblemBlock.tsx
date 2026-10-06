@@ -1,7 +1,7 @@
 import { useShallow } from "zustand/react/shallow";
 import { useAppStore } from "../../app/store";
 import type { K8sEvent, NodeId } from "../../shared/ipc/types";
-import { KIND_META } from "../graph/kindMeta";
+import { kindLabel } from "../graph/kindMeta";
 import { problemPath } from "../graph/problemPath";
 
 const NO_EVENTS: K8sEvent[] = [];
@@ -47,7 +47,7 @@ export function ProblemBlock({ nodeId }: { nodeId: NodeId }) {
                 {i > 0 && <span aria-hidden className="text-text-muted">→</span>}
                 <button type="button" onClick={() => void select(id)}
                   className="rounded-lg border border-border bg-surface px-2 py-0.5 text-xs text-accent hover:border-accent hover:text-text-hi">
-                  {`${KIND_META[step.kind].label} ${step.name}`}
+                  {`${kindLabel(id, step.kind)} ${step.name}`}
                 </button>
               </li>
             );

@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { isCreatable, template, type CreatableKind } from "../features/editor/templates";
+import { parseCustomId } from "../shared/customId";
 import { KIND_META } from "../features/graph/kindMeta";
 import { logBuffer } from "../features/logs/logBuffer";
 import { applyLogMessage, initialLogs, type LogsState } from "../features/logs/logsState";
@@ -54,7 +55,9 @@ export function viewEditor(original = ""): EditorState {
 const isDirty = (e: EditorState) => e.mode !== "view" && e.buffer !== e.original;
 
 /** "Pod web-1" from `Pod/ns/web-1`, for toasts. */
-function describeNode(id: NodeId): string {
+export function describeNode(id: NodeId): string {
+  const custom = parseCustomId(id);
+  if (custom) return `${custom.kind} ${custom.name}`;
   const parts = id.split("/");
   const kind = parts[0] as Kind;
   return `${KIND_META[kind]?.label ?? kind} ${parts[parts.length - 1]}`;

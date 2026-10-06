@@ -1,6 +1,6 @@
 import { useAppStore } from "../../app/store";
 import type { NodeId, ObjectDetails } from "../../shared/ipc/types";
-import { KIND_META } from "../graph/kindMeta";
+import { KIND_META, kindLabel } from "../graph/kindMeta";
 import { ProblemBlock } from "./ProblemBlock";
 
 export function OverviewTab({ nodeId, data }: { nodeId: NodeId; data: ObjectDetails }) {
@@ -25,7 +25,7 @@ export function OverviewTab({ nodeId, data }: { nodeId: NodeId; data: ObjectDeta
             {related.map((n) => (
               <li key={n.id}>
                 <button type="button" onClick={() => void select(n.id)} className="w-full truncate rounded-lg border border-border bg-surface px-3 py-1.5 text-left text-sm text-accent hover:border-accent hover:text-text-hi">
-                  <span className="text-text-muted">{KIND_META[n.kind].short}</span>&nbsp; {n.name}
+                  <span className="text-text-muted">{n.kind === "Custom" ? kindLabel(n.id, n.kind) : KIND_META[n.kind].short}</span>&nbsp; {n.name}
                 </button>
               </li>
             ))}
