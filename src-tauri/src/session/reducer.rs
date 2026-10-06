@@ -60,6 +60,55 @@ enum StreamState {
     Dead,
 }
 
+/// The streams the reducer tracks, with a running count of the pending ones so the first-snapshot
+/// gate is O(1) per event.
+#[derive(Debug, Default)]
+struct Streams {
+    states: HashMap<StreamId, StreamState>,
+    pending: usize,
+}
+
+impl Streams {
+    fn new(streams: &[StreamId]) -> Self {
+        let mut this = Self::default();
+        for s in streams {
+            this.set(s.clone(), StreamState::Pending);
+        }
+        this
+    }
+
+    fn set(&mut self, stream: StreamId, state: StreamState) {
+        let old = self.states.insert(stream, state);
+        self.pending += usize::from(state == StreamState::Pending);
+        self.pending -= usize::from(old == Some(StreamState::Pending));
+    }
+
+    fn remove(&mut self, stream: &StreamId) {
+        if self.states.remove(stream) == Some(StreamState::Pending) {
+            self.pending -= 1;
+        }
+    }
+
+    fn contains(&self, stream: &StreamId) -> bool {
+        self.states.contains_key(stream)
+    }
+
+    fn any_pending(&self) -> bool {
+        self.pending > 0
+    }
+
+    fn of_kind(&self, kind: Kind) -> impl Iterator<Item = (&StreamId, StreamState)> {
+        self.states.iter().filter(move |(s, _)| s.kind == kind).map(|(s, st)| (s, *st))
+    }
+}
+
+/// The streams an object of `kind` in `namespace` can come from: the kind's cluster-wide stream
+/// and, for a namespaced object, its namespace's stream. Looking these two up directly keeps an
+/// Applied/Deleted from scanning every stream's bookkeeping.
+fn covering(kind: Kind, namespace: Option<&str>) -> impl Iterator<Item = StreamId> {
+    std::iter::once(StreamId::cluster(kind)).chain(namespace.map(|ns| StreamId::namespaced(kind, ns)))
+}
+
 /// Whether `kind` is marked (partial, denied) in `shared`.
 fn kind_marks(shared: &Shared, kind: Kind) -> (bool, bool) {
     (shared.partial_kinds().contains(&kind), shared.denied_kinds().contains(&kind))
@@ -67,9 +116,9 @@ fn kind_marks(shared: &Shared, kind: Kind) -> (bool, bool) {
 
 /// Mark `kind` denied when every one of its streams is dead, partial when only some are.
 /// Returns whether that changed the kind's marks, i.e. whether there is news to report.
-fn mark_kind(shared: &Shared, streams: &HashMap<StreamId, StreamState>, kind: Kind) -> bool {
+fn mark_kind(shared: &Shared, streams: &Streams, kind: Kind) -> bool {
     let before = kind_marks(shared, kind);
-    let states: Vec<StreamState> = streams.iter().filter(|(s, _)| s.kind == kind).map(|(_, st)| *st).collect();
+    let states: Vec<StreamState> = streams.of_kind(kind).map(|(_, st)| st).collect();
     let dead = states.iter().filter(|st| **st == StreamState::Dead).count();
     if states.is_empty() || dead == states.len() {
         shared.partial_kinds().remove(&kind);
@@ -87,7 +136,7 @@ pub fn spawn_reducer(config: ReducerConfig, shared: Shared, emitter: Arc<dyn Emi
 }
 
 async fn run(config: ReducerConfig, shared: Shared, emitter: Arc<dyn Emitter>, mut rx: mpsc::Receiver<ReducerMsg>) {
-    let mut streams: HashMap<StreamId, StreamState> = config.streams.iter().cloned().map(|s| (s, StreamState::Pending)).collect();
+    let mut streams = Streams::new(&config.streams);
     // Keys not yet re-confirmed since the last `Restarted` of their stream.
     let mut stale: HashMap<StreamId, HashSet<ObjectKey>> = HashMap::new();
     let mut initialised = false;
@@ -135,7 +184,7 @@ async fn run(config: ReducerConfig, shared: Shared, emitter: Arc<dyn Emitter>, m
                     }
                     ReducerMsg::Store(ev) => {
                         let changed = apply(&shared, ev, &mut streams, &mut stale, &mut errored_since, &emitter);
-                        if !initialised && !streams.values().any(|s| *s == StreamState::Pending) {
+                        if !initialised && !streams.any_pending() {
                             initialised = true;
                             flush_at = None;
                             let (graph, _) = shared.rebuild();
@@ -190,7 +239,7 @@ fn emit_rebuild(shared: &Shared, emitter: &Arc<dyn Emitter>) {
 fn apply(
     shared: &Shared,
     ev: StoreEvent,
-    streams: &mut HashMap<StreamId, StreamState>,
+    streams: &mut Streams,
     stale: &mut HashMap<StreamId, HashSet<ObjectKey>>,
     errored_since: &mut HashMap<StreamId, Instant>,
     emitter: &Arc<dyn Emitter>,
@@ -211,24 +260,26 @@ fn apply(
 fn apply_to_store(
     shared: &Shared,
     ev: StoreEvent,
-    streams: &mut HashMap<StreamId, StreamState>,
+    streams: &mut Streams,
     stale: &mut HashMap<StreamId, HashSet<ObjectKey>>,
     errored_since: &mut HashMap<StreamId, Instant>,
     emitter: &Arc<dyn Emitter>,
 ) -> bool {
     match ev {
         StoreEvent::Applied(obj) => {
-            let (kind, ns, key) = (obj.kind(), obj.namespace().map(str::to_owned), obj.key());
-            errored_since.retain(|s, _| !(s.kind == kind && s.covers(ns.as_deref())));
-            for (s, keys) in stale.iter_mut() {
-                if s.kind == kind && s.covers(ns.as_deref()) {
+            let key = obj.key();
+            for s in covering(key.kind, key.namespace.as_deref()) {
+                errored_since.remove(&s);
+                if let Some(keys) = stale.get_mut(&s) {
                     keys.remove(&key);
                 }
             }
             upsert_if_changed(shared, obj)
         }
         StoreEvent::Deleted(key) => {
-            errored_since.retain(|s, _| !(s.kind == key.kind && s.covers(key.namespace.as_deref())));
+            for s in covering(key.kind, key.namespace.as_deref()) {
+                errored_since.remove(&s);
+            }
             shared.store().remove(&key).is_some()
         }
         StoreEvent::Restarted(stream) => {
@@ -254,7 +305,7 @@ fn apply_to_store(
                 }
                 _ => false,
             };
-            streams.insert(stream, StreamState::Live);
+            streams.set(stream, StreamState::Live);
             swept
         }
         StoreEvent::Recovered(stream) => {
@@ -269,12 +320,12 @@ fn apply_to_store(
                 // A cluster-wide stream that already fell back is no longer tracked: its
                 // per-namespace replacements ran inside its task (see `watch_or_fall_back`) and
                 // died with it.
-                let fell_back = stream.namespace.is_none() && !streams.contains_key(&stream);
+                let fell_back = stream.namespace.is_none() && !streams.contains(&stream);
                 let dead: Vec<StreamId> = if fell_back {
                     streams
-                        .keys()
-                        .filter(|s| s.kind == kind && s.namespace.is_some())
-                        .cloned()
+                        .of_kind(kind)
+                        .filter(|(s, _)| s.namespace.is_some())
+                        .map(|(s, _)| s.clone())
                         .collect()
                 } else {
                     vec![]
@@ -283,7 +334,7 @@ fn apply_to_store(
                 for s in dead {
                     errored_since.remove(&s);
                     stale.remove(&s);
-                    streams.insert(s, StreamState::Dead);
+                    streams.set(s, StreamState::Dead);
                 }
                 // One toast per change of the kind's state (it first turns partial, or turns
                 // denied), not one per namespace: 50 forbidden namespaces are one piece of news.
@@ -325,7 +376,7 @@ fn apply_to_store(
                 !orphans.is_empty()
             };
             for s in replacements {
-                streams.insert(s, StreamState::Pending);
+                streams.set(s, StreamState::Pending);
             }
             if namespaces.is_empty() {
                 shared.partial_kinds().remove(&kind);
@@ -989,6 +1040,50 @@ mod tests {
             .count();
         assert_eq!(errors, 1, "one toast for the kind, not one per namespace");
         assert!(shared.partial_kinds().contains(&Kind::Secret));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_snapshot_gate_opens_exactly_when_the_last_pending_stream_lists() {
+        let [a, b, c] = ["a", "b", "c"].map(|ns| StreamId::namespaced(Kind::Pod, ns));
+        let shared = Shared::default();
+        let (tx, _h, mut rx) = spawn_streams(
+            &[a.clone(), b.clone(), c.clone(), StreamId::cluster(Kind::ConfigMap)],
+            shared.clone(),
+        )
+        .await;
+        let quiet = |rx: &mut tokio::sync::mpsc::UnboundedReceiver<OutEvent>, why: &str| {
+            while let Ok(ev) = rx.try_recv() {
+                assert!(!matches!(ev, OutEvent::GraphSnapshot(_)), "{why}: {ev:?}");
+            }
+        };
+        // Re-listing a stream that already listed counts it once.
+        for ev in [
+            StoreEvent::InitDone(a.clone()),
+            StoreEvent::Restarted(a.clone()),
+            StoreEvent::InitDone(a.clone()),
+            StoreEvent::InitDone(a.clone()),
+        ] {
+            tx.send(ReducerMsg::Store(ev)).await.unwrap();
+        }
+        // A stream outside the plan is not one the gate waits for, nor one that opens it.
+        tx.send(ReducerMsg::Store(StoreEvent::InitDone(StreamId::namespaced(Kind::Pod, "zzz"))))
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        quiet(&mut rx, "b, c and ConfigMaps are pending");
+        // A dead stream stops being waited for.
+        tx.send(forbid(&b)).await.unwrap();
+        tx.send(ReducerMsg::Store(StoreEvent::InitDone(Kind::ConfigMap.into())))
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        quiet(&mut rx, "c is pending");
+        tx.send(ReducerMsg::Store(StoreEvent::InitDone(c))).await.unwrap();
+        assert!(matches!(until_snapshot(&mut rx).await.last(), Some(OutEvent::GraphSnapshot(_))));
+        // A fallback's replacements are pending too, but only before the first snapshot gates.
+        tx.send(fell_back(Kind::ConfigMap, &["a"])).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        quiet(&mut rx, "one snapshot only");
     }
 
     #[tokio::test(start_paused = true)]
