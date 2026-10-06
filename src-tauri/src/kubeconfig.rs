@@ -173,7 +173,7 @@ pub fn list_contexts(paths: &[PathBuf]) -> AppResult<Vec<ContextInfo>> {
 pub fn load_merged(paths: &[PathBuf]) -> AppResult<Kubeconfig> {
     let mut merged = Kubeconfig::default();
     for (path, cfg) in read_existing(paths) {
-        merged = merged.merge(cfg).map_err(|e| {
+        merged = merged.merge(cfg).map_err(|_| {
             AppError::new(
                 ErrorKind::Internal,
                 format!("could not merge {} with the other kubeconfig files", path.display()),
