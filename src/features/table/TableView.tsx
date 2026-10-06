@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEve
 import { useShallow } from "zustand/react/shallow";
 import { useAppStore } from "../../app/store";
 import { isCreatable } from "../editor/templates";
-import { NOT_NAMESPACED } from "../graph/graphEmptyState";
+import { CLUSTER_SCOPED } from "../graph/graphEmptyState";
 import { scopeLabel } from "../../shared/scope";
 import type { Kind, Status, TableColumn, TableRow } from "../../shared/ipc/types";
 import { KIND_PLURAL } from "../navigator/kindTree";
@@ -47,7 +47,7 @@ export function TableView() {
   if (!kind) return null;
   const plural = KIND_PLURAL[kind];
   // Cluster-scoped kinds do not depend on the namespace, so they never ask for one.
-  const clusterScoped = NOT_NAMESPACED.has(kind);
+  const clusterScoped = CLUSTER_SCOPED.has(kind);
   // Rows are refetched once the scope's snapshot lands; until then a leftover table is not this scope's.
   const ready = !!table && (clusterScoped || graphReady);
   const total = table?.rows.length ?? 0;
@@ -80,7 +80,7 @@ export function TableView() {
           Show Helm storage
         </label>
       )}
-      {partial && !denied && scope && (
+      {partial && !denied && scope && !clusterScoped && (
         <p className="mb-3 text-xs text-text-muted">Some namespaces are missing: no access (RBAC).</p>
       )}
       {ready && !denied && (
@@ -101,7 +101,7 @@ export function TableView() {
         </table>
       )}
       {empty && (
-        <TableEmpty state={empty} noun={plural} clusterScoped={clusterScoped} onCreate={isCreatable(kind) ? () => openCreate() : undefined} />
+        <TableEmpty state={empty} noun={plural} scope={clusterScoped ? "cluster" : "namespaced"} onCreate={isCreatable(kind) ? () => openCreate() : undefined} />
       )}
     </div>
   );

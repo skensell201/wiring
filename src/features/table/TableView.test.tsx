@@ -200,6 +200,19 @@ describe("TableView", () => {
     expect(within(state).queryByRole("button")).not.toBeInTheDocument();
   });
 
+  it("a namespaced synthetic kind still asks for a namespace", () => {
+    useAppStore.setState({ connection: { ...connected(), scope: null }, view: { name: "table", kind: "PodGroup" }, tables: new Map() });
+    render(<TableView />);
+    expect(screen.getByRole("button", { name: "Choose a namespace" })).toBeInTheDocument();
+  });
+
+  it("does not note missing namespaces on a cluster-scoped kind", () => {
+    const nodes: Table = { kind: "Node", columns: [{ key: "name", label: "Name", numeric: false }], rows: [{ nodeId: "Node/n1", status: "ok", cells: [{ text: "n1", status: null }] }] };
+    useAppStore.setState({ view: { name: "table", kind: "Node" }, partialKinds: new Set(["Node"]), tables: new Map([["Node", nodes]]) });
+    render(<TableView />);
+    expect(screen.queryByText(/namespaces are missing/)).not.toBeInTheDocument();
+  });
+
   it("shows a loading state until the table arrives", () => {
     useAppStore.setState({ tables: new Map() });
     render(<TableView />);

@@ -2,8 +2,10 @@ import { KINDS, type GraphNode, type Kind, type NamespaceScope, type NodeId, typ
 import { scopeLabel } from "../../shared/scope";
 import { matchesSearch } from "./toFlow";
 
-/** Cluster-scoped kinds (their RBAC does not depend on the scope) and the synthetic ones. */
-export const NOT_NAMESPACED = new Set<Kind>(["PersistentVolume", "ClusterRole", "ClusterRoleBinding", "Node", "PodGroup", "Custom"]);
+/** Kinds that live outside any namespace: their RBAC and rows do not depend on the scope. */
+export const CLUSTER_SCOPED = new Set<Kind>(["PersistentVolume", "ClusterRole", "ClusterRoleBinding", "Node"]);
+/** The cluster-scoped kinds plus the synthetic ones, which a namespace's RBAC does not decide about. */
+const NOT_NAMESPACED = new Set<Kind>([...CLUSTER_SCOPED, "PodGroup", "Custom"]);
 /** The watched kinds a namespace's RBAC decides about. */
 export const NAMESPACED_KINDS: Kind[] = KINDS.filter((k) => !NOT_NAMESPACED.has(k));
 
