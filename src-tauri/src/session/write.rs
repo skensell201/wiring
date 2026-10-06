@@ -57,6 +57,15 @@ fn api_resource(kind: Kind) -> Option<ApiResource> {
     }
 }
 
+/// Whether `create_object` takes `m` down the built-in path: its `kind` is a watched kind and its
+/// `apiVersion` is that kind's (or missing, which the built-in path fills in). Anything else,
+/// such as a Knative `serving.knative.dev/v1` `Service`, is a custom resource.
+pub(crate) fn is_builtin_manifest(m: &manifest::RawManifest) -> bool {
+    Kind::parse(&m.kind)
+        .and_then(api_resource)
+        .is_some_and(|ar| m.api_version.as_deref().is_none_or(|v| v == ar.api_version))
+}
+
 pub(super) fn resource_for(kind: Kind) -> AppResult<ApiResource> {
     api_resource(kind).ok_or_else(|| AppError::new(ErrorKind::Invalid, format!("{} is not an API resource", kind.as_str())))
 }
@@ -268,6 +277,27 @@ impl Session {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn builtin(yaml: &str) -> bool {
+        is_builtin_manifest(&manifest::parse_raw(yaml).unwrap())
+    }
+
+    #[test]
+    fn only_a_built_in_kind_at_its_own_api_version_is_a_built_in_manifest() {
+        assert!(builtin("apiVersion: v1\nkind: Service\nmetadata: { name: web }\n"));
+        assert!(!builtin(
+            "apiVersion: serving.knative.dev/v1\nkind: Service\nmetadata: { name: web }\n"
+        ));
+        assert!(builtin("apiVersion: apps/v1\nkind: Deployment\nmetadata: { name: web }\n"));
+        assert!(!builtin(
+            "apiVersion: cert-manager.io/v1\nkind: Certificate\nmetadata: { name: web-tls }\n"
+        ));
+        assert!(builtin("apiVersion: v1\nkind: ConfigMap\nmetadata: { name: cfg }\n"));
+        assert!(
+            builtin("kind: ConfigMap\nmetadata: { name: cfg }\n"),
+            "a missing apiVersion is filled in for built-ins"
+        );
+    }
 
     #[test]
     fn every_watched_kind_has_an_api_resource() {

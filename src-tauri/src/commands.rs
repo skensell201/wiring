@@ -291,7 +291,7 @@ pub async fn update_object(state: State<'_, AppState>, node_id: String, yaml: St
 #[tauri::command]
 pub async fn create_object(state: State<'_, AppState>, namespace: String, yaml: String) -> AppResult<NodeId> {
     let raw = manifest::parse_raw(&yaml)?;
-    if Kind::parse(&raw.kind).is_none() {
+    if !crate::session::write::is_builtin_manifest(&raw) {
         let (group, version) = ops::manifest_group_version(&raw).map(|(g, v)| (g.to_owned(), v.to_owned()))?;
         let kind = resolve_kind(&state, &group, &version, &raw.kind).await?;
         let (client, _) = client_of(&state).await?;

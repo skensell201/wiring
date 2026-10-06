@@ -135,7 +135,9 @@ empty; the frontend shows it in place of the rows. A kind that is not served (or
 with `notFound`; `list_custom` without a selected namespace rejects with `invalid`.
 
 `get_object`, `update_object`, `delete_object` and `create_object` accept custom ids and custom manifests (a
-manifest whose `kind` is not a built-in `Kind` is resolved through discovery by its `apiVersion` and `kind`). They
+manifest goes down the built-in path only when its `kind` is a built-in `Kind` and its `apiVersion` is that
+kind's, or missing; anything else — e.g. a Knative `serving.knative.dev/v1` `Service` — is resolved through
+discovery by its `apiVersion` and `kind`). They
 behave as for built-in kinds (strict field validation, `resourceVersion` conflicts, Overwrite), except that the
 objects are read from the server on demand: they are never in the graph store. A custom resource that owns a
 watched object appears on the graph as a node of kind `Custom` with status `unknown` and an `owns` edge.
