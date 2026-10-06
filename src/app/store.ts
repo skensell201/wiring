@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { isCreatable, template, type CreatableKind } from "../features/editor/templates";
+import { customTemplate, isCreatable, template, type CreatableKind } from "../features/editor/templates";
 import { parseCustomId, refKey } from "../shared/customId";
 import { KIND_META } from "../features/graph/kindMeta";
 import { logBuffer } from "../features/logs/logBuffer";
@@ -32,7 +32,8 @@ export interface EditorState {
 
 export interface Details { nodeId: NodeId; data: ObjectDetails | null; events: K8sEvent[]; loading: boolean; editor: EditorState }
 
-export interface CreateDialog { open: boolean; kind: CreatableKind; buffer: string; namespace: string; error: AppError | null; submitting: boolean }
+/** `custom`: creating a custom resource of that kind (then `kind` is unused). */
+export interface CreateDialog { open: boolean; kind: CreatableKind; custom: ResourceRef | null; buffer: string; namespace: string; error: AppError | null; submitting: boolean }
 export interface DeleteDialog { open: boolean; nodeId: NodeId | null }
 /** "Discard your edits?" — opened by Cancel on a dirty buffer, or by a selection or namespace change
  *  while dirty (which then waits in `pendingSelect` / `pendingDeselect` / `pendingScope` until confirmed). */
@@ -50,6 +51,11 @@ export type DetailsTab = "overview" | "yaml" | "events" | "logs" | "terminal" | 
 
 export function viewEditor(original = ""): EditorState {
   return { mode: "view", buffer: "", original, error: null, saving: false };
+}
+
+/** The template the dialog's current kind and namespace would start from. */
+function dialogTemplate(d: Pick<CreateDialog, "kind" | "custom">, namespace: string): string {
+  return d.custom ? customTemplate(d.custom, namespace) : template(d.kind, namespace);
 }
 
 const isDirty = (e: EditorState) => e.mode !== "view" && e.buffer !== e.original;
@@ -279,7 +285,7 @@ export function initialState(): Omit<AppState, keyof Actions> {
     customTableErrors: new Map(),
     helmReleases: null,
     focusRequest: null,
-    createDialog: { open: false, kind: "Deployment", buffer: "", namespace: "", error: null, submitting: false },
+    createDialog: { open: false, kind: "Deployment", custom: null, buffer: "", namespace: "", error: null, submitting: false },
     deleteDialog: { open: false, nodeId: null },
     discardDialog: { open: false, pendingSelect: null, pendingDeselect: false, pendingScope: null },
     logs: initialLogs(),
@@ -818,26 +824,28 @@ export const useAppStore = create<AppState>()((set, get) => ({
 
   openCreate: (requested) =>
     set((s) => {
+      const namespace = firstNamespace(s.connection.scope, s.connection.namespaces) ?? "default";
+      // Creating from a custom kind's table starts from that kind.
+      const custom = !requested && s.view.name === "custom" ? s.view.resource : null;
       // Creating from a kind's table most likely means "one more of these".
       const tableKind = s.view.name === "table" && isCreatable(s.view.kind) ? s.view.kind : null;
       const kind = requested ?? tableKind ?? "Deployment";
-      const namespace = firstNamespace(s.connection.scope, s.connection.namespaces) ?? "default";
-      return { createDialog: { open: true, kind, buffer: template(kind, namespace), namespace, error: null, submitting: false } };
+      return { createDialog: { open: true, kind, custom, buffer: dialogTemplate({ kind, custom }, namespace), namespace, error: null, submitting: false } };
     }),
 
   setCreateKind: (kind) =>
     set((s) => {
       const d = s.createDialog;
       // Re-template unless the user has started typing into the previous one.
-      const untouched = d.buffer === "" || d.buffer === template(d.kind, d.namespace);
-      return { createDialog: { ...d, kind, buffer: untouched ? template(kind, d.namespace) : d.buffer } };
+      const untouched = d.buffer === "" || d.buffer === dialogTemplate(d, d.namespace);
+      return { createDialog: { ...d, kind, custom: null, buffer: untouched ? template(kind, d.namespace) : d.buffer } };
     }),
 
   setCreateNamespace: (namespace) =>
     set((s) => {
       const d = s.createDialog;
-      const untouched = d.buffer === "" || d.buffer === template(d.kind, d.namespace);
-      return { createDialog: { ...d, namespace, buffer: untouched ? template(d.kind, namespace) : d.buffer } };
+      const untouched = d.buffer === "" || d.buffer === dialogTemplate(d, d.namespace);
+      return { createDialog: { ...d, namespace, buffer: untouched ? dialogTemplate(d, namespace) : d.buffer } };
     }),
 
   setCreateBuffer: (buffer) => set((s) => ({ createDialog: { ...s.createDialog, buffer } })),

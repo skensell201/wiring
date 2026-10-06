@@ -315,4 +315,19 @@ describe("DetailsPanel for a custom resource", () => {
     render(<DetailsPanel />);
     expect(screen.getByRole("button", { name: /Certificate.*web-tls/ })).toBeInTheDocument();
   });
+
+  it("a selected custom resource has Overview, YAML and Events and Delete, but no workload tabs or Actions", () => {
+    const id = "Custom/cert-manager.io/v1/Certificate/shop/web-tls";
+    useAppStore.setState({
+      ...applySnapshot(initialState(), { nodes: [], edges: [] }),
+      selectedId: id,
+      details: { nodeId: id, loading: false, editor: viewEditor("kind: Certificate\n"), data: { yaml: "kind: Certificate\n", summary: [["Ready", "True"]], related: [] }, events: [] },
+    });
+    render(<DetailsPanel />);
+    expect(screen.getAllByRole("tab").map((t) => t.textContent)).toEqual(["Overview", "YAML", "Events"]);
+    expect(screen.queryByRole("button", { name: "Actions" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Delete" })).toBeInTheDocument();
+    expect(screen.getByText("Certificate · shop")).toBeInTheDocument();
+    expect(screen.getByText("Ready")).toBeInTheDocument();
+  });
 });

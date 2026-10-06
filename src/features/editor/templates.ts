@@ -1,4 +1,4 @@
-import { KINDS, type Kind } from "../../shared/ipc/types";
+import { KINDS, type Kind, type ResourceRef } from "../../shared/ipc/types";
 
 /** Kinds the Create dialog offers: every watched kind but the synthetic PodGroup and the cluster-level RBAC objects and Nodes. */
 export type CreatableKind = Exclude<Kind, "PodGroup" | "Custom" | "ClusterRole" | "ClusterRoleBinding" | "Node">;
@@ -79,4 +79,11 @@ export function template(kind: CreatableKind, namespace: string | null): string 
   const { apiVersion, name, body } = BODIES[kind];
   const ns = kind !== "PersistentVolume" && namespace !== null ? `  namespace: ${namespace}\n` : "";
   return `apiVersion: ${apiVersion}\nkind: ${kind}\nmetadata:\n  name: ${name}\n${ns}${body}`;
+}
+
+/** The minimal manifest of a custom kind: the server's schema validation does the rest. */
+export function customTemplate(r: ResourceRef, namespace: string | null): string {
+  const apiVersion = r.group ? `${r.group}/${r.version}` : r.version;
+  const ns = r.namespaced && namespace !== null ? `  namespace: ${namespace}\n` : "";
+  return `apiVersion: ${apiVersion}\nkind: ${r.kind}\nmetadata:\n  name: my-${r.kind.toLowerCase()}\n${ns}spec: {}\n`;
 }

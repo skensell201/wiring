@@ -87,7 +87,7 @@ export function TableView() {
   );
 }
 
-function HeaderCell({ column, sort, onClick }: { column: TableColumn; sort: SortState; onClick: () => void }) {
+export function HeaderCell({ column, sort, onClick }: { column: TableColumn; sort: SortState; onClick: () => void }) {
   const dir = sort?.key === column.key ? sort.dir : null;
   const Arrow = dir === "desc" ? ArrowDown : ArrowUp;
   return (
@@ -101,7 +101,7 @@ function HeaderCell({ column, sort, onClick }: { column: TableColumn; sort: Sort
   );
 }
 
-function Row({ row, columns, selected, onClick, onDoubleClick, onContextMenu }: {
+export function Row({ row, columns, selected, onClick, onDoubleClick, onContextMenu }: {
   row: TableRow; columns: TableColumn[]; selected: boolean; onClick: () => void; onDoubleClick: () => void; onContextMenu: (e: MouseEvent) => void;
 }) {
   return (

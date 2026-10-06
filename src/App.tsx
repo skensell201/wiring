@@ -10,6 +10,7 @@ import { CreateDialog } from "./features/editor/CreateDialog";
 import { Canvas } from "./features/graph/Canvas";
 import { ViewHeader } from "./features/graph/ViewHeader";
 import { Navigator } from "./features/navigator/Navigator";
+import { CustomTableView } from "./features/table/CustomTableView";
 import { TableView } from "./features/table/TableView";
 import { ErrorBoundary } from "./shared/ui/ErrorBoundary";
 import { ActionDialogs } from "./features/actions/ActionDialogs";
@@ -46,7 +47,7 @@ export function App() {
           <>
             <ViewHeader />
             <main className="min-h-0 flex-1">
-              <ErrorBoundary name="main view">{viewName === "graph" ? <Canvas /> : <TableView />}</ErrorBoundary>
+              <ErrorBoundary name="main view">{viewName === "graph" ? <Canvas /> : viewName === "custom" ? <CustomTableView /> : <TableView />}</ErrorBoundary>
             </main>
           </>
         )}
