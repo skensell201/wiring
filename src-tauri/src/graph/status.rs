@@ -799,24 +799,30 @@ pub fn summary(obj: &Object) -> SummaryRows {
                     "Pod selector".into(),
                     super::selector::selector_text(&spec.pod_selector.clone().unwrap_or_default()),
                 ));
-                let types = spec.policy_types.clone().unwrap_or_else(|| vec!["Ingress".into()]);
+                let types = super::relations::policy_types(spec);
                 rows.push(("Policy types".into(), types.join(", ")));
+                // Rules of a direction the policy does not restrict are ignored by Kubernetes.
+                let in_effect = |dir: &str| types.iter().any(|t| t == dir);
+                let note = |dir: &str| if in_effect(dir) { "" } else { " (not in effect)" };
                 let ingress = spec.ingress.as_deref().unwrap_or_default();
-                if types.iter().any(|t| t == "Ingress") && ingress.is_empty() {
+                if in_effect("Ingress") && ingress.is_empty() {
                     rows.push(("Ingress".into(), "Default deny".into()));
                 }
                 for (i, r) in ingress.iter().enumerate() {
                     rows.push((
                         format!("Ingress {}", i + 1),
-                        rule_text("from", r.from.as_deref(), r.ports.as_deref()),
+                        rule_text("from", r.from.as_deref(), r.ports.as_deref()) + note("Ingress"),
                     ));
                 }
                 let egress = spec.egress.as_deref().unwrap_or_default();
-                if types.iter().any(|t| t == "Egress") && egress.is_empty() {
+                if in_effect("Egress") && egress.is_empty() {
                     rows.push(("Egress".into(), "Default deny".into()));
                 }
                 for (i, r) in egress.iter().enumerate() {
-                    rows.push((format!("Egress {}", i + 1), rule_text("to", r.to.as_deref(), r.ports.as_deref())));
+                    rows.push((
+                        format!("Egress {}", i + 1),
+                        rule_text("to", r.to.as_deref(), r.ports.as_deref()) + note("Egress"),
+                    ));
                 }
             }
         }
@@ -947,6 +953,27 @@ mod tests {
         assert!(badges.contains(&"policy".to_string()), "{badges:?}");
         let (_, badges) = describe(s.find(Kind::Pod, Some("t"), "other-1").unwrap(), &s);
         assert!(!badges.contains(&"policy".to_string()), "admitted is not selected");
+    }
+
+    #[test]
+    fn overview_shows_the_policy_types_in_effect() {
+        let s = Store::from_yaml_docs(super::super::rows::tests::POLICY_TYPES).unwrap();
+        let rows = |n: &str| summary(s.find(Kind::NetworkPolicy, Some("s"), n).unwrap());
+        let get = |r: &SummaryRows, key: &str| r.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone());
+        let implicit = rows("implicit-egress");
+        assert_eq!(get(&implicit, "Policy types").as_deref(), Some("Ingress, Egress"));
+        assert_eq!(get(&implicit, "Egress 1").as_deref(), Some("to pods app=client on all ports"));
+        let ingress_only = rows("implicit-ingress");
+        assert_eq!(get(&ingress_only, "Policy types").as_deref(), Some("Ingress"));
+        assert_eq!(get(&ingress_only, "Ingress").as_deref(), Some("Default deny"));
+        assert_eq!(get(&ingress_only, "Egress"), None, "no egress rules: egress is not restricted");
+        let egress_only = rows("egress-only");
+        assert_eq!(get(&egress_only, "Policy types").as_deref(), Some("Egress"));
+        assert_eq!(
+            get(&egress_only, "Ingress 1").as_deref(),
+            Some("from pods app=client on all ports (not in effect)")
+        );
+        assert_eq!(get(&egress_only, "Egress").as_deref(), Some("Default deny"));
     }
 
     #[test]

@@ -490,9 +490,8 @@ fn kind_cells<'a>(
                     spec.and_then(|s| s.pod_selector.as_ref()).unwrap_or(&Default::default()),
                 )),
                 plain(
-                    spec.and_then(|s| s.policy_types.as_ref())
-                        .map(|t| t.join(", "))
-                        .unwrap_or_else(|| "Ingress".into()),
+                    spec.map(|s| crate::graph::relations::policy_types(s).join(", "))
+                        .unwrap_or_default(),
                 ),
                 age_cell,
             ]
@@ -533,7 +532,7 @@ fn kind_cells<'a>(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::store::{Kind, Store};
 
@@ -657,6 +656,46 @@ mod tests {
         let pv = Store::from_yaml_docs("apiVersion: v1\nkind: PersistentVolume\nmetadata: { name: pv-1 }\n").unwrap();
         let t = with_namespace_column(table(&pv, Kind::PersistentVolume, jiff::Timestamp::now()));
         assert_eq!(t.rows[0].cells[0].text, "—");
+    }
+
+    pub(crate) const POLICY_TYPES: &str = "apiVersion: v1
+kind: Pod
+metadata: { name: web-1, namespace: s, labels: { app: web } }
+---
+apiVersion: v1
+kind: Pod
+metadata: { name: client-1, namespace: s, labels: { app: client } }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: implicit-egress, namespace: s }
+spec:
+  podSelector: { matchLabels: { app: web } }
+  ingress: [ { from: [ { podSelector: { matchLabels: { app: client } } } ] } ]
+  egress: [ { to: [ { podSelector: { matchLabels: { app: client } } } ] } ]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: implicit-ingress, namespace: s }
+spec:
+  podSelector: { matchLabels: { app: web } }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: egress-only, namespace: s }
+spec:
+  podSelector: { matchLabels: { app: web } }
+  policyTypes: [ Egress ]
+  ingress: [ { from: [ { podSelector: { matchLabels: { app: client } } } ] } ]
+";
+
+    #[test]
+    fn unset_policy_types_follow_kubernetes_defaults() {
+        let s = Store::from_yaml_docs(POLICY_TYPES).unwrap();
+        let t = table(&s, Kind::NetworkPolicy, now());
+        assert_eq!(cell(&t, "implicit-egress", "policyTypes").text, "Ingress, Egress");
+        assert_eq!(cell(&t, "implicit-ingress", "policyTypes").text, "Ingress");
+        assert_eq!(cell(&t, "egress-only", "policyTypes").text, "Egress");
     }
 
     #[test]

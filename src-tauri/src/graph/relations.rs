@@ -2,7 +2,7 @@
 //! when both endpoints exist in the store.
 
 use k8s_openapi::api::core::v1::PodSpec;
-use k8s_openapi::api::networking::v1::{Ingress, NetworkPolicyPeer};
+use k8s_openapi::api::networking::v1::{Ingress, NetworkPolicyPeer, NetworkPolicySpec};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::LabelSelector;
 use std::collections::BTreeMap;
 
@@ -187,8 +187,19 @@ pub fn hpa_edges(store: &Store) -> Vec<Edge> {
     edges
 }
 
+/// The directions a policy restricts. Unset `policyTypes` means Kubernetes' default: Ingress
+/// always, Egress only when the policy has egress rules.
+pub fn policy_types(spec: &NetworkPolicySpec) -> Vec<String> {
+    match &spec.policy_types {
+        Some(types) => types.clone(),
+        None if spec.egress.as_ref().is_some_and(|e| !e.is_empty()) => vec!["Ingress".into(), "Egress".into()],
+        None => vec!["Ingress".into()],
+    }
+}
+
 /// NetworkPolicy -> each pod its `podSelector` picks (`applies`), and pod -> policy for each pod
-/// an ingress `from` peer admits (`allows`). ipBlock peers have no graph edge.
+/// an ingress `from` peer admits (`allows`) while ingress is in effect. ipBlock peers have no
+/// graph edge.
 pub fn network_policy_edges(store: &Store) -> Vec<Edge> {
     let mut edges = vec![];
     let all_pods = LabelSelector::default();
@@ -203,7 +214,15 @@ pub fn network_policy_edges(store: &Store) -> Vec<Edge> {
                 edges.push(Edge::new(policy.clone(), id_of(pod), Relation::Applies));
             }
         }
-        for peer in spec.ingress.iter().flatten().flat_map(|r| r.from.iter().flatten()) {
+        // Ingress rules of a policy that does not restrict ingress admit nothing.
+        let ingress = policy_types(spec).iter().any(|t| t == "Ingress");
+        for peer in spec
+            .ingress
+            .iter()
+            .flatten()
+            .filter(|_| ingress)
+            .flat_map(|r| r.from.iter().flatten())
+        {
             if peer.pod_selector.is_none() && peer.namespace_selector.is_none() {
                 continue;
             }
@@ -318,6 +337,16 @@ mod tests {
                 "Pod/t/other-1->NetworkPolicy/s/web-ingress:allows",
             ]
         );
+    }
+
+    #[test]
+    fn only_policies_with_ingress_in_effect_admit_peers() {
+        let s = Store::from_yaml_docs(crate::graph::rows::tests::POLICY_TYPES).unwrap();
+        let allows: Vec<String> = ids(&network_policy_edges(&s))
+            .into_iter()
+            .filter(|id| id.ends_with(":allows"))
+            .collect();
+        assert_eq!(allows, vec!["Pod/s/client-1->NetworkPolicy/s/implicit-egress:allows"]);
     }
 
     #[test]
