@@ -136,4 +136,21 @@ describe("Navigator rail", () => {
     fireEvent.click(screen.getByRole("button", { name: /collapse navigator/i }));
     expect(toggleSidebar).toHaveBeenCalled();
   });
+
+describe("Navigator across namespaces", () => {
+  it("counts from the too-large summary and marks partially readable kinds", () => {
+    useAppStore.setState({
+      ...initialState(), contexts, connection: connected(),
+      tooLarge: { nodes: 1873, kinds: [{ kind: "Pod", count: 1500, worst: "err" }] },
+      partialKinds: new Set(["Secret"]),
+    });
+    render(<Navigator />);
+    const pods = screen.getByRole("button", { name: /^Pods/ });
+    expect(within(pods).getByText("1500")).toBeInTheDocument();
+    expect(within(pods).getByTestId("status-dot")).toHaveAttribute("data-status", "err");
+    const secrets = screen.getByRole("button", { name: /^Secrets/ });
+    expect(within(secrets).getByText("partial")).toHaveAttribute("title", "Some namespaces are not readable (RBAC)");
+    expect(within(pods).queryByText("partial")).toBeNull();
+  });
+});
 });
