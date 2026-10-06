@@ -12,7 +12,7 @@ use kube::runtime::WatchStreamExt;
 use kube::Client;
 use serde_json::Value;
 
-use super::id::{custom_node_id, split_api_version, CustomId};
+use super::id::{custom_node_id, is_label, split_api_version, CustomId};
 use crate::discovery::{CustomKind, ResourceRef};
 use crate::error::{AppError, AppResult, ErrorKind};
 use crate::graph::NodeId;
@@ -368,20 +368,26 @@ pub async fn update(client: &Client, kind: &CustomKind, id: &CustomId, yaml: &st
     details_of(saved)
 }
 
+/// The namespace a new object of `r` goes to: the manifest's own, else `fallback`; none for a
+/// cluster-scoped kind. It becomes a URL path segment, so it must be a DNS label.
+fn create_namespace(r: &ResourceRef, own: Option<&str>, fallback: &str) -> AppResult<Option<String>> {
+    if !r.namespaced {
+        return Ok(None);
+    }
+    let ns = own
+        .or_else(|| (!fallback.is_empty()).then_some(fallback))
+        .ok_or_else(|| invalid("metadata.namespace is missing and no namespace is selected"))?;
+    if !is_label(ns) {
+        return Err(invalid(format!("{ns:?} is not a valid namespace name")));
+    }
+    Ok(Some(ns.to_owned()))
+}
+
 /// Create `m` (already resolved to `kind`); its own namespace wins over `fallback_namespace`.
 pub async fn create(client: &Client, kind: &CustomKind, m: RawManifest, fallback_namespace: &str) -> AppResult<NodeId> {
     let r = &kind.resource;
     ensure_manifest_kind(&m, r)?;
-    let ns: Option<String> = if r.namespaced {
-        Some(
-            m.namespace
-                .clone()
-                .or_else(|| (!fallback_namespace.is_empty()).then(|| fallback_namespace.to_owned()))
-                .ok_or_else(|| invalid("metadata.namespace is missing and no namespace is selected"))?,
-        )
-    } else {
-        None
-    };
+    let ns = create_namespace(r, m.namespace.as_deref(), fallback_namespace)?;
     let mut body = m.body;
     put_namespace(&mut body, ns.as_deref());
     let bytes = serde_json::to_vec(&body).map_err(|e| AppError::internal(e.to_string()))?;
@@ -722,6 +728,20 @@ mod tests {
             assert_eq!(err.kind, ErrorKind::Invalid, "{to}");
         }
         assert!(ensure_manifest_kind(&parse_raw(&YAML.replace("apiVersion: cert-manager.io/v1\n", "")).unwrap(), &r).is_err());
+    }
+
+    #[test]
+    fn a_new_object_goes_only_to_a_valid_namespace() {
+        let r = cert_ref(true);
+        assert_eq!(create_namespace(&r, Some("shop"), "dev").unwrap().as_deref(), Some("shop"));
+        assert_eq!(create_namespace(&r, None, "dev").unwrap().as_deref(), Some("dev"));
+        assert!(create_namespace(&r, None, "").is_err());
+        assert_eq!(create_namespace(&cert_ref(false), Some("shop"), "dev").unwrap(), None);
+        for bad in ["../x", "a/b", "Shop", "a?b=c", "shop%2F", "-a", "", " shop"] {
+            let err = create_namespace(&r, Some(bad), "dev").unwrap_err();
+            assert_eq!(err.kind, ErrorKind::Invalid, "{bad:?}");
+        }
+        assert_eq!(create_namespace(&r, None, "a/b").unwrap_err().kind, ErrorKind::Invalid);
     }
 
     #[test]

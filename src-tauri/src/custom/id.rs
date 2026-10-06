@@ -24,7 +24,7 @@ fn is_alnum(b: u8) -> bool {
 }
 
 /// DNS-1123 label: lowercase alphanumerics and `-`, alphanumeric at both ends, at most 63 bytes.
-fn is_label(s: &str) -> bool {
+pub(crate) fn is_label(s: &str) -> bool {
     let b = s.as_bytes();
     !b.is_empty() && b.len() <= 63 && is_alnum(b[0]) && is_alnum(b[b.len() - 1]) && b.iter().all(|&c| is_alnum(c) || c == b'-')
 }
