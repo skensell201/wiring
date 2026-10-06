@@ -1,0 +1,100 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: api, namespace: g, uid: dep-api }
+spec:
+  replicas: 6
+  selector: { matchLabels: { app: api } }
+  template:
+    metadata: { labels: { app: api } }
+    spec: { containers: [ { name: c, image: api:1 } ] }
+status: { replicas: 6, readyReplicas: 6 }
+---
+apiVersion: apps/v1
+kind: ReplicaSet
+metadata:
+  name: api-1
+  namespace: g
+  uid: rs-api-1
+  ownerReferences: [ { apiVersion: apps/v1, kind: Deployment, name: api, uid: dep-api, controller: true } ]
+spec:
+  replicas: 6
+  selector: { matchLabels: { app: api } }
+  template:
+    metadata: { labels: { app: api } }
+    spec: { containers: [ { name: c, image: api:1 } ] }
+status: { replicas: 6, readyReplicas: 6 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: api-ingress, namespace: g }
+spec:
+  podSelector: { matchLabels: { app: api } }
+  policyTypes: [ Ingress ]
+  ingress: [ { from: [ { podSelector: { matchLabels: { app: api } } } ] } ]
+---
+apiVersion: v1
+kind: Node
+metadata: { name: node-a }
+status:
+  nodeInfo: { architecture: arm64, bootID: b, containerRuntimeVersion: c, kernelVersion: k, kubeProxyVersion: v1.36.1, kubeletVersion: v1.36.1, machineID: m, operatingSystem: linux, osImage: Linux, systemUUID: u }
+  conditions: [ { type: Ready, status: "True" } ]
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: api-1-p1
+  namespace: g
+  labels: { app: api }
+  ownerReferences: [ { apiVersion: apps/v1, kind: ReplicaSet, name: api-1, uid: rs-api-1, controller: true } ]
+spec: { nodeName: node-a, containers: [ { name: c, image: api:1 } ] }
+status: { phase: Running }
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: api-1-p2
+  namespace: g
+  labels: { app: api }
+  ownerReferences: [ { apiVersion: apps/v1, kind: ReplicaSet, name: api-1, uid: rs-api-1, controller: true } ]
+spec: { nodeName: node-a, containers: [ { name: c, image: api:1 } ] }
+status: { phase: Running }
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: api-1-p3
+  namespace: g
+  labels: { app: api }
+  ownerReferences: [ { apiVersion: apps/v1, kind: ReplicaSet, name: api-1, uid: rs-api-1, controller: true } ]
+spec: { nodeName: node-a, containers: [ { name: c, image: api:1 } ] }
+status: { phase: Running }
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: api-1-p4
+  namespace: g
+  labels: { app: api }
+  ownerReferences: [ { apiVersion: apps/v1, kind: ReplicaSet, name: api-1, uid: rs-api-1, controller: true } ]
+spec: { nodeName: node-a, containers: [ { name: c, image: api:1 } ] }
+status: { phase: Running }
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: api-1-p5
+  namespace: g
+  labels: { app: api }
+  ownerReferences: [ { apiVersion: apps/v1, kind: ReplicaSet, name: api-1, uid: rs-api-1, controller: true } ]
+spec: { nodeName: node-a, containers: [ { name: c, image: api:1 } ] }
+status: { phase: Running }
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: api-1-p6
+  namespace: g
+  labels: { app: api }
+  ownerReferences: [ { apiVersion: apps/v1, kind: ReplicaSet, name: api-1, uid: rs-api-1, controller: true } ]
+spec: { nodeName: node-a, containers: [ { name: c, image: api:1 } ] }
+status: { phase: Running }

@@ -417,6 +417,39 @@ mod tests {
     }
 
     #[test]
+    fn policy_and_node_edges_retarget_to_pod_groups() {
+        let s = Store::from_fixture("graph-extras-group").unwrap();
+        let group = "PodGroup/g/Deployment/api";
+        let g = build(&s, &BuildOptions::default());
+        let ids = edge_ids(&g);
+        for e in [
+            format!("NetworkPolicy/g/api-ingress->{group}:applies"),
+            format!("{group}->NetworkPolicy/g/api-ingress:allows"),
+            format!("{group}->Node//node-a:runsOn"),
+        ] {
+            assert_eq!(ids.iter().filter(|i| **i == e).count(), 1, "{e} in {ids:?}");
+        }
+
+        let opts = BuildOptions {
+            expanded_groups: [group.to_string()].into(),
+            ..Default::default()
+        };
+        let g = build(&s, &opts);
+        let ids = edge_ids(&g);
+        assert!(g.node(group).is_none());
+        for n in 1..=6 {
+            let pod = format!("Pod/g/api-1-p{n}");
+            for e in [
+                format!("NetworkPolicy/g/api-ingress->{pod}:applies"),
+                format!("{pod}->NetworkPolicy/g/api-ingress:allows"),
+                format!("{pod}->Node//node-a:runsOn"),
+            ] {
+                assert_eq!(ids.iter().filter(|i| **i == e).count(), 1, "{e} in {ids:?}");
+            }
+        }
+    }
+
+    #[test]
     fn group_badges_omits_empty_breakdown() {
         assert_eq!(
             group_badges(&GroupInfo {
