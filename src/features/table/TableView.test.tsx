@@ -122,15 +122,59 @@ describe("TableView", () => {
   });
 
   it("shows the empty state for a kind with no rows", () => {
-    useAppStore.setState({ tables: new Map([["Pod", { ...pods, rows: [] }]]) });
+    useAppStore.setState({ deniedLoaded: true, tables: new Map([["Pod", { ...pods, rows: [] }]]) });
     render(<TableView />);
-    expect(screen.getByText("No Pods in payments")).toBeInTheDocument();
+    expect(screen.getByRole("status", { name: "Nothing here yet" })).toHaveTextContent("payments has no Pods.");
+    fireEvent.click(screen.getByRole("button", { name: "+ Create" }));
+    expect(useAppStore.getState().createDialog).toMatchObject({ open: true, kind: "Pod" });
   });
 
   it("shows the RBAC state for a denied kind", () => {
     useAppStore.setState({ view: { name: "table", kind: "Secret" }, deniedKinds: new Set(["Secret"]), tables: new Map() });
     render(<TableView />);
-    expect(screen.getByText("No access to Secrets (RBAC)")).toBeInTheDocument();
+    expect(screen.getByRole("status", { name: "No access" })).toHaveTextContent("You can't list Secrets in payments (RBAC). Ask your cluster admin, or pick another namespace.");
+  });
+
+  it("notes missing namespaces above the rows of a partial kind", () => {
+    useAppStore.setState({ partialKinds: new Set(["Pod"]) });
+    render(<TableView />);
+    expect(screen.getByText("Some namespaces are missing: no access (RBAC).")).toBeInTheDocument();
+    expect(names()).toEqual(["api", "db", "web-1"]);
+  });
+
+  it("asks for a namespace before one is chosen", () => {
+    useAppStore.setState({ connection: { ...connected(), scope: null } });
+    render(<TableView />);
+    fireEvent.click(screen.getByRole("button", { name: "Choose a namespace" }));
+    expect(useAppStore.getState().namespacePickerSeq).toBe(1);
+  });
+
+  it("clears a search that matches nothing", () => {
+    useAppStore.setState({ search: "nothing-here" });
+    render(<TableView />);
+    fireEvent.click(screen.getByRole("button", { name: "Clear search" }));
+    expect(useAppStore.getState().search).toBe("");
+  });
+
+  it("offers a typed namespace when namespaces cannot be listed", () => {
+    useAppStore.setState({ deniedLoaded: true, connection: { ...connected(), canListNamespaces: false }, tables: new Map([["Pod", { ...pods, rows: [] }]]) });
+    render(<TableView />);
+    expect(screen.getByRole("button", { name: "Enter another namespace" })).toBeInTheDocument();
+  });
+
+  it("does not flash an empty state before the RBAC answer arrives", () => {
+    useAppStore.setState({ deniedLoaded: false, tables: new Map([["Pod", { ...pods, rows: [] }]]) });
+    render(<TableView />);
+    expect(screen.getByRole("status", { name: "Loading Pods…" })).toBeInTheDocument();
+    expect(screen.queryByText("Nothing here yet")).not.toBeInTheDocument();
+  });
+
+  it("a cluster-scoped kind never asks for a namespace", () => {
+    const nodes: Table = { kind: "Node", columns: [{ key: "name", label: "Name", numeric: false }], rows: [] };
+    useAppStore.setState({ deniedLoaded: true, connection: { ...connected(), scope: null }, view: { name: "table", kind: "Node" }, tables: new Map([["Node", nodes]]) });
+    render(<TableView />);
+    expect(screen.getByRole("status", { name: "Nothing here yet" })).toHaveTextContent("The cluster has no Nodes.");
+    expect(screen.queryByText("Choose a namespace")).not.toBeInTheDocument();
   });
 
   it("shows a loading state until the table arrives", () => {

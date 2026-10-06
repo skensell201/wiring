@@ -2,23 +2,27 @@ import { ArrowDown, ArrowUp } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { useAppStore } from "../../app/store";
+import { isCreatable } from "../editor/templates";
+import { NOT_NAMESPACED } from "../graph/graphEmptyState";
 import { scopeLabel } from "../../shared/scope";
 import type { Kind, Status, TableColumn, TableRow } from "../../shared/ipc/types";
 import { KIND_PLURAL } from "../navigator/kindTree";
+import { TableEmpty } from "./TableEmpty";
+import { tableEmptyState } from "./tableEmptyState";
 import { filterRows, nextSort, sortRows, type SortState } from "./sort";
 
 const STATUS_TEXT: Record<Status, string> = { ok: "text-status-ok", warn: "text-status-warn", err: "text-status-err", unknown: "text-text-muted" };
 
 /** The per-kind table: sortable, filtered by the header search, keyboard-navigable. */
 export function TableView() {
-  const { kind, table, search, selectedId, denied, scope, namespaces, graphReady, includeHelmStorage, setIncludeHelmStorage, select, focusInGraph, openActionsMenu } = useAppStore(
+  const { kind, table, search, selectedId, denied, deniedLoaded, partial, scope, namespaces, graphReady, includeHelmStorage, setIncludeHelmStorage, select, focusInGraph, openActionsMenu, openCreate } = useAppStore(
     useShallow((s) => {
       const kind = s.view.name === "table" ? s.view.kind : null;
       return {
         kind, table: kind ? s.tables.get(kind) : undefined, search: s.search, selectedId: s.selectedId,
-        denied: kind ? s.deniedKinds.has(kind) : false, scope: s.connection.scope, namespaces: s.connection.namespaces, graphReady: s.graphReady,
+        denied: kind ? s.deniedKinds.has(kind) : false, deniedLoaded: s.deniedLoaded, partial: kind ? s.partialKinds.has(kind) : false, scope: s.connection.scope, namespaces: s.connection.namespaces, graphReady: s.graphReady,
         includeHelmStorage: s.includeHelmStorage, setIncludeHelmStorage: s.setIncludeHelmStorage,
-        select: s.select, focusInGraph: s.focusInGraph, openActionsMenu: s.openActionsMenu,
+        select: s.select, focusInGraph: s.focusInGraph, openActionsMenu: s.openActionsMenu, openCreate: s.openCreate,
       };
     }),
   );
@@ -42,12 +46,16 @@ export function TableView() {
 
   if (!kind) return null;
   const plural = KIND_PLURAL[kind];
-  let message: string | null = null;
-  if (denied) message = `No access to ${plural} (RBAC)`;
-  else if (!scope) message = "Select a namespace to see its resources.";
-  else if (!table || !graphReady) message = `Loading ${plural}…`; // rows are refetched once the snapshot lands
-  else if (table.rows.length === 0) message = `No ${plural} in ${scopeLabel(scope, namespaces)}`;
-  else if (rows.length === 0) message = `No ${plural} match “${search.trim()}”`;
+  // Cluster-scoped kinds do not depend on the namespace, so they never ask for one.
+  const clusterScoped = NOT_NAMESPACED.has(kind);
+  // Rows are refetched once the scope's snapshot lands; until then a leftover table is not this scope's.
+  const ready = !!table && (clusterScoped || graphReady);
+  const total = table?.rows.length ?? 0;
+  const empty = tableEmptyState({
+    scope: clusterScoped ? "The cluster" : scopeLabel(scope, namespaces), denied,
+    // An empty table may still turn out to be denied; wait for the RBAC answer.
+    loaded: ready && (deniedLoaded || total > 0), total, shown: rows.length, search,
+  });
 
   const onKeyDown = (e: KeyboardEvent) => {
     if (e.key === "Enter") {
@@ -72,7 +80,10 @@ export function TableView() {
           Show Helm storage
         </label>
       )}
-      {table && graphReady && !denied && (
+      {partial && !denied && scope && (
+        <p className="mb-3 text-xs text-text-muted">Some namespaces are missing: no access (RBAC).</p>
+      )}
+      {ready && !denied && (
         <table ref={grid} role="grid" tabIndex={0} onKeyDown={onKeyDown} aria-label={plural}
           className="w-full border-separate border-spacing-0 rounded-card border border-border bg-surface text-sm outline-none focus-visible:ring-1 focus-visible:ring-accent">
           <thead className="sticky top-0 z-10 bg-surface">
@@ -89,7 +100,10 @@ export function TableView() {
           </tbody>
         </table>
       )}
-      {message && <div className="grid h-full place-items-center text-text-muted">{message}</div>}
+      {empty && (
+        <TableEmpty state={empty} noun={plural} onCreate={isCreatable(kind) ? () => openCreate() : undefined}
+          noAccessBody={clusterScoped ? `You can't list ${plural} on this cluster (RBAC). Ask your cluster admin.` : undefined} />
+      )}
     </div>
   );
 }

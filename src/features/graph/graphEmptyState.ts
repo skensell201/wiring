@@ -3,7 +3,7 @@ import { scopeLabel } from "../../shared/scope";
 import { matchesSearch } from "./toFlow";
 
 /** Cluster-scoped kinds (their RBAC does not depend on the scope) and the synthetic ones. */
-const NOT_NAMESPACED = new Set<Kind>(["PersistentVolume", "ClusterRole", "ClusterRoleBinding", "Node", "PodGroup", "Custom"]);
+export const NOT_NAMESPACED = new Set<Kind>(["PersistentVolume", "ClusterRole", "ClusterRoleBinding", "Node", "PodGroup", "Custom"]);
 /** The watched kinds a namespace's RBAC decides about. */
 export const NAMESPACED_KINDS: Kind[] = KINDS.filter((k) => !NOT_NAMESPACED.has(k));
 
