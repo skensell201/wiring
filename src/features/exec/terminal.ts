@@ -5,6 +5,8 @@ import "@xterm/xterm/css/xterm.css";
 export interface TermHandle {
   write(data: Uint8Array | string): void;
   onData(cb: (data: string) => void): void;
+  /** Non-UTF-8 input xterm produces (e.g. some mouse reports), as raw bytes. */
+  onBinary(cb: (bytes: Uint8Array) => void): void;
   onResize(cb: (cols: number, rows: number) => void): void;
   fit(): void;
   readonly cols: number;
@@ -42,6 +44,8 @@ export function createTerminal(el: HTMLElement): TermHandle {
   return {
     write: (data) => term.write(data),
     onData: (cb) => { term.onData(cb); },
+    // xterm hands binary data as a string of byte-valued chars.
+    onBinary: (cb) => { term.onBinary((data) => cb(Uint8Array.from(data, (c) => c.charCodeAt(0) & 0xff))); },
     onResize: (cb) => { term.onResize(({ cols, rows }) => cb(cols, rows)); },
     fit: () => fit.fit(),
     get cols() { return term.cols; },

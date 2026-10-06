@@ -4,7 +4,7 @@ import type { ExecMessage } from "../../shared/ipc/types";
 import { TerminalTab } from "./TerminalTab";
 
 const fakeTerm = {
-  write: vi.fn(), onData: vi.fn(), onResize: vi.fn(), fit: vi.fn(), focus: vi.fn(), dispose: vi.fn(),
+  write: vi.fn(), onData: vi.fn(), onBinary: vi.fn(), onResize: vi.fn(), fit: vi.fn(), focus: vi.fn(), dispose: vi.fn(),
   cols: 100, rows: 30,
 };
 vi.mock("./terminal", () => ({ createTerminal: vi.fn(() => fakeTerm) }));
@@ -12,13 +12,15 @@ vi.mock("./terminal", () => ({ createTerminal: vi.fn(() => fakeTerm) }));
 const execPods = vi.fn();
 const startExec = vi.fn();
 const stopExec = vi.fn();
+const execInput = vi.fn();
+const execResize = vi.fn();
 vi.mock("../../shared/ipc/commands", () => ({
   commands: {
     execPods: (...a: unknown[]) => execPods(...a),
     startExec: (...a: unknown[]) => startExec(...a),
     stopExec: (...a: unknown[]) => stopExec(...a),
-    execInput: vi.fn(async () => null),
-    execResize: vi.fn(async () => null),
+    execInput: (...a: unknown[]) => execInput(...a),
+    execResize: (...a: unknown[]) => execResize(...a),
   },
 }));
 
@@ -36,7 +38,17 @@ beforeEach(() => {
   ]);
   startExec.mockImplementation(async (_r: unknown, onMessage: (m: ExecMessage) => void) => { push = onMessage; return 7; });
   stopExec.mockResolvedValue(null);
+  execInput.mockResolvedValue(null);
+  execResize.mockResolvedValue(null);
 });
+
+async function connected() {
+  const view = render(<TerminalTab nodeId="Deployment/shop/web" />);
+  fireEvent.click(await screen.findByRole("button", { name: "Connect" }));
+  await waitFor(() => expect(startExec).toHaveBeenCalled());
+  await act(async () => {});
+  return view;
+}
 
 describe("TerminalTab", () => {
   it("offers the workload's pods and their containers, and connects to the chosen one", async () => {
@@ -98,6 +110,30 @@ describe("TerminalTab", () => {
     fakeTerm.fit.mockClear();
     act(() => roCallbacks.forEach((cb) => cb()));
     expect(fakeTerm.fit).toHaveBeenCalled();
+  });
+
+  it("forwards typed text and xterm binary data to the shell", async () => {
+    await connected();
+    act(() => fakeTerm.onData.mock.calls[0][0]("ls"));
+    expect(execInput).toHaveBeenLastCalledWith(7, btoa("ls"));
+    await act(async () => {});
+    act(() => fakeTerm.onBinary.mock.calls[0][0](new Uint8Array([0xff, 0x01])));
+    expect(execInput).toHaveBeenLastCalledWith(7, btoa("\xff\x01"));
+  });
+
+  it("debounces resizes and always sends the final size", async () => {
+    await connected();
+    vi.useFakeTimers();
+    try {
+      const onResize = fakeTerm.onResize.mock.calls[0][0] as (c: number, r: number) => void;
+      act(() => { onResize(101, 31); onResize(110, 35); onResize(120, 50); });
+      act(() => { vi.advanceTimersByTime(99); });
+      expect(execResize).not.toHaveBeenCalled();
+      act(() => { vi.advanceTimersByTime(1); });
+      expect(execResize.mock.calls).toEqual([[7, 120, 50]]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("shows the no-shell message as a line", async () => {

@@ -5,6 +5,8 @@ import type { TermHandle } from "./terminal";
 import { useExecSession } from "./useExecSession";
 
 const select = "h-8 rounded-lg border border-border bg-surface px-2 text-xs text-text-hi";
+/** Sizes sent to the shell settle this long after the last change (a drag sends a burst). */
+const RESIZE_DEBOUNCE_MS = 100;
 const action = "h-8 rounded-lg border border-border px-3 text-xs font-medium text-text-hi hover:bg-surface disabled:opacity-40";
 
 /** An interactive shell in a running container of the selected Pod or workload (spec §3). */
@@ -54,7 +56,12 @@ export function TerminalTab({ nodeId }: { nodeId: NodeId }) {
     return () => ro.disconnect();
   }, []);
 
-  useEffect(() => () => { term.current?.dispose(); term.current = null; }, []);
+  const resizeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => {
+    if (resizeTimer.current) clearTimeout(resizeTimer.current);
+    term.current?.dispose();
+    term.current = null;
+  }, []);
 
   async function ensureTerminal(): Promise<TermHandle | null> {
     if (term.current) return term.current;
@@ -62,7 +69,11 @@ export function TerminalTab({ nodeId }: { nodeId: NodeId }) {
     const { createTerminal } = await import("./terminal");
     const t = createTerminal(box.current);
     t.onData((data) => sessionRef.current.send(data));
-    t.onResize((cols, rows) => sessionRef.current.resize(cols, rows));
+    t.onBinary((bytes) => sessionRef.current.send(bytes));
+    t.onResize((cols, rows) => {
+      if (resizeTimer.current) clearTimeout(resizeTimer.current);
+      resizeTimer.current = setTimeout(() => { resizeTimer.current = null; sessionRef.current.resize(cols, rows); }, RESIZE_DEBOUNCE_MS);
+    });
     term.current = t;
     return t;
   }

@@ -56,6 +56,63 @@ describe("useExecSession", () => {
     expect(execResize).toHaveBeenCalledWith(1, 100, 40);
   });
 
+  it("keeps one input in flight and sends what arrived meanwhile next, in order", async () => {
+    const pending: Array<() => void> = [];
+    execInput.mockImplementation(() => new Promise<null>((resolve) => pending.push(() => resolve(null))));
+    const { result } = setup();
+    await act(() => result.current.connect(req));
+    act(() => { result.current.send("a"); result.current.send("b"); result.current.send("c"); });
+    expect(execInput.mock.calls).toEqual([[1, encodeText("a")]]);
+    await act(async () => { pending.shift()!(); });
+    expect(execInput.mock.calls).toEqual([[1, encodeText("a")], [1, encodeText("bc")]]);
+    act(() => result.current.send("d"));
+    expect(execInput).toHaveBeenCalledTimes(2);
+    await act(async () => { pending.shift()!(); });
+    expect(execInput.mock.calls[2]).toEqual([1, encodeText("d")]);
+  });
+
+  it("a failed input does not stall the queue", async () => {
+    execInput.mockRejectedValueOnce({ kind: "invalid", message: "x" });
+    const { result } = setup();
+    await act(() => result.current.connect(req));
+    act(() => result.current.send("a"));
+    await act(async () => { result.current.send("b"); });
+    await act(async () => {});
+    expect(execInput.mock.calls).toEqual([[1, encodeText("a")], [1, encodeText("b")]]);
+  });
+
+  it("buffers input and the latest size issued while connecting, then flushes them", async () => {
+    let resolveStart!: (id: number) => void;
+    startExec.mockImplementationOnce((_r: unknown, onMessage: (m: ExecMessage) => void) => {
+      push = onMessage;
+      return new Promise<number>((resolve) => { resolveStart = resolve; });
+    });
+    const { result } = setup();
+    let connecting!: Promise<void>;
+    act(() => { connecting = result.current.connect(req); });
+    act(() => { result.current.send("ls"); result.current.send("\r"); result.current.resize(90, 30); result.current.resize(100, 40); });
+    expect(execInput).not.toHaveBeenCalled();
+    expect(execResize).not.toHaveBeenCalled();
+    await act(async () => { resolveStart(5); await connecting; });
+    expect(execInput.mock.calls).toEqual([[5, encodeText("ls\r")]]);
+    expect(execResize.mock.calls).toEqual([[5, 100, 40]]);
+  });
+
+  it("sends raw bytes (xterm binary data) as base64", async () => {
+    const { result } = setup();
+    await act(() => result.current.connect(req));
+    act(() => result.current.send(new Uint8Array([0xff, 0x00, 0x80])));
+    expect(execInput).toHaveBeenCalledWith(1, btoa("\xff\x00\x80"));
+  });
+
+  it("drops input once the session is gone", async () => {
+    const { result } = setup();
+    await act(() => result.current.connect(req));
+    act(() => result.current.disconnect());
+    act(() => result.current.send("x"));
+    expect(execInput).not.toHaveBeenCalled();
+  });
+
   it("ends with a line naming the exit code", async () => {
     const { result, onEnd } = setup();
     await act(() => result.current.connect(req));
