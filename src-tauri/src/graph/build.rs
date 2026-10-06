@@ -69,6 +69,7 @@ pub fn build(store: &Store, opts: &BuildOptions) -> Graph {
     let mut graph = Graph {
         nodes: nodes.into_values().collect(),
         edges,
+        too_large: None,
     };
     graph.normalize();
     graph

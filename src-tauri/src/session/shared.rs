@@ -89,7 +89,10 @@ impl Shared {
     /// Locks the store, builds the graph, then locks the graph — never both at once — so this
     /// can never deadlock against another accessor taking the two locks in the same order.
     pub(crate) fn rebuild(&self) -> (Graph, GraphDelta) {
-        let new = build(&self.store(), &self.build_options());
+        let mut new = build(&self.store(), &self.build_options());
+        if new.nodes.len() > crate::graph::MAX_GRAPH_NODES {
+            new = Graph::summarised(&new);
+        }
         let mut last = self.graph();
         let delta = diff(&last, &new);
         *last = new.clone();

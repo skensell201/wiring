@@ -166,9 +166,14 @@ fn emit_kind_error(emitter: &Arc<dyn Emitter>, kind: Kind, error: &AppError) {
     )));
 }
 
+/// A change of the too-large state (or of its counts) goes out as a snapshot: deltas cannot say
+/// "the graph is not sent any more".
 fn emit_rebuild(shared: &Shared, emitter: &Arc<dyn Emitter>) {
-    let (_, delta) = shared.rebuild();
-    if !delta.is_empty() {
+    let before = shared.graph().too_large.clone();
+    let (graph, delta) = shared.rebuild();
+    if graph.too_large != before {
+        emitter.emit(OutEvent::GraphSnapshot(graph));
+    } else if !delta.is_empty() {
         emitter.emit(OutEvent::GraphDelta(delta));
     }
 }
@@ -364,6 +369,29 @@ mod tests {
             ..Default::default()
         })
     }
+    #[tokio::test(start_paused = true)]
+    async fn crossing_the_size_limit_sends_snapshots_not_deltas() {
+        let shared = Shared::default();
+        let (emitter, mut rx) = ChannelEmitter::new();
+        let emitter: Arc<dyn Emitter> = Arc::new(emitter);
+        for i in 0..=crate::graph::MAX_GRAPH_NODES {
+            shared.store().upsert(cm(&format!("c{i}")));
+        }
+        emit_rebuild(&shared, &emitter);
+        match rx.try_recv().unwrap() {
+            OutEvent::GraphSnapshot(g) => assert_eq!(g.too_large.unwrap().nodes, crate::graph::MAX_GRAPH_NODES + 1),
+            other => panic!("expected a too-large snapshot, got {other:?}"),
+        }
+        emit_rebuild(&shared, &emitter);
+        assert!(rx.try_recv().is_err(), "nothing changed");
+        shared.store().remove(&cm("c0").key());
+        shared.store().remove(&cm("c1").key());
+        emit_rebuild(&shared, &emitter);
+        assert!(
+            matches!(rx.try_recv().unwrap(), OutEvent::GraphSnapshot(g) if g.too_large.is_none() && g.nodes.len() == crate::graph::MAX_GRAPH_NODES - 1)
+        );
+    }
+
     fn pod(name: &str) -> Object {
         Object::Pod(Pod {
             metadata: ObjectMeta {

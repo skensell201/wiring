@@ -57,7 +57,11 @@ mod tests {
     }
 
     fn graph(nodes: Vec<Node>, edges: Vec<Edge>) -> Graph {
-        let mut g = Graph { nodes, edges };
+        let mut g = Graph {
+            nodes,
+            edges,
+            too_large: None,
+        };
         g.normalize();
         g
     }

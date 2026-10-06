@@ -104,6 +104,7 @@ fn graph() {
             "PodGroup/payments/Deployment/web",
             Relation::Owns,
         )],
+        too_large: None,
     };
     assert_matches("graph", &g);
 }
