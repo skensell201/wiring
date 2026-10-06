@@ -40,7 +40,10 @@ function isEmptyFor(text: string, numeric: boolean): boolean {
  *  bottom whichever way the column is sorted — flipping the direction should not surface them. */
 export function sortRows(rows: TableRow[], columns: TableColumn[], sort: SortState): TableRow[] {
   const nameIdx = Math.max(0, columns.findIndex((c) => c.key === "name"));
-  const byName = (x: TableRow, y: TableRow) => compareCells(x.cells[nameIdx]?.text ?? "", y.cells[nameIdx]?.text ?? "", false);
+  const nsIdx = columns.findIndex((c) => c.key === "namespace"); // present when several namespaces are shown
+  const byName = (x: TableRow, y: TableRow) =>
+    (nsIdx >= 0 ? compareCells(x.cells[nsIdx]?.text ?? "", y.cells[nsIdx]?.text ?? "", false) : 0) ||
+    compareCells(x.cells[nameIdx]?.text ?? "", y.cells[nameIdx]?.text ?? "", false);
   const idx = sort ? columns.findIndex((c) => c.key === sort.key) : -1;
   if (!sort || idx < 0) return [...rows].sort(byName);
   const numeric = columns[idx].numeric;

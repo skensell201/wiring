@@ -290,8 +290,15 @@ impl Session {
     }
 
     pub fn list_rows(&self, kind: Kind) -> Table {
-        let store = self.shared.store();
-        crate::graph::rows::table(&store, kind, k8s_openapi::jiff::Timestamp::now())
+        let table = {
+            let store = self.shared.store();
+            crate::graph::rows::table(&store, kind, k8s_openapi::jiff::Timestamp::now())
+        };
+        if self.scope.as_ref().is_some_and(scope::NamespaceScope::is_multi) {
+            crate::graph::rows::with_namespace_column(table)
+        } else {
+            table
+        }
     }
 
     /// Watch core/v1 Events for one object (or stop when `None`).

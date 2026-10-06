@@ -57,6 +57,20 @@ fn coloured(text: impl Into<String>, status: Status) -> TableCell {
     }
 }
 
+/// `table` with a leading Namespace column, for a scope of several namespaces; rows sort by
+/// namespace, then name. Cluster-scoped objects show `—`.
+pub fn with_namespace_column(mut table: Table) -> Table {
+    table.columns.insert(0, col("namespace", "Namespace", false));
+    for row in &mut table.rows {
+        let ns = row.node_id.split('/').nth(1).unwrap_or_default();
+        row.cells.insert(0, plain(if ns.is_empty() { "—" } else { ns }));
+    }
+    table
+        .rows
+        .sort_by(|a, b| (&a.cells[0].text, &a.cells[1].text).cmp(&(&b.cells[0].text, &b.cells[1].text)));
+    table
+}
+
 /// kubectl-style relative age.
 pub fn age(created: Option<&Time>, now: jiff::Timestamp) -> String {
     let Some(t) = created else { return "—".into() };
@@ -520,5 +534,22 @@ mod tests {
         let s = Store::default();
         assert!(table(&s, Kind::Pod, now()).rows.is_empty());
         assert!(table(&s, Kind::PodGroup, now()).rows.is_empty());
+    }
+
+    #[test]
+    fn a_namespace_column_leads_and_rows_sort_by_namespace_then_name() {
+        let yaml = "apiVersion: v1\nkind: ConfigMap\nmetadata: { name: z, namespace: a }\n---\napiVersion: v1\nkind: ConfigMap\nmetadata: { name: b, namespace: b }\n---\napiVersion: v1\nkind: ConfigMap\nmetadata: { name: a, namespace: b }\n";
+        let store = Store::from_yaml_docs(yaml).unwrap();
+        let t = with_namespace_column(table(&store, Kind::ConfigMap, jiff::Timestamp::now()));
+        assert_eq!(t.columns[0].key, "namespace");
+        assert_eq!(t.columns[1].key, "name");
+        let rows: Vec<(String, String)> = t.rows.iter().map(|r| (r.cells[0].text.clone(), r.cells[1].text.clone())).collect();
+        assert_eq!(
+            rows,
+            vec![("a".into(), "z".into()), ("b".into(), "a".into()), ("b".into(), "b".into())]
+        );
+        let pv = Store::from_yaml_docs("apiVersion: v1\nkind: PersistentVolume\nmetadata: { name: pv-1 }\n").unwrap();
+        let t = with_namespace_column(table(&pv, Kind::PersistentVolume, jiff::Timestamp::now()));
+        assert_eq!(t.rows[0].cells[0].text, "—");
     }
 }
