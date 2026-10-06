@@ -52,7 +52,7 @@ Wiring reads your kubeconfig from `~/.kube/config`, or from `KUBECONFIG` when it
 - Select a yellow or red object to see why. Overview starts with the reason and the Kubernetes message behind it, followed by the chain of objects that leads to the root cause (for example Deployment → Pod → `ImagePullBackOff`). The same chain is highlighted on the graph.
 - NetworkPolicies show which pods they apply to and which pods they let in. Turn on the RBAC chips to see which Roles a ServiceAccount gets through which bindings, and the Node chip to see where each pod runs. A NotReady node is the cause of the pods stuck on it.
 
-**Navigator.** The left sidebar lists every kubeconfig context and the resources of the selected namespace by category: Workloads, Config, Network (with Network Policies), Storage, Access Control (Service Accounts, Roles and Role Bindings, Cluster Roles and Cluster Role Bindings) and Cluster (Nodes). Each kind shows a live count and the worst status among its objects. Kinds your RBAC role cannot read are struck through instead of failing. The sidebar collapses to an icon rail.
+**Navigator.** The left sidebar lists every kubeconfig context and the resources of the selected namespace by category: Workloads, Config, Network (with Network Policies), Storage, Access Control (Service Accounts, Roles and Role Bindings, Cluster Roles and Cluster Role Bindings) and Cluster (Nodes), followed by Custom Resources and Helm. Each kind shows a live count and the worst status among its objects. Kinds your RBAC role cannot read are struck through instead of failing. The sidebar collapses to an icon rail.
 
 **Several namespaces.** The namespace picker in the header takes one namespace (click its name), several (tick them, then **Apply**) or **All namespaces**. With more than one, the graph shows a lane per namespace, tables get a Namespace column, and the navigator counts across all of them. Up to 20 namespaces can be selected at once. Objects keep their own namespace for details, editing, logs, the terminal and actions; **+ Create** has a namespace select. A selection with more than 1,500 objects is shown as tables only. *All namespaces* needs permission to list and watch cluster-wide. A kind your role cannot list that way is watched per namespace and marked *partial*.
 
@@ -62,6 +62,10 @@ Wiring reads your kubeconfig from `~/.kube/config`, or from `KUBECONFIG` when it
 - Double-click a row, or press <kbd>Enter</kbd>, to jump to the object in the graph.
 
 ![The Deployments table with the web Deployment's YAML open in the details panel](docs/images/table.png)
+
+**Custom resources.** The navigator's **Custom Resources** section lists the API groups that serve custom resources you can list (the core group shows as `core`). Groups start collapsed; expand one to see its kinds (for example `cert-manager.io` → Certificate). The refresh button re-runs discovery. Click a kind to open a table of its objects in the selected namespaces, with the CRD's own printer columns (as `kubectl get` shows them) and Age. A kind's count appears once its table has been opened. The table updates live while it is open. If your access to the kind is lost meanwhile, the table shows the reason with a **Retry** button. Its details panel has **Overview** (including the status conditions), **YAML** with the same edit, diff and apply flow as built-in kinds, and **Events**. **+ Create** from a custom table starts from a minimal manifest of that kind. Custom resources are not watched for the graph, but one that owns a watched object (a Certificate owning a Secret, a Rollout owning ReplicaSets) appears there as its owner. Toggle those nodes with the *Custom* chip.
+
+**Helm.** The **Helm** section opens its own view: a table of the releases in the selected namespaces, read from Helm 3's storage Secrets, with chart and version, app version, revision, status and when it was last deployed. The list follows changes live, such as new revisions and status changes. Select a release to see its tabs below the table: **Overview**, the user-supplied **Values**, the **History** of stored revisions, the chart's **Notes**, and the **Resources** it installed that exist in the cluster; opening one of those shows it in the details panel. Its objects are highlighted on the graph, whose header reads "Release <name> highlighted · Clear". Closing the release, **Clear** or switching namespaces removes the highlight. Wiring reads releases only: it never installs, upgrades or rolls back. Values can contain credentials, so Wiring never logs them. Helm's storage Secrets are left out of the graph and the Secrets table. **Show Helm storage** in the Secrets table reveals them.
 
 **Details panel.** The panel shows **Overview**, **YAML** and **Events** tabs for the selected object, plus **Logs** for pods and workloads. Drag its top edge to resize it (or focus the edge and use <kbd>↑</kbd>/<kbd>↓</kbd>). Maximise it with ⤢ and restore it with <kbd>Esc</kbd>.
 
@@ -146,6 +150,7 @@ src/                     React frontend
     details/             details panel: Overview, YAML, Events
     editor/              YAML editor, diff review, Create dialog
     logs/                Logs tab, virtualised log view, ANSI rendering
+    helm/                Helm releases view
   shared/                IPC types and commands, UI primitives
   styles/theme.css       design tokens (colours, type, radii)
 src-tauri/               Rust backend
@@ -167,6 +172,7 @@ docs/                    design specs, plans, IPC contract
 | [Navigator and tables design](docs/superpowers/specs/2026-09-18-navigator-tables-design.md) | The sidebar, per-kind tables and RBAC handling |
 | [YAML editing design](docs/superpowers/specs/2026-09-18-yaml-editing-design.md) | Edit, diff, apply, conflicts, Create and Delete |
 | [Pod logs design](docs/superpowers/specs/2026-09-21-pod-logs-design.md) | Log sessions, merging, previous runs and the log view |
+| [Custom resources and Helm design](docs/superpowers/specs/2026-10-06-crds-helm-design.md) | Discovery, the generic table, CR owners on the graph, Helm releases |
 | [Code signing](docs/code-signing.md) | Signing and notarizing the macOS and Windows installers in CI |
 | [Automatic updates](docs/updates.md) | The updater key and secrets, the update feed, checking a release |
 
@@ -176,6 +182,7 @@ These are the implementation plans behind each feature:
 - [navigator and tables](docs/superpowers/plans/2026-09-18-navigator-tables.md)
 - [YAML editing](docs/superpowers/plans/2026-09-18-yaml-editing.md)
 - [pod logs](docs/superpowers/plans/2026-09-21-pod-logs.md)
+- [custom resources and Helm](docs/superpowers/plans/2026-10-06-crds-helm.md)
 
 ## Releasing
 
