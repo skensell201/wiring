@@ -75,22 +75,102 @@ describe("ContextPicker", () => {
 });
 
 describe("NamespacePicker", () => {
-  it("lists namespaces and selects one", () => {
-    const selectNamespace = vi.fn(async () => {});
-    useAppStore.setState({ connection: { ...initialState().connection, context: "prod", namespaces: ["default", "payments"] }, selectNamespace });
+  const open = (selectScope = vi.fn(async () => {}), extra: Record<string, unknown> = {}) => {
+    useAppStore.setState({ connection: { ...initialState().connection, context: "prod", namespaces: ["blog", "payments", "shop"], scope: ["shop"], ...extra }, selectScope });
     render(<NamespacePicker />);
-    fireEvent.change(screen.getByLabelText("Namespace"), { target: { value: "payments" } });
-    expect(selectNamespace).toHaveBeenCalledWith("payments");
+    fireEvent.click(screen.getByRole("button", { name: "Namespace" }));
+    return selectScope;
+  };
+
+  it("shows the scope and picks one namespace by name", () => {
+    const selectScope = open();
+    fireEvent.click(screen.getByRole("button", { name: "payments" }));
+    expect(selectScope).toHaveBeenCalledWith(["payments"]);
+    expect(screen.queryByRole("dialog", { name: "Namespaces" })).toBeNull();
   });
 
-  it("falls back to a text input when the namespace list is empty", () => {
-    const selectNamespace = vi.fn(async () => {});
-    useAppStore.setState({ connection: { ...initialState().connection, context: "prod", namespaces: [] }, selectNamespace });
+  it("applies several ticked namespaces", () => {
+    const selectScope = open();
+    fireEvent.click(screen.getByLabelText("Include blog"));
+    fireEvent.click(screen.getByRole("button", { name: "Apply (2)" }));
+    expect(selectScope).toHaveBeenCalledWith(["blog", "shop"]);
+  });
+
+  it("selects all namespaces", () => {
+    const selectScope = open();
+    fireEvent.click(screen.getByRole("button", { name: /All namespaces \(3\)/ }));
+    expect(selectScope).toHaveBeenCalledWith("all");
+  });
+
+  it("takes free text instead of a list when namespaces cannot be listed", () => {
+    useAppStore.setState({ connection: { ...initialState().connection, context: "prod", namespaces: ["shop"], canListNamespaces: false, scope: null } });
     render(<NamespacePicker />);
-    const input = screen.getByPlaceholderText(/namespace/i);
+    expect(screen.getByLabelText("Namespace").tagName).toBe("INPUT");
+    expect(screen.queryByRole("button", { name: "Namespace" })).toBeNull();
+  });
+
+  it("filters the list", () => {
+    open();
+    fireEvent.change(screen.getByLabelText("Filter namespaces"), { target: { value: "pay" } });
+    expect(screen.queryByRole("button", { name: "blog" })).toBeNull();
+    expect(screen.getByRole("button", { name: "payments" })).toBeTruthy();
+  });
+
+  it("labels the button with a truncated list", () => {
+    useAppStore.setState({ connection: { ...initialState().connection, context: "prod", namespaces: ["a", "b", "c", "d", "e"], scope: ["a", "b", "c", "d", "e"] } });
+    render(<NamespacePicker />);
+    expect(screen.getByRole("button", { name: "Namespace" })).toHaveTextContent("a, b +3");
+  });
+
+  it("stops ticking at 20 and says why", () => {
+    const many = Array.from({ length: 22 }, (_, i) => `ns-${String(i).padStart(2, "0")}`);
+    open(vi.fn(async () => {}), { namespaces: many, scope: [] });
+    for (const ns of many.slice(0, 20)) fireEvent.click(screen.getByLabelText(`Include ${ns}`));
+    expect(screen.getByLabelText("Include ns-20")).toBeDisabled();
+    expect(screen.getByLabelText("Include ns-00")).not.toBeDisabled();
+    expect(screen.getByText("Up to 20 \u2014 or pick All namespaces")).toBeTruthy();
+  });
+
+  it("Space ticks, arrows move, Enter applies", () => {
+    const selectScope = open();
+    const filter = screen.getByLabelText("Filter namespaces");
+    fireEvent.keyDown(filter, { key: "ArrowDown" }); // All
+    fireEvent.keyDown(screen.getByRole("dialog", { name: "Namespaces" }), { key: "ArrowDown" }); // blog
+    fireEvent.keyDown(screen.getByRole("dialog", { name: "Namespaces" }), { key: " " });
+    expect(screen.getByLabelText("Include blog")).toBeChecked();
+    fireEvent.keyDown(screen.getByRole("dialog", { name: "Namespaces" }), { key: "Enter" });
+    expect(selectScope).toHaveBeenCalledWith(["blog", "shop"]);
+  });
+
+  it("Escape closes it without reaching the global handler", () => {
+    open();
+    const global = vi.fn();
+    const onKey = (e: KeyboardEvent) => { if (!e.defaultPrevented) global(); };
+    window.addEventListener("keydown", onKey);
+    fireEvent.keyDown(window, { key: "Escape" });
+    window.removeEventListener("keydown", onKey);
+    expect(screen.queryByRole("dialog", { name: "Namespaces" })).toBeNull();
+    expect(global).not.toHaveBeenCalled();
+  });
+
+  it("falls back to a text input when the namespace list is empty or not listable", () => {
+    const selectScope = vi.fn(async () => {});
+    useAppStore.setState({ connection: { ...initialState().connection, context: "prod", namespaces: [], scope: null }, selectScope });
+    render(<NamespacePicker />);
+    const input = screen.getByLabelText("Namespace");
     fireEvent.change(input, { target: { value: "team-a" } });
     fireEvent.keyDown(input, { key: "Enter" });
-    expect(selectNamespace).toHaveBeenCalledWith("team-a");
+    expect(selectScope).toHaveBeenCalledWith(["team-a"]);
+  });
+
+  it("rejects a name that is not a DNS label", () => {
+    const selectScope = vi.fn(async () => {});
+    useAppStore.setState({ connection: { ...initialState().connection, context: "prod", namespaces: [], scope: null }, selectScope });
+    render(<NamespacePicker />);
+    const input = screen.getByLabelText("Namespace");
+    fireEvent.change(input, { target: { value: "Bad_Name" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(selectScope).not.toHaveBeenCalled();
   });
 });
 

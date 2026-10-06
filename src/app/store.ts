@@ -78,6 +78,8 @@ export interface Connection {
   context: string | null;
   serverVersion: string | null;
   namespaces: string[];
+  /** false when `namespaces` is only the context namespace: no "All namespaces", and the picker takes free text. */
+  canListNamespaces: boolean;
   /** The watched namespaces; `null` until one is chosen. */
   scope: NamespaceScope | null;
   busy: boolean;
@@ -225,7 +227,7 @@ let logsGen = 0;
 export function initialState(): Omit<AppState, keyof Actions> {
   return {
     contexts: [],
-    connection: { state: "disconnected", context: null, serverVersion: null, namespaces: [], scope: null, busy: false },
+    connection: { state: "disconnected", context: null, serverVersion: null, namespaces: [], canListNamespaces: true, scope: null, busy: false },
     nodes: new Map(),
     edges: new Map(),
     graphReady: false,
@@ -413,7 +415,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
         contexts: get().contexts,
         hiddenKinds: get().hiddenKinds,
         sidebarCollapsed: get().sidebarCollapsed,
-        connection: { state: "connected", context: info.context, serverVersion: info.serverVersion, namespaces: info.namespaces, scope: null, busy: false },
+        connection: { state: "connected", context: info.context, serverVersion: info.serverVersion, namespaces: info.namespaces, canListNamespaces: info.canListNamespaces, scope: null, busy: false },
       });
       if (lost) get().toast(lost);
       return true;
