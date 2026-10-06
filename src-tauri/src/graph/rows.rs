@@ -39,20 +39,20 @@ pub struct Table {
     pub rows: Vec<TableRow>,
 }
 
-fn col(key: &str, label: &str, numeric: bool) -> TableColumn {
+pub(crate) fn col(key: &str, label: &str, numeric: bool) -> TableColumn {
     TableColumn {
         key: key.into(),
         label: label.into(),
         numeric,
     }
 }
-fn plain(text: impl Into<String>) -> TableCell {
+pub(crate) fn plain(text: impl Into<String>) -> TableCell {
     TableCell {
         text: text.into(),
         status: None,
     }
 }
-fn coloured(text: impl Into<String>, status: Status) -> TableCell {
+pub(crate) fn coloured(text: impl Into<String>, status: Status) -> TableCell {
     TableCell {
         text: text.into(),
         status: Some(status),

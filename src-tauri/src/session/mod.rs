@@ -1,5 +1,6 @@
 //! One live connection to a cluster: watchers, store, graph, events.
 
+pub mod custom;
 pub mod emitter;
 pub mod metrics;
 pub mod reducer;
@@ -130,7 +131,19 @@ pub struct Session {
     /// The namespaces `connect` listed, which a forbidden cluster-wide watch falls back to;
     /// `None` when listing namespaces was forbidden, and then all namespaces is refused.
     namespaces: Option<Vec<String>>,
+    /// Custom kinds from discovery; `None` until the first `custom_kinds` call (discovery is lazy).
+    custom_kinds: Option<Vec<crate::discovery::CustomKind>>,
+    /// The watcher behind the open custom table, if any.
+    custom_watch: Option<custom::CustomWatch>,
+    /// Bumped by every custom table request and `stop_custom`; see `session::custom`.
+    custom_token: u64,
+    /// Where custom tables are listed and watched (the cluster; a fake in tests).
+    custom_source: Arc<dyn crate::custom::ops::Source>,
+    /// See `Session::generation`.
+    generation: u64,
 }
+
+static NEXT_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 impl Session {
     pub async fn connect(kubeconfig: Kubeconfig, context: &str, emitter: Arc<dyn Emitter>) -> AppResult<(Session, ConnectInfo)> {
@@ -176,7 +189,6 @@ impl Session {
         let execs = ExecSessions::new(Arc::new(KubeExec::new(client.clone())));
         let forwards = ForwardManager::new(Arc::new(KubeConnector::new(client.clone())), emitter.clone());
         Session {
-            client,
             shared: Shared::default(),
             ns_emitter: ClosableEmitter::new(emitter.clone()),
             emitter,
@@ -189,6 +201,12 @@ impl Session {
             execs,
             scope: None,
             namespaces: None,
+            custom_kinds: None,
+            custom_watch: None,
+            custom_token: 0,
+            custom_source: Arc::new(crate::custom::ops::KubeSource::new(client.clone())),
+            generation: NEXT_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            client,
         }
     }
 
@@ -400,6 +418,7 @@ impl Session {
             session.close();
         }
         self.logs.clear();
+        self.stop_custom();
         // Close before aborting: an abort only lands at the task's next `.await`, and a
         // reducer mid-rebuild would otherwise still emit one snapshot of the old namespace.
         self.ns_emitter.close();
@@ -581,7 +600,7 @@ mod tests {
     use super::*;
     use crate::store::{Kind, Store};
 
-    fn offline_session() -> Session {
+    pub(super) fn offline_session() -> Session {
         use crate::session::emitter::ChannelEmitter;
         let (emitter, _rx) = ChannelEmitter::new();
         let client = Client::try_from(Config::new("https://127.0.0.1:1".parse().unwrap())).unwrap();
