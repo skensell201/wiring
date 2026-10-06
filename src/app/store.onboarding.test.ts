@@ -237,6 +237,18 @@ describe("adding a kubeconfig", () => {
     expect(useAppStore.getState().toasts.at(-1)).toMatchObject({ kind: "info", message: "Added team.yaml" });
   });
 
+  it("says so when the file was already added", async () => {
+    const team = { path: "/Users/me/team.yaml", origin: "added", state: "ok", contexts: 2, error: null } as const;
+    useAppStore.setState({ kubeconfigSources: [team] });
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      if (cmd === "add_kubeconfig") return [PROD];
+      if (cmd === "kubeconfig_sources") return [team];
+      return null;
+    });
+    await useAppStore.getState().addKubeconfig("/Users/me/team.yaml");
+    expect(useAppStore.getState().toasts.at(-1)).toMatchObject({ kind: "info", message: "team.yaml is already added" });
+  });
+
   it("toasts a refused file and saves nothing", async () => {
     vi.mocked(invoke).mockRejectedValueOnce({ kind: "invalid", message: "empty.yaml has no contexts" });
     await useAppStore.getState().addKubeconfig("/tmp/empty.yaml");

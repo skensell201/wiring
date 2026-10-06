@@ -539,6 +539,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
   showAllKinds: () => set({ hiddenKinds: new Set() }),
 
   addKubeconfig: async (path) => {
+    const already = get().kubeconfigSources?.some((s) => s.path === path && s.origin === "added") ?? false;
     try {
       set({ contexts: await commands.addKubeconfig(path) });
     } catch (e) {
@@ -547,6 +548,10 @@ export const useAppStore = create<AppState>()((set, get) => ({
       return;
     }
     await get().loadKubeconfigSources();
+    if (already) {
+      get().toast({ kind: "info", message: `${fileName(path)} is already added` });
+      return;
+    }
     // The file's own count: the merged context list is first-file-wins and would undercount.
     // The backend stores the path as given, so it matches; if the report lacks it, name the file only.
     const n = get().kubeconfigSources?.find((s) => s.path === path)?.contexts;

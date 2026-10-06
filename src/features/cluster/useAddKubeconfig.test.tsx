@@ -10,6 +10,7 @@ vi.mock("../../shared/ipc/tauri", () => ({
 }));
 
 import { open } from "@tauri-apps/plugin-dialog";
+import { invoke } from "../../shared/ipc/tauri";
 import { useAddKubeconfig } from "./useAddKubeconfig";
 
 describe("useAddKubeconfig", () => {
@@ -20,5 +21,14 @@ describe("useAddKubeconfig", () => {
     const { result } = renderHook(() => useAddKubeconfig());
     await expect(result.current()).resolves.toBeUndefined();
     expect(useAppStore.getState().toasts.at(-1)).toMatchObject({ message: expect.stringContaining("dialog broke") });
+  });
+
+  it("does nothing when the dialog is cancelled", async () => {
+    vi.mocked(invoke).mockClear();
+    vi.mocked(open).mockResolvedValueOnce(null);
+    const { result } = renderHook(() => useAddKubeconfig());
+    await result.current();
+    expect(useAppStore.getState().toasts).toHaveLength(0);
+    expect(vi.mocked(invoke).mock.calls.map((c) => c[0])).not.toContain("add_kubeconfig");
   });
 });
