@@ -4,7 +4,7 @@ import { CREATABLE_KINDS, template } from "./templates";
 
 describe("templates", () => {
   it("covers every watched kind except PodGroup and the cluster-level RBAC objects and Nodes", () => {
-    const skipped = ["PodGroup", "ClusterRole", "ClusterRoleBinding", "Node"];
+    const skipped = ["PodGroup", "Custom", "ClusterRole", "ClusterRoleBinding", "Node"];
     expect(CREATABLE_KINDS).toEqual(KINDS.filter((k) => !skipped.includes(k)));
     expect(CREATABLE_KINDS).not.toContain("Node");
     expect(CREATABLE_KINDS).not.toContain("ClusterRole");

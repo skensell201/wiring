@@ -1,8 +1,8 @@
 import { KINDS, type Kind } from "../../shared/ipc/types";
 
 /** Kinds the Create dialog offers: every watched kind but the synthetic PodGroup and the cluster-level RBAC objects and Nodes. */
-export type CreatableKind = Exclude<Kind, "PodGroup" | "ClusterRole" | "ClusterRoleBinding" | "Node">;
-const NOT_CREATABLE = new Set<Kind>(["PodGroup", "ClusterRole", "ClusterRoleBinding", "Node"]);
+export type CreatableKind = Exclude<Kind, "PodGroup" | "Custom" | "ClusterRole" | "ClusterRoleBinding" | "Node">;
+const NOT_CREATABLE = new Set<Kind>(["PodGroup", "Custom", "ClusterRole", "ClusterRoleBinding", "Node"]);
 export const isCreatable = (k: Kind): k is CreatableKind => !NOT_CREATABLE.has(k);
 export const CREATABLE_KINDS: CreatableKind[] = KINDS.filter(isCreatable);
 

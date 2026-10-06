@@ -42,6 +42,7 @@ export function wireEvents(): Promise<() => void> {
     forwards_changed: (forwards) => s().setForwards(forwards),
     update_progress: (p) => useUpdateStore.getState().setProgress(p),
     menu_check_updates: () => void useUpdateStore.getState().check(true),
+    custom_table: () => {}, // replaced when the custom resources view lands
     metrics_updated: () => {
       const view = s().view;
       if (view.name === "table" && USAGE_KINDS.has(view.kind)) {

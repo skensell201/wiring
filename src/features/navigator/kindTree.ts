@@ -17,7 +17,7 @@ export const KIND_PLURAL: Record<Kind, string> = {
   Pod: "Pods", Deployment: "Deployments", StatefulSet: "Stateful Sets", DaemonSet: "Daemon Sets", ReplicaSet: "Replica Sets",
   Job: "Jobs", CronJob: "Cron Jobs", ConfigMap: "Config Maps", Secret: "Secrets", HorizontalPodAutoscaler: "HPAs",
   Service: "Services", Ingress: "Ingresses", PersistentVolumeClaim: "Persistent Volume Claims", PersistentVolume: "Persistent Volumes",
-  ServiceAccount: "Service Accounts", PodGroup: "Pods",
+  ServiceAccount: "Service Accounts", PodGroup: "Pods", Custom: "Custom Resources",
   NetworkPolicy: "Network Policies", Role: "Roles", RoleBinding: "Role Bindings", ClusterRole: "Cluster Roles",
   ClusterRoleBinding: "Cluster Role Bindings", Node: "Nodes",
 };

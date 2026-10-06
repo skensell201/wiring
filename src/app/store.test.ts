@@ -357,7 +357,7 @@ describe("views", () => {
     expect(useAppStore.getState().view).toEqual({ name: "graph" });
     await useAppStore.getState().showTable("Pod");
     expect(useAppStore.getState().view).toEqual({ name: "table", kind: "Pod" });
-    expect(invoke).toHaveBeenCalledWith("list_rows", { kind: "Pod" });
+    expect(invoke).toHaveBeenCalledWith("list_rows", { kind: "Pod", includeHelmStorage: false });
     expect(useAppStore.getState().tables.get("Pod")?.columns[0].key).toBe("name");
     useAppStore.getState().showGraph();
     expect(useAppStore.getState().view).toEqual({ name: "graph" });

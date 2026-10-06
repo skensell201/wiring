@@ -128,7 +128,7 @@ describe("table refresh", () => {
     useAppStore.setState({ view: { name: "table", kind: "Pod" } });
     hoisted.handlers!.graph_snapshot({ nodes: [node], edges: [] });
     await new Promise((r) => setTimeout(r, 0));
-    expect(invoke).toHaveBeenCalledWith("list_rows", { kind: "Pod" });
+    expect(invoke).toHaveBeenCalledWith("list_rows", { kind: "Pod", includeHelmStorage: false });
   });
 
   it("does not refresh a table while the graph view is active", async () => {
@@ -155,7 +155,7 @@ describe("table refresh", () => {
       expect(invoke).not.toHaveBeenCalledWith("list_rows", expect.anything());
 
       await vi.advanceTimersByTimeAsync(300);
-      expect(invoke).toHaveBeenCalledWith("list_rows", { kind: "Pod" });
+      expect(invoke).toHaveBeenCalledWith("list_rows", { kind: "Pod", includeHelmStorage: false });
       expect(vi.mocked(invoke).mock.calls.filter(([cmd]) => cmd === "list_rows")).toHaveLength(1);
     } finally {
       vi.useRealTimers();

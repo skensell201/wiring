@@ -21,6 +21,8 @@ const LAYERS: Record<Kind, number> = {
   HorizontalPodAutoscaler: 0,
   Ingress: 1,
   Service: 2,
+  // Custom resource owners (operators' objects) sit before the workloads and Secrets they own.
+  Custom: 2,
   Deployment: 3, StatefulSet: 3, DaemonSet: 3, CronJob: 3,
   // PV sits one column before its claim so the `binds` PV → PVC edge is an ordinary forward edge.
   ReplicaSet: 4, Job: 4, PersistentVolume: 4,
