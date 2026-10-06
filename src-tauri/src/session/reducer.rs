@@ -60,8 +60,15 @@ enum StreamState {
     Dead,
 }
 
+/// Whether `kind` is marked (partial, denied) in `shared`.
+fn kind_marks(shared: &Shared, kind: Kind) -> (bool, bool) {
+    (shared.partial_kinds().contains(&kind), shared.denied_kinds().contains(&kind))
+}
+
 /// Mark `kind` denied when every one of its streams is dead, partial when only some are.
-fn mark_kind(shared: &Shared, streams: &HashMap<StreamId, StreamState>, kind: Kind) {
+/// Returns whether that changed the kind's marks, i.e. whether there is news to report.
+fn mark_kind(shared: &Shared, streams: &HashMap<StreamId, StreamState>, kind: Kind) -> bool {
+    let before = kind_marks(shared, kind);
     let states: Vec<StreamState> = streams.iter().filter(|(s, _)| s.kind == kind).map(|(_, st)| *st).collect();
     let dead = states.iter().filter(|st| **st == StreamState::Dead).count();
     if states.is_empty() || dead == states.len() {
@@ -70,6 +77,7 @@ fn mark_kind(shared: &Shared, streams: &HashMap<StreamId, StreamState>, kind: Ki
     } else if dead > 0 {
         shared.partial_kinds().insert(kind);
     }
+    kind_marks(shared, kind) != before
 }
 
 pub fn spawn_reducer(config: ReducerConfig, shared: Shared, emitter: Arc<dyn Emitter>) -> (mpsc::Sender<ReducerMsg>, JoinHandle<()>) {
@@ -277,8 +285,11 @@ fn apply_to_store(
                     stale.remove(&s);
                     streams.insert(s, StreamState::Dead);
                 }
-                mark_kind(shared, streams, kind);
-                emit_kind_error(emitter, kind, &error);
+                // One toast per change of the kind's state (it first turns partial, or turns
+                // denied), not one per namespace: 50 forbidden namespaces are one piece of news.
+                if mark_kind(shared, streams, kind) {
+                    emit_kind_error(emitter, kind, &error);
+                }
             } else if !errored_since.contains_key(&stream) {
                 // Report the first failure of an outage so the user learns why nothing
                 // arrives; the watcher keeps retrying, and repeats stay silent until the
@@ -944,6 +955,40 @@ mod tests {
         assert!(matches!(next(&mut rx).await, OutEvent::GraphSnapshot(g) if g.nodes.len() == 1));
         assert!(shared.denied_kinds().contains(&Kind::Pod));
         assert!(!shared.partial_kinds().contains(&Kind::Pod));
+    }
+
+    /// Every event up to and including the first snapshot.
+    async fn until_snapshot(rx: &mut tokio::sync::mpsc::UnboundedReceiver<OutEvent>) -> Vec<OutEvent> {
+        let mut got = vec![];
+        loop {
+            let ev = next(rx).await;
+            let done = matches!(ev, OutEvent::GraphSnapshot(_));
+            got.push(ev);
+            if done {
+                return got;
+            }
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn fifty_forbidden_namespaces_of_a_kind_are_reported_once() {
+        let dying: Vec<StreamId> = (0..50).map(|i| StreamId::namespaced(Kind::Secret, &format!("ns-{i}"))).collect();
+        let live = StreamId::namespaced(Kind::Secret, "mine");
+        let mut plan = dying.clone();
+        plan.push(live.clone());
+        let shared = Shared::default();
+        let (tx, _h, mut rx) = spawn_streams(&plan, shared.clone()).await;
+        for s in &dying {
+            tx.send(forbid(s)).await.unwrap();
+        }
+        tx.send(ReducerMsg::Store(StoreEvent::InitDone(live))).await.unwrap();
+        let errors = until_snapshot(&mut rx)
+            .await
+            .into_iter()
+            .filter(|e| matches!(e, OutEvent::ConnectionError(_)))
+            .count();
+        assert_eq!(errors, 1, "one toast for the kind, not one per namespace");
+        assert!(shared.partial_kinds().contains(&Kind::Secret));
     }
 
     #[tokio::test(start_paused = true)]
