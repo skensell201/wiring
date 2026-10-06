@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { useAppStore } from "../../app/store";
 import { refKey } from "../../shared/customId";
-import { scopeLabel } from "../../shared/scope";
+import { scopeText } from "../../shared/scope";
 import { CircleAlert } from "lucide-react";
 import { EmptyState } from "../../shared/EmptyState";
 import { filterRows, nextSort, sortRows, type SortState } from "./sort";
@@ -32,15 +32,17 @@ export function CustomTableView() {
   // The watch ended for good (RBAC, the kind no longer served…): say why, and offer to list again.
   if (error) {
     return (
-      <EmptyState icon={CircleAlert} tone="error" title={`Can't list ${resource.kind}`} primary={{ label: "Retry", onClick: () => void refreshCustom(resource) }}>
-        {error}
-      </EmptyState>
+      <div className="flex h-full w-full flex-col bg-space px-8 py-6">
+        <div className="min-h-0 flex-1">
+          <EmptyState icon={CircleAlert} tone="error" autoFocusPrimary title={`Can't list ${resource.kind}`} primary={{ label: "Retry", onClick: () => void refreshCustom(resource) }}>
+            {error}
+          </EmptyState>
+        </div>
+      </div>
     );
   }
 
-  // Listing needs a selected scope even for a cluster-scoped kind (the backend refuses without one).
-  const selected = scopeLabel(scope, namespaces);
-  const label = selected === null ? null : resource.namespaced ? selected : "The cluster";
+  const label = scopeText(scope, namespaces, !resource.namespaced);
   const empty = tableEmptyState({ scope: label, denied: false, loaded: !!table, total: table?.rows.length ?? 0, shown: rows.length, search });
 
   return (

@@ -169,12 +169,12 @@ describe("TableView", () => {
     expect(screen.queryByText("Nothing here yet")).not.toBeInTheDocument();
   });
 
-  it("a cluster-scoped kind never asks for a namespace", () => {
+  it("a cluster-scoped kind asks for a namespace until one is selected (it is watched only then)", () => {
     const nodes: Table = { kind: "Node", columns: [{ key: "name", label: "Name", numeric: false }], rows: [] };
     useAppStore.setState({ deniedLoaded: true, connection: { ...connected(), scope: null }, view: { name: "table", kind: "Node" }, tables: new Map([["Node", nodes]]) });
     render(<TableView />);
-    expect(screen.getByRole("status", { name: "Nothing here yet" })).toHaveTextContent("The cluster has no Nodes.");
-    expect(screen.queryByText("Choose a namespace")).not.toBeInTheDocument();
+    expect(screen.getByRole("status", { name: "Choose a namespace" })).toBeInTheDocument();
+    expect(screen.queryByText(/The cluster has no/)).not.toBeInTheDocument();
   });
 
   it("a denied cluster-scoped kind offers no namespace picker", () => {

@@ -4,7 +4,7 @@ import { useShallow } from "zustand/react/shallow";
 import { useAppStore } from "../../app/store";
 import { isCreatable } from "../editor/templates";
 import { CLUSTER_SCOPED } from "../graph/graphEmptyState";
-import { scopeLabel } from "../../shared/scope";
+import { scopeText } from "../../shared/scope";
 import type { Kind, Status, TableColumn, TableRow } from "../../shared/ipc/types";
 import { KIND_PLURAL } from "../navigator/kindTree";
 import { TableEmpty } from "./TableEmpty";
@@ -46,13 +46,13 @@ export function TableView() {
 
   if (!kind) return null;
   const plural = KIND_PLURAL[kind];
-  // Cluster-scoped kinds do not depend on the namespace, so they never ask for one.
+  // Cluster-scoped kinds are watched only once a scope is selected, but then say "The cluster".
   const clusterScoped = CLUSTER_SCOPED.has(kind);
   // Rows are refetched once the scope's snapshot lands; until then a leftover table is not this scope's.
   const ready = !!table && (clusterScoped || graphReady);
   const total = table?.rows.length ?? 0;
   const empty = tableEmptyState({
-    scope: clusterScoped ? "The cluster" : scopeLabel(scope, namespaces), denied,
+    scope: scopeText(scope, namespaces, clusterScoped), denied,
     // An empty table may still turn out to be denied; wait for the RBAC answer.
     loaded: ready && (deniedLoaded || total > 0), total, shown: rows.length, search,
   });

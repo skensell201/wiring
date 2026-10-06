@@ -36,3 +36,10 @@ export function restoredScope(remembered: NamespaceScope | null, namespaces: str
   }
   return fallback ? [fallback] : null;
 }
+
+/** The scope text a table shows in its empty states: `null` until a scope is selected (even a
+ *  cluster-scoped kind is only watched once one is), "The cluster" for a cluster-scoped kind. */
+export function scopeText(scope: NamespaceScope | null, known: string[], clusterScoped: boolean): string | null {
+  const label = scopeLabel(scope, known);
+  return label === null ? null : clusterScoped ? "The cluster" : label;
+}
