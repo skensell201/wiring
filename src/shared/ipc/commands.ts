@@ -1,5 +1,5 @@
 import { Channel, invoke } from "./tauri";
-import type { ConnectInfo, ContextInfo, CustomKind, CustomTable, HelmRelease, HelmReleaseDetails, ResourceRef, ExecMessage, ExecPod, ExecRequest, Forward, Kind, LogMessage, LogRequest, NamespaceScope, NodeId, ObjectDetails, PortOption, Revision, Table, UpdateCheck } from "./types";
+import type { ConnectInfo, KubeconfigSource, ContextInfo, CustomKind, CustomTable, HelmRelease, HelmReleaseDetails, ResourceRef, ExecMessage, ExecPod, ExecRequest, Forward, Kind, LogMessage, LogRequest, NamespaceScope, NodeId, ObjectDetails, PortOption, Revision, Table, UpdateCheck } from "./types";
 import { toAppError } from "./types";
 
 async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
@@ -13,6 +13,7 @@ async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
 export const commands = {
   listContexts: () => call<ContextInfo[]>("list_contexts"),
   addKubeconfig: (path: string) => call<ContextInfo[]>("add_kubeconfig", { path }),
+  kubeconfigSources: () => call<KubeconfigSource[]>("kubeconfig_sources"),
   connect: (context: string) => call<ConnectInfo>("connect", { context }),
   disconnect: () => call<null>("disconnect"),
   selectNamespaces: (scope: NamespaceScope, expandedGroups: NodeId[]) =>

@@ -19,8 +19,9 @@ Argument names are camelCase on the JS side; Tauri maps them to the Rust snake_c
 | Command | Args | Returns |
 |---|---|---|
 | `list_contexts` | — | `ContextInfo[]` |
-| `add_kubeconfig` | `{ path }` | `ContextInfo[]` — rejects with `AppError` if the file is missing or unparseable |
-| `connect` | `{ context }` | `ConnectInfo` — a **rejected promise** carries the `AppError`; no `connection_error` event is sent for connect failures |
+| `add_kubeconfig` | `{ path }` | `ContextInfo[]` — rejects with `AppError` when the file is missing (`notFound`: "`<path>` does not exist"), unreadable or unparseable (`internal`: "`<path>`: invalid kubeconfig (`<reason>`)", the reason as in `KubeconfigSource.error`) or defines no contexts (`invalid`: "`<file name>` has no contexts"); a rejected file is not saved |
+| `kubeconfig_sources` | — | `KubeconfigSource[]` — one per kubeconfig path, in load order (see [Kubeconfig sources](#kubeconfig-sources)) |
+| `connect` | `{ context }` | `ConnectInfo` — a **rejected promise** carries the `AppError`; no `connection_error` event is sent for connect failures. The version probe has its own 20 s limit: when the API server does not answer in time, connect rejects with `network` "timed out after 20 s waiting for `<server>`" (the server URL without credentials or a trailing slash). A namespace list that does not answer within 20 s is treated like any other list error: the session falls back to the context's namespace and `canListNamespaces` is `false` |
 | `disconnect` | — | `null` |
 | `select_namespaces` | `{ namespaces: string[] \| null, expandedGroups: string[] }` | `null` — `null` watches all namespaces (refused with `invalid` when `ConnectInfo.canListNamespaces` is false); a list watches those (trimmed, deduplicated, each a DNS-1123 label, at most 20; an empty or longer list rejects with `invalid`: "pick up to 20 namespaces, or All namespaces"). The graph arrives via events. |
 | `set_expanded_groups` | `{ expandedGroups: string[] }` | `null` |
@@ -169,6 +170,19 @@ never logged.
 ## Timestamps
 
 `K8sEvent.firstTimestamp` / `lastTimestamp` are RFC 3339 with a `Z` suffix (e.g. `2026-09-17T10:00:00Z`) or `null`.
+
+## Kubeconfig sources
+
+`KubeconfigSource { path, origin, state, contexts, error }` describes one path the backend reads kubeconfig from:
+
+| Field | Values |
+|---|---|
+| `origin` | `env` (an entry of `KUBECONFIG`), `default` (`~/.kube/config`, read only when `KUBECONFIG` is unset or empty), `added` (from `extraKubeconfigs`) |
+| `state` | `ok` (parsed, `contexts` > 0), `missing` (no such file), `invalid` (unreadable or unparseable), `empty` (parsed, no contexts) |
+
+`contexts` counts the file's own contexts, before the first-file-wins merge that `list_contexts` does. `error` is a short description of why the file could not be read: the OS error (e.g. `permission denied`), or `not a valid kubeconfig (line N, column M)`; it never contains the file's content. It is `null` unless `state` is `invalid`.
+
+On macOS and Linux the backend sets its `PATH` at startup from the login shell: it runs `$SHELL -i -l -c` (falling back to `/bin/zsh` on macOS and `/bin/sh` on Linux; fish gets its list-valued `$PATH` joined with `:`) and gives it 3 s. The resulting `PATH` is the login shell's entries first, then the app's own, then those of the common tool directories that exist (`/opt/homebrew/bin`, `/usr/local/bin`, `~/.local/bin`, `~/google-cloud-sdk/bin`), without duplicates. When the shell fails or does not answer in time, only the app's own entries and the common directories are used. The shell is skipped the same way when the app was started from a terminal, which already has that shell's `PATH`. Any processes the shell leaves behind are killed. This way kubeconfig exec plugins are found when the app is started from the Dock or a launcher.
 
 ## Settings file
 

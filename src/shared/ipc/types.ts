@@ -68,6 +68,17 @@ export interface K8sEvent {
   name: string; type: string; reason: string; message: string; count: number;
   firstTimestamp: string | null; lastTimestamp: string | null;
 }
+
+export const SOURCE_ORIGINS = ["env", "default", "added"] as const;
+export const SOURCE_STATES = ["ok", "missing", "invalid", "empty"] as const;
+/** One kubeconfig path Wiring reads, with what it held (see docs/ipc-contract.md#kubeconfig-sources). */
+export interface KubeconfigSource {
+  path: string;
+  origin: (typeof SOURCE_ORIGINS)[number];
+  state: (typeof SOURCE_STATES)[number];
+  contexts: number;
+  error: string | null;
+}
 export interface ObjectEvents { nodeId: NodeId; events: K8sEvent[] }
 export interface AppError { kind: ErrorKind; message: string }
 
@@ -192,6 +203,10 @@ export function isContextInfo(v: unknown): v is ContextInfo {
 }
 export function isConnectInfo(v: unknown): v is ConnectInfo {
   return isObj(v) && isStr(v.context) && isStr(v.serverVersion) && arrayOf(v.namespaces, isStr) && typeof v.canListNamespaces === "boolean";
+}
+export function isKubeconfigSource(v: unknown): v is KubeconfigSource {
+  return isObj(v) && isStr(v.path) && oneOf(SOURCE_ORIGINS, v.origin) && oneOf(SOURCE_STATES, v.state)
+    && typeof v.contexts === "number" && isStrOrNull(v.error);
 }
 export function isObjectDetails(v: unknown): v is ObjectDetails {
   return isObj(v) && isStr(v.yaml) && Array.isArray(v.summary)

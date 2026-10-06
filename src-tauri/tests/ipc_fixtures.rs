@@ -7,7 +7,7 @@ use serde::Serialize;
 use wiring_lib::error::{AppError, ErrorKind};
 use wiring_lib::exec::{ExecMessage, ExecPod};
 use wiring_lib::graph::{Edge, Graph, GraphDelta, GroupInfo, KindStat, Node, Problem, Relation, Status, TooLarge};
-use wiring_lib::kubeconfig::ContextInfo;
+use wiring_lib::kubeconfig::{ContextInfo, KubeconfigSource, SourceOrigin, SourceState};
 use wiring_lib::logs::{LogLine, LogMessage};
 use wiring_lib::session::emitter::{ConnectionState, K8sEvent, ObjectEvents};
 use wiring_lib::session::{ConnectInfo, ObjectDetails};
@@ -49,6 +49,20 @@ fn context_info() {
             user: "alice".into(),
             namespace: Some("payments".into()),
             source_file: "/Users/alice/.kube/config".into(),
+        },
+    );
+}
+
+#[test]
+fn kubeconfig_source() {
+    assert_matches(
+        "kubeconfig_source",
+        &KubeconfigSource {
+            path: "/Users/alice/.kube/config".into(),
+            origin: SourceOrigin::Default,
+            state: SourceState::Invalid,
+            contexts: 0,
+            error: Some("not a valid kubeconfig (line 3, column 1)".into()),
         },
     );
 }
