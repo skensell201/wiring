@@ -107,11 +107,26 @@ fn ensure_resource_version(body: &Value) -> AppResult<()> {
 /// Cache the saved object only if this namespace session already watched it; a write that
 /// targets another namespace must not leak into the graph. Returns whether it was stored.
 pub(super) fn store_saved(store: &mut Store, obj: Object) -> bool {
-    if store.get(&obj.key()).is_none() {
+    let Some(current) = store.get(&obj.key()) else {
         return false;
+    };
+    // The watch can deliver a newer version (e.g. the controller's revision bump after a restart)
+    // before the write's own response arrives; that response must not overwrite it, or the cache
+    // stays stale until the object changes again.
+    if resource_version(current)
+        .zip(resource_version(&obj))
+        .is_some_and(|(cached, saved)| cached > saved)
+    {
+        return true;
     }
     store.upsert(obj);
     true
+}
+
+/// resourceVersion as a number; the API calls it opaque, but etcd-backed servers use integers.
+/// Anything else compares as unknown, and the saved object then wins as before.
+fn resource_version(obj: &Object) -> Option<u64> {
+    obj.meta().resource_version.as_deref()?.parse().ok()
 }
 
 /// The namespace a manifest's object lives in: none for cluster-scoped kinds, else the
@@ -347,6 +362,22 @@ mod tests {
         assert!(!store_saved(&mut store, cm("other", "1")), "foreign namespace is not cached");
         assert!(store.find(Kind::ConfigMap, Some("other"), "cfg").is_none());
         assert_eq!(store.len(), 1);
+    }
+
+    #[test]
+    fn a_write_response_older_than_the_watched_copy_does_not_replace_it() {
+        let cm = |rv: &str| {
+            Object::from_json_value(serde_json::json!({
+                "apiVersion": "v1", "kind": "ConfigMap",
+                "metadata": { "name": "cfg", "namespace": "shop", "resourceVersion": rv }
+            }))
+            .unwrap()
+        };
+        let mut store = Store::default();
+        store.upsert(cm("12"));
+        assert!(store_saved(&mut store, cm("9")), "still a watched object");
+        let stored = store.find(Kind::ConfigMap, Some("shop"), "cfg").unwrap();
+        assert_eq!(stored.meta().resource_version.as_deref(), Some("12"), "the newer watch copy stays");
     }
 
     #[test]
