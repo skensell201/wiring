@@ -47,8 +47,9 @@ function WelcomePane() {
   return (
     <EmptyState icon={Unplug} title="Connect Wiring to a cluster"
       primary={{ label: "Add kubeconfig…", onClick: () => void add() }} secondary={{ label: "Rescan", onClick: () => void rescanKubeconfigs() }}>
-      <p>Wiring reads your kubeconfig, the file <code>kubectl</code> uses. It found no contexts in:</p>
-      <ul aria-label="Kubeconfig files" className="mt-3 flex flex-col gap-1.5 text-left">
+      <p>Wiring reads your kubeconfig, the file <code>kubectl</code> uses.</p>
+      <p className="mt-3">Kubeconfig files Wiring checked:</p>
+      <ul aria-label="Kubeconfig files" className="mt-2 flex flex-col gap-1.5 text-left">
         {(sources ?? []).map((s, i) => (
           <li key={`${i}:${s.path}`} className="rounded-lg border border-border bg-surface px-3 py-2">
             <div className="selectable truncate font-mono text-xs text-text-hi" title={s.path}>{s.path}</div>
@@ -74,7 +75,7 @@ function FailurePane({ context, error }: { context: string; error: AppError }) {
   const { retryConnect, dismissConnectError } = useAppStore(useShallow((s) => ({ retryConnect: s.retryConnect, dismissConnectError: s.dismissConnectError })));
   const info = describeConnectError(error);
   return (
-    <EmptyState icon={CAUSE_ICON[info.cause]} title={info.title} tone="error"
+    <EmptyState icon={CAUSE_ICON[info.cause]} title={info.title} tone="error" autoFocusPrimary
       primary={{ label: "Retry", onClick: () => void retryConnect() }} secondary={{ label: "Choose another cluster", onClick: () => void dismissConnectError() }}>
       <p>Wiring couldn't connect to <span className="text-text-hi">{context}</span>.</p>
       <p className="selectable mt-2 break-words font-mono text-xs">{info.detail}</p>

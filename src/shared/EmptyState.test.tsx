@@ -48,4 +48,14 @@ describe("EmptyState", () => {
     expect(screen.getByRole("heading", { name: "Failed" })).toHaveClass("break-words");
     expect(screen.getByText(/^https:\/\/example/)).toHaveClass("break-words");
   });
+
+  it("can move focus to its primary action", () => {
+    render(<EmptyState icon={Inbox} title="Connection failed" tone="error" autoFocusPrimary primary={{ label: "Retry", onClick: () => {} }} secondary={{ label: "Back", onClick: () => {} }} />);
+    expect(screen.getByRole("button", { name: "Retry" })).toHaveFocus();
+  });
+
+  it("leaves focus alone by default", () => {
+    render(<EmptyState icon={Inbox} title="Nothing here yet" primary={{ label: "+ Create", onClick: () => {} }} />);
+    expect(screen.getByRole("button", { name: "+ Create" })).not.toHaveFocus();
+  });
 });

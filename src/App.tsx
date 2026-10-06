@@ -50,7 +50,9 @@ export function App() {
         <Header />
         {/* A maximised details panel takes the whole column; the view under it is unmounted, not hidden,
             so a busy graph stops rendering while logs fill the screen. */}
-        {!maximized && pane && (
+        {/* A connection pane takes the column even over a maximised panel: the session the panel
+            showed is gone or being replaced, so the panel is unmounted with the views. */}
+        {pane && (
           <main className="min-h-0 flex-1">
             <ErrorBoundary name="connection pane"><ConnectionPane pane={pane} /></ErrorBoundary>
           </main>
@@ -63,7 +65,7 @@ export function App() {
             </main>
           </>
         )}
-        <ErrorBoundary name="details panel"><DetailsPanel /></ErrorBoundary>
+        {!pane && <ErrorBoundary name="details panel"><DetailsPanel /></ErrorBoundary>}
       </div>
       {/* The dialogs sit outside the columns; a failure in one (the lazily loaded editor, say) must not blank the app. */}
       <ErrorBoundary name="cluster picker"><ContextPicker /></ErrorBoundary>

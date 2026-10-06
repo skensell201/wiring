@@ -52,6 +52,7 @@ describe("welcome pane", () => {
     expect(await screen.findByText("/Users/me/.kube/config")).toBeInTheDocument();
     expect(screen.getByText("default location · not found")).toBeInTheDocument();
     expect(screen.getByText("added in Wiring · can't be read: did not find expected key")).toBeInTheDocument();
+    expect(screen.getByText("Kubeconfig files Wiring checked:")).toBeInTheDocument();
   });
 
   it("Add kubeconfig… and Rescan call the backend", async () => {
@@ -90,6 +91,7 @@ describe("failure pane", () => {
     const region = screen.getByRole("alert", { name: "The gke-gcloud-auth-plugin login helper isn't installed" });
     expect(region).toHaveTextContent("unable to run auth exec");
     expect(region).toHaveTextContent("gcloud components install gke-gcloud-auth-plugin");
+    expect(screen.getByRole("button", { name: "Retry" })).toHaveFocus();
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("connect", { context: "gke-prod" }));
     await waitFor(() => expect(useAppStore.getState().connection.context).toBe("gke-prod"));
