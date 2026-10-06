@@ -53,6 +53,8 @@ Wiring reads your kubeconfig from `~/.kube/config`, or from `KUBECONFIG` when it
 
 **Navigator.** The left sidebar lists every kubeconfig context and the resources of the selected namespace by category: Workloads, Config, Network, Storage and Access Control. Each kind shows a live count and the worst status among its objects. Kinds your RBAC role cannot read are struck through instead of failing. The sidebar collapses to an icon rail.
 
+**Several namespaces.** The namespace picker in the header takes one namespace (click its name), several (tick them, then **Apply**) or **All namespaces**. With more than one, the graph shows a lane per namespace, tables get a Namespace column, and the navigator counts across all of them. Up to 20 namespaces can be selected at once. Objects keep their own namespace for details, editing, logs, the terminal and actions; **+ Create** has a namespace select. A selection with more than 1,500 objects is shown as tables only. *All namespaces* needs permission to list and watch cluster-wide. A kind your role cannot list that way is watched per namespace and marked *partial*.
+
 **Tables.** Click a kind to open a `kubectl get`-style table:
 - Sort by any column, and filter with the search box.
 - Move between rows with <kbd>↑</kbd>/<kbd>↓</kbd>.
