@@ -5,11 +5,11 @@
 
 ## 1. Goal
 
-Give Wiring a public home: a landing page that says in one screen what Wiring is and lets a visitor download it for their OS, backed by a documentation site that covers installing, every feature, keyboard shortcuts, updates and the developer docs. It is served by GitHub Pages from the public repository `skensell201/wiring`.
+Give Wiring a public home: a landing page that says in one screen what Wiring is and lets a visitor download it for their OS, backed by a documentation site that covers installing, every feature, keyboard shortcuts, updates and the developer docs. It is served from the user's portfolio server at `https://skensel.com/wiring/`.
 
 ## 2. Non-goals
 
-A custom domain, analytics, a blog or changelog pages beyond linking GitHub releases, translations, versioned docs, server-side anything, and new screenshots of the user's work clusters.
+A separate domain or subdomain, analytics, a blog or changelog pages beyond linking GitHub releases, translations, versioned docs, server-side anything, and new screenshots of the user's work clusters.
 
 ## 3. Pages
 
@@ -68,12 +68,12 @@ The README stays the canonical text. It gains VitePress region markers (`<!-- #r
   - Signal Green `#00f575` only for the primary Download button.
   - Bone White and Ash text, and Geist for type.
   - No blue paired with yellow, gold or amber anywhere.
-- **Deploy:** a GitHub Actions workflow `.github/workflows/pages.yml` runs on pushes to master that touch `site/**`, `docs/**` or `README.md`, and can also be started by hand. It builds with pnpm and deploys with `actions/deploy-pages`. Pages is enabled with the "GitHub Actions" source, and the repository's homepage URL is set to the Pages URL (`https://skensell201.github.io/wiring/`). `base` is `/wiring/`.
+- **Deploy:** the site is hosted next to the portfolio, at `https://skensel.com/wiring/` on the same droplet (decision by the user). `base` is `/wiring/`. `site/deploy.sh` builds and rsyncs `site/.vitepress/dist/` to `/var/www/wiring/`; nginx serves it through a `location ^~ /wiring/` (alias) in the existing skensel.com server block. CI builds and tests the site, but does not deploy it.
 - **Link from the README:** the README links to the site at the top.
 
 ## 6. Testing
 
-- **Build:** `pnpm site:build` fails on dead links, which VitePress checks by default, and on bad includes. CI runs it in `pages.yml` and in the existing CI workflow on pull requests.
+- **Build:** `pnpm site:build` fails on dead links, which VitePress checks by default, and on bad includes. The existing CI workflow runs it.
 - **Download picker:** a unit test (Vitest, in `site/`) covers the pure `pickAsset(assets, os)`. It handles macOS and Windows, keeps the NSIS-over-MSI preference, sends Linux to Build from source, and falls back to the releases page when an asset is missing.
 - **Visual check:** run `site:dev`, then screenshot the landing and one docs page in a browser. Check that the layout holds on desktop and at a 390 px phone width.
 
@@ -82,4 +82,4 @@ The README stays the canonical text. It gains VitePress region markers (`<!-- #r
 - **VitePress over a hand-written static page or Astro Starlight:** markdown docs, built-in search, an easy dark theme, and a single small dependency.
 - **README regions included into pages:** one source of truth, so the docs cannot drift from the README.
 - **OS-detected download via the GitHub releases API:** falls back to the releases page.
-- **GitHub Pages via Actions, no custom domain:** the repository is public, so Pages is free.
+- **Hosting on the portfolio server at `skensel.com/wiring/`:** the user chose this over GitHub Pages. A path rather than a subdomain needs no new DNS record or certificate.
