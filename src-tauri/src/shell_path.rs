@@ -50,6 +50,17 @@ pub fn merge_path(current: &str, shell: Option<&str>, extras: &[PathBuf]) -> Str
         .unwrap_or_else(|_| current.to_string())
 }
 
+/// How long the output reader gets beyond the deadline once the command has exited successfully.
+/// The reader sees end-of-file only after the process group is killed, so a shell that exits right
+/// at the deadline would otherwise lose an answer that is already in the pipe.
+const READ_GRACE: Duration = Duration::from_millis(200);
+
+/// How long to wait for the reader's output at `now`, after a successful exit: what is left of the
+/// deadline plus [`READ_GRACE`].
+fn output_budget(deadline: Instant, now: Instant) -> Duration {
+    deadline.saturating_duration_since(now) + READ_GRACE
+}
+
 /// `cmd`'s stdout if it exits successfully within `timeout`; otherwise it is killed and `None`.
 pub fn run_with_timeout(mut cmd: Command, timeout: Duration) -> Option<String> {
     // Its own process group, so a timeout can take down everything the rc files started.
@@ -80,7 +91,7 @@ pub fn run_with_timeout(mut cmd: Command, timeout: Duration) -> Option<String> {
             }
         }
     }
-    rx.recv_timeout(deadline.saturating_duration_since(Instant::now())).ok()
+    rx.recv_timeout(output_budget(deadline, Instant::now())).ok()
 }
 
 /// SIGKILLs the process group led by `pid` (via `kill(1)`, to avoid a libc dependency).
@@ -216,6 +227,17 @@ mod tests {
             &[relative_extra, dir.path().to_path_buf()],
         );
         assert_eq!(merged, format!("/opt/homebrew/bin:/usr/bin:{}", dir.path().display()));
+    }
+
+    #[test]
+    fn the_output_gets_a_grace_beyond_the_deadline() {
+        let now = Instant::now();
+        assert_eq!(output_budget(now, now), READ_GRACE);
+        assert_eq!(output_budget(now, now + Duration::from_secs(1)), READ_GRACE);
+        assert_eq!(
+            output_budget(now + Duration::from_secs(2), now),
+            Duration::from_secs(2) + READ_GRACE
+        );
     }
 
     #[test]
