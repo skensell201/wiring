@@ -1,4 +1,5 @@
 pub mod commands;
+pub mod discovery;
 pub mod error;
 pub mod exec;
 pub mod forward;
