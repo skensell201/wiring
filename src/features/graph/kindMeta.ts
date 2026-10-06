@@ -32,7 +32,7 @@ export const KIND_META: Record<Kind, { label: string; letter: string; short: str
 export const CHIP_KINDS: Kind[] = [
   "Ingress", "Service", "Deployment", "StatefulSet", "DaemonSet", "ReplicaSet", "Job", "CronJob", "Pod",
   "ConfigMap", "Secret", "PersistentVolumeClaim", "PersistentVolume", "ServiceAccount", "HorizontalPodAutoscaler",
-  "NetworkPolicy", "Role", "RoleBinding", "ClusterRole", "ClusterRoleBinding", "Node",
+  "NetworkPolicy", "Role", "RoleBinding", "ClusterRole", "ClusterRoleBinding", "Node", "Custom",
 ];
 
 /** Workload kinds get the gradient icon; everything else a muted one. */

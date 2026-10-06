@@ -1,4 +1,5 @@
 import { Handle, Position, type NodeProps } from "@xyflow/react";
+import { Puzzle } from "lucide-react";
 import { memo } from "react";
 import type { GraphNode } from "../../shared/ipc/types";
 import { Dot } from "../../shared/ui/Dot";
@@ -16,6 +17,7 @@ export function ResourceCard({ node, dimmed, expanded, selected, pathTone }: { n
   const meta = KIND_META[node.kind];
   const isGroup = node.kind === "PodGroup";
   const isPod = node.kind === "Pod";
+  const isCustom = node.kind === "Custom";
   return (
     <div
       data-testid="resource-card"
@@ -28,6 +30,10 @@ export function ResourceCard({ node, dimmed, expanded, selected, pathTone }: { n
     >
       {isPod || isGroup ? (
         <Dot status={node.status} className="size-2.5 shrink-0" />
+      ) : isCustom ? (
+        <span data-testid="custom-icon" className="grid size-7 shrink-0 place-items-center rounded-lg bg-muted text-text-hi">
+          <Puzzle className="size-3.5" />
+        </span>
       ) : (
         <span className={`grid size-7 shrink-0 place-items-center rounded-lg text-[10px] font-semibold text-text-hi ${GRADIENT_KINDS.has(node.kind) ? "gradient-brand" : "bg-muted"}`}>
           {meta.letter}

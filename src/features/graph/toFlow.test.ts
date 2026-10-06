@@ -253,3 +253,14 @@ describe("toFlow", () => {
     });
   });
 });
+
+it("hides custom resource owners and their owns edges with the Custom chip", () => {
+  const cr = n("Custom/cert-manager.io/v1/Certificate/p/tls", "Custom");
+  const secret = n("Secret/p/tls", "Secret");
+  const owns = e(cr.id, secret.id, "owns");
+  const input = { nodes: new Map([cr, secret].map((x) => [x.id, x])), edges: new Map([[owns.id, owns]]), search: "", hoveredId: null, expandedGroups: new Set<string>(), selectedId: null };
+  expect(toFlow({ ...input, hiddenKinds: new Set<Kind>() }).edges).toHaveLength(1);
+  const f = toFlow({ ...input, hiddenKinds: new Set<Kind>(["Custom"]) });
+  expect(f.nodes.map((x) => x.id)).toEqual([secret.id]);
+  expect(f.edges).toHaveLength(0);
+});

@@ -39,3 +39,10 @@ describe("ResourceCard", () => {
     expect(screen.getByTestId("resource-card").className).toContain("border-status-err");
   });
 });
+
+it("draws a custom resource owner with its own kind and a puzzle icon", () => {
+  const node = { id: "Custom/cert-manager.io/v1/Certificate/shop/web-tls", kind: "Custom" as const, namespace: "shop", name: "web-tls", status: "unknown" as const, badges: [], group: null };
+  render(<ResourceCard node={node} dimmed={false} expanded={false} selected={false} />);
+  expect(screen.getByText("Certificate")).toBeInTheDocument();
+  expect(screen.getByTestId("custom-icon")).toBeInTheDocument();
+});
