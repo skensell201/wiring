@@ -5,16 +5,20 @@
 use futures::future::{join_all, BoxFuture};
 use futures::stream::BoxStream;
 use futures::{FutureExt, StreamExt};
-use kube::api::{Api, ListParams};
-use kube::core::{ApiResource, DynamicObject};
+use kube::api::{Api, ListParams, PostParams};
+use kube::core::{ApiResource, DynamicObject, Request, Resource};
 use kube::runtime::watcher::{self, watcher, Event};
 use kube::runtime::WatchStreamExt;
 use kube::Client;
 use serde_json::Value;
 
-use crate::discovery::ResourceRef;
+use super::id::{custom_node_id, split_api_version, CustomId};
+use crate::discovery::{CustomKind, ResourceRef};
 use crate::error::{AppError, AppResult, ErrorKind};
+use crate::graph::NodeId;
+use crate::manifest::{self, RawManifest};
 use crate::session::scope::NamespaceScope;
+use crate::session::{delete_one, ensure_resource_version, kube_err, set_current_identity, with_strict_validation, ObjectDetails};
 
 /// A watch of one kind in one namespace (or cluster-wide), objects as JSON.
 pub type WatchStream = BoxStream<'static, Result<Event<Value>, watcher::Error>>;
@@ -153,6 +157,198 @@ pub async fn list(source: &dyn Source, r: &ResourceRef, scope: &NamespaceScope, 
         }
     }
     Err(no_access(r))
+}
+
+fn invalid(message: impl Into<String>) -> AppError {
+    AppError::new(ErrorKind::Invalid, message)
+}
+
+/// The namespace a request for `r` goes to: `namespace` for a namespaced kind (required), none
+/// for a cluster-scoped one (a CR owner id carries its child's namespace, which is ignored).
+pub fn target_namespace<'a>(r: &ResourceRef, namespace: Option<&'a str>) -> AppResult<Option<&'a str>> {
+    if !r.namespaced {
+        return Ok(None);
+    }
+    namespace
+        .map(Some)
+        .ok_or_else(|| invalid(format!("{} is namespaced; the id has no namespace", r.kind)))
+}
+
+/// An edit must describe the object `id` names: same apiVersion, kind, name and namespace.
+pub fn ensure_matches(m: &RawManifest, id: &CustomId) -> AppResult<()> {
+    let api_version = m.api_version.as_deref().ok_or_else(|| invalid("`apiVersion` is missing"))?;
+    if api_version != id.api_version() {
+        return Err(invalid(format!(
+            "manifest apiVersion {api_version} does not match {} of the edited object",
+            id.api_version()
+        )));
+    }
+    if m.kind != id.kind {
+        return Err(invalid(format!(
+            "manifest kind {} does not match {} of the edited object",
+            m.kind, id.kind
+        )));
+    }
+    if m.name != id.name {
+        return Err(invalid(format!(
+            "manifest name {} does not match {}; renaming is not supported",
+            m.name, id.name
+        )));
+    }
+    if m.namespace.is_some() && m.namespace != id.namespace {
+        return Err(invalid(
+            "manifest namespace does not match the edited object; moving is not supported",
+        ));
+    }
+    Ok(())
+}
+
+fn str_at<'a>(v: &'a Value, path: &[&str]) -> Option<&'a str> {
+    path.iter().try_fold(v, |cur, k| cur.get(*k))?.as_str()
+}
+
+fn summary(v: &Value) -> Vec<(String, String)> {
+    let mut rows = Vec::new();
+    let mut push = |k: &str, val: String| rows.push((k.to_string(), val));
+    push("Name", str_at(v, &["metadata", "name"]).unwrap_or_default().into());
+    if let Some(ns) = str_at(v, &["metadata", "namespace"]) {
+        push("Namespace", ns.into());
+    }
+    push(
+        "Kind",
+        format!(
+            "{} ({})",
+            str_at(v, &["kind"]).unwrap_or_default(),
+            str_at(v, &["apiVersion"]).unwrap_or_default()
+        ),
+    );
+    if let Some(created) = str_at(v, &["metadata", "creationTimestamp"]) {
+        push("Created", created.into());
+    }
+    if let Some(labels) = v["metadata"]["labels"].as_object().filter(|l| !l.is_empty()) {
+        push(
+            "Labels",
+            labels
+                .iter()
+                .map(|(k, v)| format!("{k}={}", v.as_str().unwrap_or_default()))
+                .collect::<Vec<_>>()
+                .join(", "),
+        );
+    }
+    if let Some(owners) = v["metadata"]["ownerReferences"].as_array().filter(|o| !o.is_empty()) {
+        push(
+            "Owners",
+            owners
+                .iter()
+                .map(|o| {
+                    format!(
+                        "{}/{}",
+                        o["kind"].as_str().unwrap_or_default(),
+                        o["name"].as_str().unwrap_or_default()
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", "),
+        );
+    }
+    for c in v["status"]["conditions"].as_array().into_iter().flatten() {
+        let status = c["status"].as_str().unwrap_or_default();
+        let text = match c["reason"].as_str().filter(|r| !r.is_empty()) {
+            Some(reason) => format!("{status} ({reason})"),
+            None => status.to_string(),
+        };
+        push(c["type"].as_str().unwrap_or("Condition"), text);
+    }
+    rows
+}
+
+/// YAML (without managedFields) and Overview rows of a custom object; `related` is the
+/// caller's to fill from the graph.
+pub fn details_of(mut value: Value) -> AppResult<ObjectDetails> {
+    if let Some(meta) = value.get_mut("metadata").and_then(Value::as_object_mut) {
+        meta.remove("managedFields");
+    }
+    let yaml = serde_yaml_ng::to_string(&value).map_err(|e| AppError::internal(e.to_string()))?;
+    Ok(ObjectDetails {
+        yaml,
+        summary: summary(&value),
+        related: Vec::new(),
+    })
+}
+
+pub async fn get(client: &Client, kind: &CustomKind, id: &CustomId) -> AppResult<ObjectDetails> {
+    let ns = target_namespace(&kind.resource, id.namespace.as_deref())?;
+    let obj = api(client, &kind.resource, ns).get(&id.name).await.map_err(kube_err)?;
+    details_of(to_value(&obj)?)
+}
+
+fn put_namespace(body: &mut Value, namespace: Option<&str>) {
+    if let (Some(ns), Some(meta)) = (namespace, body.get_mut("metadata").and_then(Value::as_object_mut)) {
+        meta.insert("namespace".into(), Value::String(ns.to_owned()));
+    }
+}
+
+/// Replace the object `id` names with `yaml`, with the same conflict rules as built-in kinds:
+/// without `force` the manifest's resourceVersion must be current; with it the server's is used.
+pub async fn update(client: &Client, kind: &CustomKind, id: &CustomId, yaml: &str, force: bool) -> AppResult<ObjectDetails> {
+    let m = manifest::parse_raw(yaml)?;
+    ensure_matches(&m, id)?;
+    let ns = target_namespace(&kind.resource, id.namespace.as_deref())?;
+    let mut body = m.body;
+    put_namespace(&mut body, ns);
+    if force {
+        let current = api(client, &kind.resource, ns).get(&id.name).await.map_err(kube_err)?;
+        let rv = current
+            .metadata
+            .resource_version
+            .ok_or_else(|| AppError::internal(format!("{} has no resourceVersion", id.node_id())))?;
+        set_current_identity(&mut body, &rv, current.metadata.uid.as_deref());
+    } else {
+        ensure_resource_version(&body)?;
+    }
+    let bytes = serde_json::to_vec(&body).map_err(|e| AppError::internal(e.to_string()))?;
+    let ar = api_resource(&kind.resource);
+    let req = Request::new(DynamicObject::url_path(&ar, ns))
+        .replace(&id.name, &PostParams::default(), bytes)
+        .map_err(|e| AppError::internal(e.to_string()))?;
+    let saved: Value = client.request(with_strict_validation(req)?).await.map_err(kube_err)?;
+    details_of(saved)
+}
+
+/// Create `m` (already resolved to `kind`); its own namespace wins over `fallback_namespace`.
+pub async fn create(client: &Client, kind: &CustomKind, m: RawManifest, fallback_namespace: &str) -> AppResult<NodeId> {
+    let r = &kind.resource;
+    let ns: Option<String> = if r.namespaced {
+        Some(
+            m.namespace
+                .clone()
+                .or_else(|| (!fallback_namespace.is_empty()).then(|| fallback_namespace.to_owned()))
+                .ok_or_else(|| invalid("metadata.namespace is missing and no namespace is selected"))?,
+        )
+    } else {
+        None
+    };
+    let mut body = m.body;
+    put_namespace(&mut body, ns.as_deref());
+    let bytes = serde_json::to_vec(&body).map_err(|e| AppError::internal(e.to_string()))?;
+    let req = Request::new(DynamicObject::url_path(&api_resource(r), ns.as_deref()))
+        .create(&PostParams::default(), bytes)
+        .map_err(|e| AppError::internal(e.to_string()))?;
+    let _created: Value = client.request(with_strict_validation(req)?).await.map_err(kube_err)?;
+    Ok(custom_node_id(&r.group, &r.version, &r.kind, ns.as_deref(), &m.name))
+}
+
+pub async fn delete(client: &Client, kind: &CustomKind, id: &CustomId) -> AppResult<()> {
+    let ns = target_namespace(&kind.resource, id.namespace.as_deref())?;
+    delete_one(&api(client, &kind.resource, ns), &id.name).await
+}
+
+/// (`group`, `version`) of a manifest's apiVersion, required for a custom kind.
+pub fn manifest_group_version(m: &RawManifest) -> AppResult<(&str, &str)> {
+    m.api_version
+        .as_deref()
+        .map(split_api_version)
+        .ok_or_else(|| invalid("`apiVersion` is missing"))
 }
 
 #[cfg(test)]
@@ -354,5 +550,80 @@ mod tests {
         src.fail("Certificate", Some("b"), ErrorKind::Network);
         let err = list(&src, &cert_ref(true), &set(&["a", "b"]), &[]).await.unwrap_err();
         assert_eq!(err.kind, ErrorKind::Network);
+    }
+
+    use crate::custom::id::CustomId;
+    use crate::manifest::parse_raw;
+
+    fn id() -> CustomId {
+        CustomId::parse("Custom/cert-manager.io/v1/Certificate/shop/web-tls").unwrap()
+    }
+
+    const YAML: &str = "apiVersion: cert-manager.io/v1\nkind: Certificate\nmetadata:\n  name: web-tls\n  namespace: shop\nspec: {}\n";
+
+    #[test]
+    fn a_matching_manifest_passes() {
+        ensure_matches(&parse_raw(YAML).unwrap(), &id()).unwrap();
+        // The namespace may be left out; the id supplies it.
+        ensure_matches(&parse_raw(&YAML.replace("  namespace: shop\n", "")).unwrap(), &id()).unwrap();
+    }
+
+    #[test]
+    fn edits_cannot_move_rename_or_retype_the_object() {
+        for (from, to) in [
+            ("name: web-tls", "name: other"),
+            ("namespace: shop", "namespace: elsewhere"),
+            ("kind: Certificate", "kind: Issuer"),
+            ("cert-manager.io/v1", "cert-manager.io/v1beta1"),
+        ] {
+            let err = ensure_matches(&parse_raw(&YAML.replace(from, to)).unwrap(), &id()).unwrap_err();
+            assert_eq!(err.kind, crate::error::ErrorKind::Invalid, "{to}");
+        }
+        let no_api_version = parse_raw(&YAML.replace("apiVersion: cert-manager.io/v1\n", "")).unwrap();
+        assert!(ensure_matches(&no_api_version, &id()).is_err());
+    }
+
+    #[test]
+    fn details_show_yaml_without_managed_fields_and_a_summary() {
+        let d = details_of(json!({
+            "apiVersion": "cert-manager.io/v1", "kind": "Certificate",
+            "metadata": {
+                "name": "web-tls", "namespace": "shop", "creationTimestamp": "2026-10-03T12:00:00Z",
+                "labels": { "app": "web" },
+                "ownerReferences": [{ "apiVersion": "networking.k8s.io/v1", "kind": "Ingress", "name": "web", "uid": "u" }],
+                "managedFields": [{ "manager": "kubectl" }]
+            },
+            "status": { "conditions": [{ "type": "Ready", "status": "True", "reason": "Ready" }] }
+        }))
+        .unwrap();
+        assert!(d.yaml.contains("kind: Certificate"));
+        assert!(!d.yaml.contains("managedFields"));
+        let rows: Vec<(&str, &str)> = d.summary.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        assert_eq!(
+            rows,
+            vec![
+                ("Name", "web-tls"),
+                ("Namespace", "shop"),
+                ("Kind", "Certificate (cert-manager.io/v1)"),
+                ("Created", "2026-10-03T12:00:00Z"),
+                ("Labels", "app=web"),
+                ("Owners", "Ingress/web"),
+                ("Ready", "True (Ready)"),
+            ]
+        );
+        assert!(d.related.is_empty());
+    }
+
+    #[test]
+    fn target_namespace_follows_the_scope_of_the_kind() {
+        let namespaced = cert_ref(true);
+        let cluster = cert_ref(false);
+        assert_eq!(target_namespace(&namespaced, Some("a")).unwrap(), Some("a"));
+        assert!(target_namespace(&namespaced, None).is_err());
+        assert_eq!(
+            target_namespace(&cluster, Some("a")).unwrap(),
+            None,
+            "a CR owner id carries its child's namespace"
+        );
     }
 }

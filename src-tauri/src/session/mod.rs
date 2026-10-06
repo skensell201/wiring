@@ -10,6 +10,8 @@ pub mod shared;
 pub mod watch;
 pub mod write;
 
+pub(crate) use write::{delete_one, ensure_resource_version, kube_err, set_current_identity, with_strict_validation};
+
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
@@ -327,12 +329,18 @@ impl Session {
         if kind == Kind::PodGroup {
             return Ok(());
         }
-        let uid = {
-            let store = self.shared.store();
-            store
-                .find(kind, ns.as_deref(), &name)
-                .and_then(|o| o.uid().map(str::to_owned))
-                .ok_or_else(|| AppError::new(ErrorKind::NotFound, format!("{node_id} not in store")))?
+        let selector = if kind == Kind::Custom {
+            let c = crate::custom::id::CustomId::parse(node_id)?;
+            format!("involvedObject.kind={},involvedObject.name={}", c.kind, c.name)
+        } else {
+            let uid = {
+                let store = self.shared.store();
+                store
+                    .find(kind, ns.as_deref(), &name)
+                    .and_then(|o| o.uid().map(str::to_owned))
+                    .ok_or_else(|| AppError::new(ErrorKind::NotFound, format!("{node_id} not in store")))?
+            };
+            format!("involvedObject.uid={uid}")
         };
         // Cluster-scoped objects (e.g. PersistentVolume) have no namespace of their own; the
         // `involvedObject.uid` field selector below already narrows the watch to that one
@@ -344,7 +352,7 @@ impl Session {
         let emitter: Arc<dyn Emitter> = Arc::new(self.ns_emitter.clone());
         let node_id = node_id.to_string();
         self.events_task = Some(tokio::spawn(async move {
-            let cfg = watcher::Config::default().fields(&format!("involvedObject.uid={uid}"));
+            let cfg = watcher::Config::default().fields(&selector);
             let stream = watcher(api, cfg).default_backoff().boxed();
             forward_object_events(node_id, stream, emitter).await;
         }));

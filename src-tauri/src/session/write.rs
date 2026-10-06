@@ -63,7 +63,7 @@ pub(super) fn resource_for(kind: Kind) -> AppResult<ApiResource> {
 
 /// Ask the server to reject unknown or duplicate fields instead of silently dropping them.
 /// kube 4.2's `PostParams` cannot express `fieldValidation`, so it is appended to the query.
-fn with_strict_validation(mut req: http::Request<Vec<u8>>) -> AppResult<http::Request<Vec<u8>>> {
+pub(crate) fn with_strict_validation(mut req: http::Request<Vec<u8>>) -> AppResult<http::Request<Vec<u8>>> {
     let path = req.uri().path();
     let uri = match req.uri().query().filter(|q| !q.is_empty()) {
         Some(query) => format!("{path}?{query}&fieldValidation=Strict"),
@@ -87,7 +87,7 @@ fn fill_type_and_namespace(body: &mut Value, ar: &ApiResource, namespace: Option
 
 /// Point the manifest at the object currently on the server: its `resourceVersion` (so the
 /// replace wins) and `uid` (so an overwrite still works after a delete + recreate).
-fn set_current_identity(body: &mut Value, resource_version: &str, uid: Option<&str>) {
+pub(crate) fn set_current_identity(body: &mut Value, resource_version: &str, uid: Option<&str>) {
     if let Some(meta) = body.get_mut("metadata").and_then(Value::as_object_mut) {
         meta.insert("resourceVersion".into(), Value::String(resource_version.to_owned()));
         match uid {
@@ -99,7 +99,7 @@ fn set_current_identity(body: &mut Value, resource_version: &str, uid: Option<&s
 
 /// Without `force` the server must be able to detect a stale edit, which needs the
 /// manifest's own `metadata.resourceVersion`; a missing one would replace unconditionally.
-fn ensure_resource_version(body: &Value) -> AppResult<()> {
+pub(crate) fn ensure_resource_version(body: &Value) -> AppResult<()> {
     let present = body["metadata"]["resourceVersion"].as_str().is_some_and(|rv| !rv.is_empty());
     if present {
         Ok(())
@@ -149,12 +149,12 @@ fn target_namespace(m: &Manifest, fallback: Option<&str>) -> AppResult<Option<St
         .ok_or_else(|| AppError::new(ErrorKind::Invalid, "metadata.namespace is missing and no namespace is selected"))
 }
 
-pub(super) fn kube_err(e: kube::Error) -> AppError {
+pub(crate) fn kube_err(e: kube::Error) -> AppError {
     AppError::from(&e)
 }
 
 /// A delete that already happened counts as done.
-async fn delete_one(api: &Api<DynamicObject>, name: &str) -> AppResult<()> {
+pub(crate) async fn delete_one(api: &Api<DynamicObject>, name: &str) -> AppResult<()> {
     match api.delete(name, &DeleteParams::default()).await {
         Ok(_) => Ok(()),
         Err(e) => match AppError::from(&e) {
