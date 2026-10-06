@@ -1,0 +1,10 @@
+{
+  "name": "web",
+  "namespace": "shop",
+  "chart": "web-1.4.2",
+  "appVersion": "2.0.1",
+  "revision": 3,
+  "status": "deployed",
+  "health": "ok",
+  "updated": "2026-10-06T09:30:00Z"
+}

@@ -18,6 +18,7 @@ use tokio::task::JoinHandle;
 
 use super::emitter::{ClosableEmitter, Emitter};
 use super::scope::NamespaceScope;
+use super::shared::Shared;
 use super::Session;
 use crate::custom::ops::{self, Source};
 use crate::custom::CustomTable;
@@ -128,16 +129,15 @@ impl Session {
         }
     }
 
-    /// Latest revision of every Helm release in the scope (from the watched Secrets). The store
-    /// lock is held only to copy the records out; decoding runs after it is released.
-    pub fn helm_releases(&self) -> Vec<crate::helm::HelmRelease> {
-        let collected = crate::helm::collect_list(&self.shared.store());
-        crate::helm::build_list(collected)
+    /// A handle on the store and graph the reducer keeps (cheap: `Arc`s inside), for reads
+    /// that should not hold the session lock, such as decoding Helm releases.
+    pub fn shared_handle(&self) -> Shared {
+        self.shared.clone()
     }
 
-    pub fn helm_release(&self, namespace: &str, name: &str) -> crate::error::AppResult<crate::helm::HelmReleaseDetails> {
-        let collected = crate::helm::collect_release(&self.shared.store(), namespace, name);
-        crate::helm::build_release(collected)
+    /// Graph neighbours of `node_id` (custom resource owners have their `owns` children).
+    pub fn related(&self, node_id: &str) -> Vec<crate::graph::NodeId> {
+        super::related_in(&self.shared.graph(), node_id)
     }
 }
 
@@ -486,7 +486,8 @@ mod tests {
             "deployed",
             &release_json("web", "shop", 1, "deployed", "1.0.0"),
         ));
-        assert_eq!(session.helm_releases().len(), 1);
-        assert_eq!(session.helm_release("shop", "web").unwrap().release.chart, "web-1.0.0");
+        let shared = session.shared_handle();
+        assert_eq!(shared.helm_releases().len(), 1);
+        assert_eq!(shared.helm_release("shop", "web").unwrap().release.chart, "web-1.0.0");
     }
 }

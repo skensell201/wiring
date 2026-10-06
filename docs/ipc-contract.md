@@ -6,7 +6,7 @@ The JSON fixtures in `src/shared/ipc/fixtures/` are the authoritative payload sh
 
 | Type | Values |
 |---|---|
-| `Kind` | `Deployment`, `StatefulSet`, `DaemonSet`, `ReplicaSet`, `Job`, `CronJob`, `Pod`, `Service`, `Ingress`, `ConfigMap`, `Secret`, `PersistentVolumeClaim`, `PersistentVolume`, `ServiceAccount`, `HorizontalPodAutoscaler`, `NetworkPolicy`, `Role`, `RoleBinding`, `ClusterRole`, `ClusterRoleBinding`, `Node`, `PodGroup` (`ClusterRole`, `ClusterRoleBinding` and `Node` are cluster-scoped: ids `Kind//name`) |
+| `Kind` | `Deployment`, `StatefulSet`, `DaemonSet`, `ReplicaSet`, `Job`, `CronJob`, `Pod`, `Service`, `Ingress`, `ConfigMap`, `Secret`, `PersistentVolumeClaim`, `PersistentVolume`, `ServiceAccount`, `HorizontalPodAutoscaler`, `NetworkPolicy`, `Role`, `RoleBinding`, `ClusterRole`, `ClusterRoleBinding`, `Node`, `PodGroup`, `Custom` (a custom resource: graph nodes and custom tables only; `ClusterRole`, `ClusterRoleBinding` and `Node` are cluster-scoped: ids `Kind//name`) |
 | `Status` | `ok`, `warn`, `err`, `unknown` |
 | `Relation` | `owns`, `selects`, `routes`, `mounts`, `envFrom`, `claims`, `binds`, `usesSA`, `scales`, `applies`, `allows`, `grants`, `subject`, `runsOn` |
 | `ErrorKind` | `auth`, `network`, `forbidden`, `notFound`, `conflict`, `invalid`, `internal` — `conflict` is HTTP 409 (stale `resourceVersion` on a write); `invalid` is HTTP 400/422 (the message is the server's, listing the bad fields) |
@@ -28,7 +28,13 @@ Argument names are camelCase on the JS side; Tauri maps them to the Rust snake_c
 | `watch_events` | `{ nodeId: string \| null }` | `null` — `null` stops the current watcher |
 | `denied_kinds` | — | `Kind[]` — kinds the session could not watch (RBAC 403 / API group missing) |
 | `partial_kinds` | — | `Kind[]` — kinds watched in some namespaces but forbidden in others (or forbidden cluster-wide and watched per namespace instead) |
-| `list_rows` | `{ kind }` | `Table` — kubectl-like columns/rows for `kind`, computed from the cached store |
+| `list_rows` | `{ kind, includeHelmStorage? }` | `Table` — kubectl-like columns/rows for `kind`, computed from the cached store. Helm storage Secrets (`type: helm.sh/release.v1`) are left out unless `includeHelmStorage` is true |
+| `custom_kinds` | — | `CustomKind[]` — discovery, cached per session (see [Custom resources](#custom-resources)) |
+| `refresh_custom_kinds` | — | `CustomKind[]` — runs discovery again and replaces the cache |
+| `list_custom` | `{ resource: ResourceRef }` | `CustomTable`; the table then stays live through `custom_table` events |
+| `stop_custom` | — | `null` — stops the live custom table; no `custom_table` event follows |
+| `helm_releases` | — | `HelmRelease[]` (see [Helm](#helm)) |
+| `helm_release` | `{ namespace, name }` | `HelmReleaseDetails` — `notFound` when no revision of the release decodes |
 | `update_object` | `{ nodeId, yaml, force: boolean }` | `ObjectDetails` — fresh YAML/summary of the saved object (see [Writes](#writes)) |
 | `create_object` | `{ namespace, yaml }` | `NodeId` of the created object; it reaches the graph through the watch |
 | `delete_object` | `{ nodeId }` | `null` — a PodGroup id deletes every member pod |
@@ -64,6 +70,7 @@ Argument names are camelCase on the JS side; Tauri maps them to the Rust snake_c
 | `graph_delta` | `GraphDelta` | Apply `addedNodes`/`updatedNodes` (full node objects) / `removedNodes` (ids) / `addedEdges` / `removedEdges` (ids). Only sent when non-empty. |
 | `object_events` | `ObjectEvents` | Full list, newest first, for the node passed to `watch_events`. Ignore payloads whose `nodeId` is not the current selection. |
 | `forwards_changed` | `Forward[]` | Every running forward, ordered by id, after each start, stop and status change (see [Port-forward](#port-forward)). Empty after a disconnect. |
+| `custom_table` | `CustomTable` | The full rows of the live custom table after a change (debounced); see [Custom resources](#custom-resources) |
 | `metrics_updated` | `{ state: "pending" \| "available" \| "unavailable" \| "forbidden" }` | After each metrics-server sample of the selected namespace (every 15 s), and once when the Metrics API turns out to be missing (404 → `unavailable`) or forbidden (403 → `forbidden`), after which polling stops for that namespace session. Three failed polls in a row before any sample (a registered but unhealthy metrics-server) also send `unavailable`, with the Overview note "metrics-server not responding"; polling continues and a sample sends `available`. A sample older than 60 s adds "(stale)" to the Overview usage rows. Refetch the open Pod / Deployment / StatefulSet / DaemonSet table and the selected details. Usage badges arrive as an ordinary `graph_delta`. |
 
 ### Ordering rules the frontend must follow
@@ -77,6 +84,7 @@ Argument names are camelCase on the JS side; Tauri maps them to the Rust snake_c
 
 - Namespaced: `Kind/<namespace>/<name>`; cluster-scoped: `PersistentVolume//<name>` (likewise `ClusterRole//`, `ClusterRoleBinding//`, `Node//`).
 - Collapsed pods: `PodGroup/<namespace>/<OwnerKind>/<ownerName>`. The owner is the *visible* owner — a Deployment whose single ReplicaSet is hidden yields `PodGroup/ns/Deployment/web`. During a rollout two ReplicaSets are visible, so the groups are `PodGroup/ns/ReplicaSet/<rs>` and the id changes back when the old ReplicaSet drains; expanded-group state does not survive that.
+- Custom resources: `Custom/<group>/<version>/<kind>/<namespace>/<name>`. The namespace segment is empty for cluster-scoped kinds, and the group segment is empty for the core group. Example: `Custom/cert-manager.io/v1/Certificate/shop/web-tls`. A CR owner node on the graph takes its namespace from the child object it owns. Ids are resolved against discovery, so a cluster-scoped kind ignores the namespace segment. A malformed custom id rejects with `notFound`.
 - `get_object` on a PodGroup returns `yaml: ""` and a summary of member counts; `watch_events` on a PodGroup is a no-op.
 
 ## Problems
@@ -107,6 +115,44 @@ A node whose `status` is `warn` or `err` may carry `problem: { reason, message, 
 - `TableCell { text, status: Status | null }` — `status` colours the cell (e.g. the Pod `status` cell, or a workload's `ready` cell) and is `null` for plain cells.
 - `PodGroup` is not a table kind (`columns` is empty, `rows` is always empty) — `list_rows({ kind: "Pod" })` always lists individual pods; collapsing pods into groups is a graph-only concern.
 - Requesting a kind the session could not watch (see `denied_kinds`) returns an empty table, not an error — the frontend shows the RBAC empty state itself.
+
+## Custom resources
+
+`custom_kinds` runs discovery on its first call of a session, then answers from a cache;
+`refresh_custom_kinds` runs it again. A `CustomKind` is `{ resource: ResourceRef, columns: PrinterColumn[] }`.
+`ResourceRef` is `{ group, version, kind, plural, namespaced }` (`group` is empty for the core group), and
+`PrinterColumn` is `{ name, jsonPath, type }`: the CRD's priority-0 `additionalPrinterColumns` for the served
+version. Without permission to list CRDs, `columns` is empty.
+
+`list_custom { resource }` returns a `CustomTable` `{ resource, table, error }`. Its `table.kind` is `"Custom"`, and
+its columns are Name, Namespace (multi-namespace scopes only, first), the printer columns (keys `c0`, `c1`, …)
+and Age. Unsupported JSONPath shows `—`. The table stays live: a debounced `custom_table` event with the full
+rows follows every change, until `stop_custom`, another `list_custom`, or a namespace switch. The frontend
+keeps a `custom_table` event only when it is for the table on screen (compare `resource` group/version/kind).
+`error` is null except on the last `custom_table` event of a table whose watch ended for good —
+`No access to <Kind> (RBAC)`, `<Kind> is no longer served`, or the server's message — whose rows are then
+empty; the frontend shows it in place of the rows. A kind that is not served (or cannot be listed) rejects
+with `notFound`; `list_custom` without a selected namespace rejects with `invalid`.
+
+`get_object`, `update_object`, `delete_object` and `create_object` accept custom ids and custom manifests (a
+manifest whose `kind` is not a built-in `Kind` is resolved through discovery by its `apiVersion` and `kind`). They
+behave as for built-in kinds (strict field validation, `resourceVersion` conflicts, Overwrite), except that the
+objects are read from the server on demand: they are never in the graph store. A custom resource that owns a
+watched object appears on the graph as a node of kind `Custom` with status `unknown` and an `owns` edge.
+
+## Helm
+
+`helm_releases` returns `HelmRelease[]` (latest revision per release in the scope):
+`{ name, namespace, chart, appVersion, revision, status, health, updated }`. `chart` is `name-version`;
+`status` is Helm's own (`deployed`, `failed`, `pending-upgrade`, …); `health` maps it to a `Status`
+(`deployed` ok, `pending-*` and `uninstalling` warn, `failed` err, others unknown). `helm_release { namespace, name }`
+returns `HelmReleaseDetails` `{ release, description, firstDeployed, lastDeployed, values, notes, history, resources }`:
+`values` is the user-supplied values as YAML (empty when none), `history` lists every stored revision newest
+first (`{ revision, chart, appVersion, status, health, updated, description }`), and `resources` are the node
+ids of the release's objects in the store (Helm's `meta.helm.sh/release-*` annotations, or
+`app.kubernetes.io/managed-by: Helm` + `app.kubernetes.io/instance`). Both read the watched Secrets: there is no
+event, so the frontend re-reads them when the graph changes. Release values can hold credentials and are
+never logged.
 
 ## Metrics
 

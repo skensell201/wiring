@@ -537,17 +537,20 @@ pub fn parse_node_id(id: &str) -> AppResult<(Kind, Option<String>, String)> {
     Ok((kind, ns, name.to_string()))
 }
 
+/// Graph neighbours of `node_id`, sorted and deduplicated.
+fn related_in(graph: &Graph, node_id: &str) -> Vec<NodeId> {
+    let mut r: Vec<NodeId> = graph
+        .edges_touching(node_id)
+        .map(|e| if e.source == node_id { e.target.clone() } else { e.source.clone() })
+        .collect();
+    r.sort();
+    r.dedup();
+    r
+}
+
 pub fn object_details(store: &Store, graph: &Graph, node_id: &str) -> AppResult<ObjectDetails> {
     let (kind, ns, name) = parse_node_id(node_id)?;
-    let related: Vec<NodeId> = {
-        let mut r: Vec<NodeId> = graph
-            .edges_touching(node_id)
-            .map(|e| if e.source == node_id { e.target.clone() } else { e.source.clone() })
-            .collect();
-        r.sort();
-        r.dedup();
-        r
-    };
+    let related = related_in(graph, node_id);
     if kind == Kind::PodGroup {
         let node = graph
             .node(node_id)
