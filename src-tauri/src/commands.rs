@@ -121,6 +121,17 @@ pub async fn select_namespace(state: State<'_, AppState>, namespace: String, exp
         .await
 }
 
+/// `namespaces: null` watches all namespaces; a list watches those.
+#[tauri::command]
+pub async fn select_namespaces(state: State<'_, AppState>, namespaces: Option<Vec<String>>, expanded_groups: Vec<String>) -> AppResult<()> {
+    let scope = crate::session::scope::NamespaceScope::from_arg(namespaces)?;
+    let mut guard = state.session.lock().await;
+    let session = session_mut(&mut guard)?;
+    session
+        .select_scope(scope, expanded_groups.into_iter().collect::<HashSet<_>>())
+        .await
+}
+
 #[tauri::command]
 pub async fn set_expanded_groups(state: State<'_, AppState>, expanded_groups: Vec<String>) -> AppResult<()> {
     let mut guard = state.session.lock().await;
@@ -149,6 +160,13 @@ pub async fn denied_kinds(state: State<'_, AppState>) -> AppResult<Vec<Kind>> {
     let mut guard = state.session.lock().await;
     let session = session_mut(&mut guard)?;
     Ok(session.denied_kinds())
+}
+
+#[tauri::command]
+pub async fn partial_kinds(state: State<'_, AppState>) -> AppResult<Vec<Kind>> {
+    let mut guard = state.session.lock().await;
+    let session = session_mut(&mut guard)?;
+    Ok(session.partial_kinds())
 }
 
 #[tauri::command]
@@ -364,10 +382,12 @@ pub fn register(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wr
             connect,
             disconnect,
             select_namespace,
+            select_namespaces,
             set_expanded_groups,
             get_object,
             watch_events,
             denied_kinds,
+            partial_kinds,
             list_rows,
             update_object,
             create_object,

@@ -121,6 +121,11 @@ pub struct Session {
     forwards: ForwardManager,
     /// Live terminals; they end with the namespace session, like log sessions.
     execs: ExecSessions,
+    /// What the namespace session watches (`None` before the first selection).
+    scope: Option<scope::NamespaceScope>,
+    /// The namespaces `connect` listed, which a forbidden cluster-wide watch falls back to;
+    /// `None` when listing namespaces was forbidden, and then all namespaces is refused.
+    namespaces: Option<Vec<String>>,
 }
 
 impl Session {
@@ -150,6 +155,7 @@ impl Session {
             .list(&ListParams::default())
             .await
             .map(|list| list.items.into_iter().filter_map(|n| n.metadata.name).collect::<Vec<_>>());
+        let listable = listed.is_ok();
         let namespaces = namespaces_or_fallback(listed, context_namespace.as_deref())?;
 
         let info = ConnectInfo {
@@ -157,7 +163,9 @@ impl Session {
             server_version: version.git_version,
             namespaces,
         };
-        Ok((Session::new(client, emitter), info))
+        let mut session = Session::new(client, emitter);
+        session.namespaces = listable.then(|| info.namespaces.clone());
+        Ok((session, info))
     }
 
     fn new(client: Client, emitter: Arc<dyn Emitter>) -> Session {
@@ -175,6 +183,8 @@ impl Session {
             next_log_id: 1,
             forwards,
             execs,
+            scope: None,
+            namespaces: None,
         }
     }
 
@@ -191,15 +201,35 @@ impl Session {
         v
     }
 
-    /// Tear down any previous watchers and start watching `namespace`.
+    /// Kinds watched per namespace because their cluster-wide watch was forbidden.
+    pub fn partial_kinds(&self) -> Vec<Kind> {
+        let mut v: Vec<Kind> = self.shared.partial_kinds().iter().copied().collect();
+        v.sort();
+        v
+    }
+
+    /// One namespace: the pre-scope entry point (removed once the frontend selects scopes).
     pub async fn select_namespace(&mut self, namespace: &str, expanded_groups: HashSet<NodeId>) -> AppResult<()> {
+        self.select_scope(scope::NamespaceScope::single(namespace), expanded_groups).await
+    }
+
+    /// Tear down any previous watchers and start watching `scope`. All namespaces needs
+    /// the namespace list (it is what a forbidden cluster-wide watch falls back to), so it is
+    /// refused, before anything is torn down, when `connect` could not list namespaces.
+    pub async fn select_scope(&mut self, scope: scope::NamespaceScope, expanded_groups: HashSet<NodeId>) -> AppResult<()> {
+        if scope == scope::NamespaceScope::All && self.namespaces.is_none() {
+            return Err(AppError::new(
+                ErrorKind::Invalid,
+                "all namespaces needs permission to list namespaces; pick namespaces by name",
+            ));
+        }
         self.execs.stop_all().await;
         self.stop_watchers();
         self.shared = Shared::default();
         *self.shared.expanded_groups() = expanded_groups;
         self.ns_emitter = ClosableEmitter::new(self.emitter.clone());
 
-        let plan = scope::watch_plan(&scope::NamespaceScope::single(namespace));
+        let plan = scope::watch_plan(&scope);
         let config = ReducerConfig {
             streams: plan.clone(),
             ..Default::default()
@@ -215,10 +245,11 @@ impl Session {
                 }
             }
         });
-        self.tasks = watch::spawn_plan(&self.client, &plan, &[], &store_tx);
+        let fallback = self.namespaces.as_deref().unwrap_or_default();
+        self.tasks = watch::spawn_plan(&self.client, &plan, fallback, &store_tx);
         self.tasks.push(metrics::spawn(
             self.client.clone(),
-            &scope::NamespaceScope::single(namespace),
+            &scope,
             self.shared.clone(),
             reducer_tx.clone(),
             Arc::new(self.ns_emitter.clone()),
@@ -226,6 +257,7 @@ impl Session {
         self.tasks.push(bridge);
         self.tasks.push(reducer_task);
         self.reducer_tx = Some(reducer_tx);
+        self.scope = Some(scope);
         Ok(())
     }
 
@@ -535,6 +567,37 @@ pub fn events_to_list(events: &BTreeMap<String, CoreEvent>) -> Vec<K8sEvent> {
 mod tests {
     use super::*;
     use crate::store::{Kind, Store};
+
+    fn offline_session() -> Session {
+        use crate::session::emitter::ChannelEmitter;
+        let (emitter, _rx) = ChannelEmitter::new();
+        let client = Client::try_from(Config::new("https://127.0.0.1:1".parse().unwrap())).unwrap();
+        Session::new(client, Arc::new(emitter))
+    }
+
+    #[tokio::test]
+    async fn a_session_takes_a_scope_without_waiting_for_the_cluster() {
+        let mut session = offline_session();
+        session.namespaces = Some(vec!["a".into(), "b".into()]);
+        session.select_scope(scope::NamespaceScope::All, HashSet::new()).await.unwrap();
+        assert_eq!(session.scope, Some(scope::NamespaceScope::All));
+        assert!(session.partial_kinds().is_empty());
+        session.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn all_namespaces_is_refused_when_namespaces_could_not_be_listed() {
+        let mut session = offline_session();
+        assert_eq!(session.namespaces, None, "a new session has not listed namespaces");
+        let err = session.select_scope(scope::NamespaceScope::All, HashSet::new()).await.unwrap_err();
+        assert_eq!(err.kind, ErrorKind::Invalid);
+        assert_eq!(session.scope, None);
+        assert!(session.tasks.is_empty(), "nothing was started");
+        // A named namespace still works, as with namespace-scoped RBAC today.
+        session.select_namespace("team-a", HashSet::new()).await.unwrap();
+        assert_eq!(session.scope, Some(scope::NamespaceScope::single("team-a")));
+        session.shutdown().await;
+    }
 
     #[test]
     fn object_details_carry_usage_rows() {
