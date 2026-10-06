@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { GraphEdge, GraphNode } from "../../shared/ipc/types";
 import { NODE_HEIGHT, NODE_WIDTH } from "./layout";
 import { toFlow } from "./toFlow";
+import type { Kind } from "../../shared/ipc/types";
 
 const n = (id: string, kind: GraphNode["kind"], name = id.split("/").pop()!): GraphNode => ({ id, kind, namespace: "p", name, status: "ok", badges: [], group: null });
 const e = (source: string, target: string, relation: GraphEdge["relation"] = "owns"): GraphEdge => ({ id: `${source}->${target}:${relation}`, source, target, relation });
@@ -160,6 +161,84 @@ describe("toFlow", () => {
       expect(dById[long.id].waypoints).toHaveLength(1);
       expect(dById[long.id].waypoints).not.toEqual(aById[long.id].waypoints);
       expect(dById[long.id]).not.toBe(aById[long.id]);
+    });
+  });
+
+  describe("lanes", () => {
+    const base = { hiddenKinds: new Set<Kind>(), search: "", hoveredId: null, selectedId: null, expandedGroups: new Set<string>() };
+    const ln = (id: string, kind: Kind, ns: string | null): GraphNode => ({ id, kind, namespace: ns, name: id.split("/").pop()!, status: "ok", badges: [], group: null });
+    const multiNodes = new Map([
+      ln("Deployment/a/web", "Deployment", "a"),
+      ln("Pod/a/web-1", "Pod", "a"),
+      ln("Deployment/b/api", "Deployment", "b"),
+      ln("PersistentVolumeClaim/b/data", "PersistentVolumeClaim", "b"),
+      ln("PersistentVolume//pv", "PersistentVolume", null),
+    ].map((x) => [x.id, x]));
+    const multiEdges = new Map<string, GraphEdge>([
+      ["owns", { id: "owns", source: "Deployment/a/web", target: "Pod/a/web-1", relation: "owns" }],
+      ["binds", { id: "binds", source: "PersistentVolume//pv", target: "PersistentVolumeClaim/b/data", relation: "binds" }],
+    ]);
+    const multi = { ...base, nodes: multiNodes, edges: multiEdges };
+
+    it("lays several namespaces out in lanes, cluster-scoped objects last", () => {
+      const flow = toFlow(multi);
+      expect(flow.lanes.map((l) => l.data.label)).toEqual(["a", "b", "Cluster-scoped"]);
+      expect(flow.lanes.map((l) => l.data.count)).toEqual([2, 2, 1]);
+      expect(flow.lanes.map((l) => l.id)).toEqual(["lane:a", "lane:b", "lane:"]);
+      const inLane = (id: string, laneId: string) => {
+        const node = flow.nodes.find((x) => x.id === id)!;
+        const lane = flow.lanes.find((x) => x.id === laneId)!;
+        return node.position.y >= lane.position.y && node.position.y + NODE_HEIGHT <= lane.position.y + lane.height!
+          && node.position.x >= lane.position.x && node.position.x + NODE_WIDTH <= lane.position.x + lane.width!;
+      };
+      expect(inLane("Deployment/a/web", "lane:a")).toBe(true);
+      expect(inLane("Pod/a/web-1", "lane:a")).toBe(true);
+      expect(inLane("Deployment/b/api", "lane:b")).toBe(true);
+      expect(inLane("PersistentVolumeClaim/b/data", "lane:b")).toBe(true);
+      expect(inLane("PersistentVolume//pv", "lane:")).toBe(true);
+      // Lanes are stacked top to bottom without overlapping.
+      for (let i = 1; i < flow.lanes.length; i++) {
+        expect(flow.lanes[i].position.y).toBeGreaterThan(flow.lanes[i - 1].position.y + flow.lanes[i - 1].height!);
+      }
+      // The cross-lane edge is still drawn, without waypoints.
+      expect(flow.edges.map((x) => x.id).sort()).toEqual(["binds", "owns"]);
+      expect(flow.edges.find((x) => x.id === "binds")!.data.waypoints).toBeUndefined();
+    });
+
+    it("makes lane frames inert: not selectable, draggable, focusable, nor hit by the pointer, and painted behind", () => {
+      const { lanes } = toFlow(multi);
+      for (const lane of lanes) {
+        expect(lane.type).toBe("lane");
+        expect(lane.selectable).toBe(false);
+        expect(lane.draggable).toBe(false);
+        expect(lane.focusable).toBe(false);
+        expect(lane.style?.pointerEvents).toBe("none");
+        expect(lane.zIndex).toBeLessThan(0);
+      }
+    });
+
+    it("counts only visible nodes and drops lanes that filtering empties", () => {
+      const flow = toFlow({ ...multi, hiddenKinds: new Set<Kind>(["PersistentVolume", "Pod"]) });
+      expect(flow.lanes.map((l) => [l.data.label, l.data.count])).toEqual([["a", 1], ["b", 2]]);
+    });
+
+    it("draws no lanes for one namespace, even with cluster-scoped objects", () => {
+      expect(toFlow({ ...base, nodes, edges }).lanes).toEqual([]);
+      const pv = ln("PersistentVolume//pv", "PersistentVolume", null);
+      const withPv = new Map(nodes);
+      withPv.set(pv.id, pv);
+      expect(toFlow({ ...base, nodes: withPv, edges }).lanes).toEqual([]);
+    });
+
+    it("keeps positions and lanes when only a node's status changes", () => {
+      const a = toFlow(multi);
+      const changed = new Map(multiNodes);
+      changed.set("Pod/a/web-1", { ...multiNodes.get("Pod/a/web-1")!, status: "err" });
+      const b = toFlow({ ...multi, nodes: changed });
+      expect(b.lanes).toBe(a.lanes);
+      for (const node of b.nodes) expect(node.position).toBe(a.nodes.find((x) => x.id === node.id)!.position);
+      // Unchanged nodes keep their data object.
+      expect(b.nodes.find((x) => x.id === "Deployment/b/api")!.data).toBe(a.nodes.find((x) => x.id === "Deployment/b/api")!.data);
     });
   });
 });

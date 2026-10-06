@@ -14,11 +14,16 @@ import { useShallow } from "zustand/react/shallow";
 import { useAppStore } from "../../app/store";
 import { isMulti, scopeLabel } from "../../shared/scope";
 import { RelationEdge } from "./RelationEdge";
+import { LaneNode } from "./LaneNode";
 import { ResourceNode } from "./ResourceNode";
-import { toFlow, type ResourceFlowNode } from "./toFlow";
+import { toFlow, type FlowNode } from "./toFlow";
 
-const nodeTypes = { resource: ResourceNode };
+const nodeTypes = { resource: ResourceNode, lane: LaneNode };
 const edgeTypes = { relation: RelationEdge };
+
+/** Lanes would paint solid blocks over the minimap's nodes; draw only resources there. */
+const miniMapColor = (n: FlowNode) => (n.type === "lane" ? "transparent" : "#3a3340");
+const miniMapStroke = (n: FlowNode) => (n.type === "lane" ? "transparent" : "#b997ff");
 
 /** If React Flow never reports the nodes measured (it can when nothing changed), settle anyway. */
 const FOCUS_SETTLE_FALLBACK_MS = 150;
@@ -34,7 +39,11 @@ function CanvasInner() {
     })),
   );
 
-  const flow = useMemo(() => toFlow(s), [s.nodes, s.edges, s.hiddenKinds, s.search, s.hoveredId, s.selectedId, s.expandedGroups]);
+  const flow = useMemo(() => {
+    const { lanes, nodes, edges } = toFlow(s);
+    // Lanes first, so their frames sit behind the nodes in DOM order too (they also carry zIndex -1).
+    return { nodes: lanes.length > 0 ? [...lanes, ...nodes] : (nodes as FlowNode[]), edges };
+  }, [s.nodes, s.edges, s.hiddenKinds, s.search, s.hoveredId, s.selectedId, s.expandedGroups]);
 
   const { fitView } = useReactFlow();
   const nodesInitialized = useNodesInitialized();
@@ -74,15 +83,21 @@ function CanvasInner() {
     return () => clearTimeout(timeout);
   }, [focusSeq, focusNodeId, nodesInitialized, fitView, s.clearFocusRequest]);
 
-  const onNodeClick = useCallback<NodeMouseHandler<ResourceFlowNode>>((_, node) => void s.select(node.id), [s.select]);
-  const onNodeDoubleClick = useCallback<NodeMouseHandler<ResourceFlowNode>>((_, node) => {
-    if (node.data.node.kind === "PodGroup") void s.toggleGroup(node.id);
+  // Lane frames take no pointer events, so these only ever see resources; the guards keep it so.
+  const onNodeClick = useCallback<NodeMouseHandler<FlowNode>>((_, node) => {
+    if (node.type === "resource") void s.select(node.id);
+  }, [s.select]);
+  const onNodeDoubleClick = useCallback<NodeMouseHandler<FlowNode>>((_, node) => {
+    if (node.type === "resource" && node.data.node.kind === "PodGroup") void s.toggleGroup(node.id);
   }, [s.toggleGroup]);
-  const onNodeContextMenu = useCallback<NodeMouseHandler<ResourceFlowNode>>((e, node) => {
+  const onNodeContextMenu = useCallback<NodeMouseHandler<FlowNode>>((e, node) => {
+    if (node.type !== "resource") return;
     e.preventDefault();
     s.openActionsMenu(node.id, e.clientX, e.clientY);
   }, [s.openActionsMenu]);
-  const onNodeMouseEnter = useCallback<NodeMouseHandler<ResourceFlowNode>>((_, node) => s.setHovered(node.id), [s.setHovered]);
+  const onNodeMouseEnter = useCallback<NodeMouseHandler<FlowNode>>((_, node) => {
+    if (node.type === "resource") s.setHovered(node.id);
+  }, [s.setHovered]);
   const onNodeMouseLeave = useCallback(() => s.setHovered(null), [s.setHovered]);
   const onPaneClick = useCallback(() => { if (s.selectedId !== null) void s.select(null); }, [s.selectedId, s.select]);
 
@@ -123,8 +138,8 @@ function CanvasInner() {
           pannable
           zoomable
           position="bottom-right"
-          nodeColor="#3a3340"
-          nodeStrokeColor="#b997ff"
+          nodeColor={miniMapColor}
+          nodeStrokeColor={miniMapStroke}
           nodeStrokeWidth={2}
           maskColor="rgba(28,22,36,0.6)"
           style={{ background: "#2d2734", border: "1px solid rgb(229 231 235 / 0.12)", borderRadius: 20 }}

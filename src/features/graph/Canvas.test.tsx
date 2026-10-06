@@ -63,4 +63,32 @@ describe("Canvas", () => {
     fireEvent.contextMenu(screen.getByText("web"), { clientX: 120, clientY: 80 });
     expect(useAppStore.getState().actionsMenu).toEqual({ nodeId: "Deployment/p/web", x: 120, y: 80 });
   });
+
+  it("frames each namespace in a lane and keeps nodes clickable through it", () => {
+    const node = (id: string, kind: "Deployment" | "Pod", ns: string) => ({ id, kind, namespace: ns, name: id.split("/").pop()!, status: "ok" as const, badges: [], group: null });
+    useAppStore.setState({
+      ...applySnapshot(initialState(), {
+        nodes: [node("Deployment/shop/web", "Deployment", "shop"), node("Pod/shop/web-1", "Pod", "shop"), node("Deployment/blog/api", "Deployment", "blog")],
+        edges: [],
+      }),
+      connection: { ...initialState().connection, context: "prod", state: "connected", scope: ["shop", "blog"] },
+    });
+    render(<Canvas />);
+    expect(screen.getByText("blog")).toBeInTheDocument();
+    expect(screen.getByText("1 object")).toBeInTheDocument();
+    expect(screen.getByText("shop")).toBeInTheDocument();
+    expect(screen.getByText("2 objects")).toBeInTheDocument();
+    for (const id of ["lane:shop", "lane:blog"]) {
+      const frame = screen.getByTestId(`rf__node-${id}`);
+      expect(frame.style.pointerEvents).toBe("none");
+      expect(frame.classList.contains("selectable")).toBe(false);
+      expect(frame.classList.contains("draggable")).toBe(false);
+    }
+
+    fireEvent.click(screen.getByText("api"));
+    expect(useAppStore.getState().selectedId).toBe("Deployment/blog/api");
+    fireEvent.contextMenu(screen.getByText("web-1"), { clientX: 10, clientY: 20 });
+    expect(useAppStore.getState().actionsMenu).toEqual({ nodeId: "Pod/shop/web-1", x: 10, y: 20 });
+  });
 });
+
