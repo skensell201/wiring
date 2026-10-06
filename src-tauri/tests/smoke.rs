@@ -730,7 +730,7 @@ async fn graph_snapshot_reflects_applied_fixture() {
     // session leaked its final state into the new one.
     let first = tokio::time::timeout(Duration::from_secs(10), rx.recv())
         .await
-        .expect("an event after select_namespace")
+        .expect("an event after select_scope")
         .expect("emitter open");
     assert_ne!(first, OutEvent::ConnectionState(ConnectionState::Disconnected));
     assert_eq!(first, OutEvent::ConnectionState(ConnectionState::Connected));

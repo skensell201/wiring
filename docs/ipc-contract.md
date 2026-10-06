@@ -22,7 +22,6 @@ Argument names are camelCase on the JS side; Tauri maps them to the Rust snake_c
 | `add_kubeconfig` | `{ path }` | `ContextInfo[]` — rejects with `AppError` if the file is missing or unparseable |
 | `connect` | `{ context }` | `ConnectInfo` — a **rejected promise** carries the `AppError`; no `connection_error` event is sent for connect failures |
 | `disconnect` | — | `null` |
-| `select_namespace` | `{ namespace, expandedGroups: string[] }` | `null` — one namespace; same as `select_namespaces` with `[namespace]`. The graph arrives via events |
 | `select_namespaces` | `{ namespaces: string[] \| null, expandedGroups: string[] }` | `null` — `null` watches all namespaces (refused with `invalid` when `ConnectInfo.canListNamespaces` is false); a list watches those (trimmed, deduplicated, each a DNS-1123 label, at most 20; an empty or longer list rejects with `invalid`: "pick up to 20 namespaces, or All namespaces"). The graph arrives via events. |
 | `set_expanded_groups` | `{ expandedGroups: string[] }` | `null` |
 | `get_object` | `{ nodeId }` | `ObjectDetails` (`summary` is an ordered `[string, string][]`) |
@@ -69,7 +68,7 @@ Argument names are camelCase on the JS side; Tauri maps them to the Rust snake_c
 
 ### Ordering rules the frontend must follow
 
-- After `select_namespace(s)`, clear the graph and ignore `graph_delta` until the next `graph_snapshot`. (The backend also drops events from the torn-down namespace session, but the rule keeps the UI correct regardless.)
+- After `select_namespaces`, clear the graph and ignore `graph_delta` until the next `graph_snapshot`. (The backend also drops events from the torn-down namespace session, but the rule keeps the UI correct regardless.)
 - Treat every `graph_snapshot` as a full replace, not only the first one.
 - A snapshot whose namespaced nodes fall outside the current selection belongs to the previous one and is ignored.
 - `degraded` may arrive before any snapshot if a watcher cannot connect; a `connection_error` explains why.
@@ -180,7 +179,7 @@ Input sent before the connection is up is queued. Sessions end with the namespac
 | `stop_forward` | `{ id }` | `null` — unknown ids are a no-op; the local port is released when the call returns |
 | `open_forward` | `{ id }` | `null` — opens `http://127.0.0.1:<localPort>` in the default browser; unknown id is `notFound` |
 
-`nodeId` may be a `Pod`, `Service`, `Deployment`, `StatefulSet` or `DaemonSet` (anything else, and PodGroups, are `invalid`). `localPort` below 1024 is `invalid`; a port already in use is `conflict` ("port N is already in use"). Forwards bind `127.0.0.1` only, survive `select_namespace` and stop on `disconnect` / `connect`.
+`nodeId` may be a `Pod`, `Service`, `Deployment`, `StatefulSet` or `DaemonSet` (anything else, and PodGroups, are `invalid`). `localPort` below 1024 is `invalid`; a port already in use is `conflict` ("port N is already in use"). Forwards bind `127.0.0.1` only, survive `select_namespaces` and stop on `disconnect` / `connect`.
 
 Each accepted local connection picks its pod at that moment: a Pod target itself (Running and Ready), otherwise the ready pod with the smallest name among those the Service's or workload's selector matches. For a Service, `remotePort` is a Service port mapped to its `targetPort` (a number, or a name looked up in the chosen pod's container ports). A connection that finds no pod is closed and sets the status. A selector with only `matchExpressions` is not supported (status `error`, "unsupported selector (matchExpressions)").
 

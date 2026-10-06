@@ -15,7 +15,6 @@ export const commands = {
   addKubeconfig: (path: string) => call<ContextInfo[]>("add_kubeconfig", { path }),
   connect: (context: string) => call<ConnectInfo>("connect", { context }),
   disconnect: () => call<null>("disconnect"),
-  selectNamespace: (namespace: string, expandedGroups: NodeId[]) => call<null>("select_namespace", { namespace, expandedGroups }),
   selectNamespaces: (scope: NamespaceScope, expandedGroups: NodeId[]) =>
     call<null>("select_namespaces", { namespaces: scope === "all" ? null : scope, expandedGroups }),
   partialKinds: () => call<Kind[]>("partial_kinds"),

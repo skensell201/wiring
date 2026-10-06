@@ -112,15 +112,6 @@ fn session_mut(guard: &mut Option<Session>) -> AppResult<&mut Session> {
     guard.as_mut().ok_or_else(|| AppError::new(ErrorKind::Internal, "not connected"))
 }
 
-#[tauri::command]
-pub async fn select_namespace(state: State<'_, AppState>, namespace: String, expanded_groups: Vec<String>) -> AppResult<()> {
-    let mut guard = state.session.lock().await;
-    let session = session_mut(&mut guard)?;
-    session
-        .select_namespace(&namespace, expanded_groups.into_iter().collect::<HashSet<_>>())
-        .await
-}
-
 /// `namespaces: null` watches all namespaces; a list watches those.
 #[tauri::command]
 pub async fn select_namespaces(state: State<'_, AppState>, namespaces: Option<Vec<String>>, expanded_groups: Vec<String>) -> AppResult<()> {
@@ -381,7 +372,6 @@ pub fn register(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wr
             add_kubeconfig,
             connect,
             disconnect,
-            select_namespace,
             select_namespaces,
             set_expanded_groups,
             get_object,
