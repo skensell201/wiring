@@ -1,7 +1,6 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { initialState, useAppStore } from "../../app/store";
-import { ContextPicker } from "./ContextPicker";
 import { Header } from "./Header";
 import { NamespacePicker } from "./NamespacePicker";
 
@@ -12,67 +11,6 @@ vi.mock("../../shared/settings", () => ({
 }));
 
 beforeEach(() => useAppStore.setState(initialState()));
-
-describe("ContextPicker", () => {
-  it("lists contexts and connects on click", async () => {
-    const connect = vi.fn(async () => true);
-    useAppStore.setState({ contexts: [{ name: "prod", cluster: "c", user: "u", namespace: null, sourceFile: "/k" }], connect, pickerOpen: true });
-    render(<ContextPicker />);
-    fireEvent.click(screen.getByRole("button", { name: /prod/ }));
-    expect(connect).toHaveBeenCalledWith("prod");
-  });
-
-  it("is a modal dialog named by its heading", () => {
-    useAppStore.setState({ contexts: [], pickerOpen: true });
-    render(<ContextPicker />);
-    const dialog = screen.getByRole("dialog", { name: /choose a cluster/i });
-    expect(dialog).toHaveAttribute("aria-modal", "true");
-  });
-
-  it("Escape and Cancel close it whenever there are contexts to fall back to, and are absent otherwise", () => {
-    // With no contexts the picker is the only way forward (add a kubeconfig), so it cannot be dismissed.
-    useAppStore.setState({ contexts: [], pickerOpen: true });
-    const { unmount } = render(<ContextPicker />);
-    fireEvent.keyDown(window, { key: "Escape" });
-    expect(useAppStore.getState().pickerOpen).toBe(true);
-    expect(screen.queryByRole("button", { name: /cancel/i })).not.toBeInTheDocument();
-    unmount();
-
-    // With contexts the Navigator lists them, so the modal is optional even when nothing is connected.
-    const contexts = [{ name: "prod", cluster: "c", user: "u", namespace: null, sourceFile: "/k" }];
-    useAppStore.setState({ contexts, pickerOpen: true, connection: initialState().connection });
-    const second = render(<ContextPicker />);
-    fireEvent.keyDown(window, { key: "Escape" });
-    expect(useAppStore.getState().pickerOpen).toBe(false);
-    second.unmount();
-
-    useAppStore.setState({ contexts, pickerOpen: true, connection: initialState().connection });
-    render(<ContextPicker />);
-    fireEvent.click(screen.getByRole("button", { name: /cancel/i }));
-    expect(useAppStore.getState().pickerOpen).toBe(false);
-  });
-
-  it("shows instructions when there are no contexts", () => {
-    useAppStore.setState({ contexts: [], pickerOpen: true });
-    render(<ContextPicker />);
-    expect(screen.getByText(/no kubeconfig contexts found/i)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /add kubeconfig/i })).toBeInTheDocument();
-  });
-
-  it("opens the context's default namespace after connecting", async () => {
-    const connect = vi.fn(async () => true);
-    const selectNamespace = vi.fn(async () => {});
-    useAppStore.setState({
-      contexts: [{ name: "prod", cluster: "c", user: "u", namespace: "shop", sourceFile: "/k" }],
-      connect,
-      selectNamespace,
-      pickerOpen: true,
-    });
-    render(<ContextPicker />);
-    fireEvent.click(screen.getByRole("button", { name: /prod/ }));
-    await waitFor(() => expect(selectNamespace).toHaveBeenCalledWith("shop"));
-  });
-});
 
 describe("connectContext", () => {
   it("restores the context's remembered scope instead of its default namespace", async () => {
@@ -90,6 +28,17 @@ describe("connectContext", () => {
     expect(settings.getLastScope).toHaveBeenCalledWith("prod");
     expect(selectScope).toHaveBeenCalledWith(["blog"]);
     expect(selectNamespace).not.toHaveBeenCalled();
+  });
+
+  it("opens the context's default namespace when nothing is remembered", async () => {
+    const { connectContext } = await import("./connectContext");
+    const selectNamespace = vi.fn(async () => {});
+    useAppStore.setState({
+      contexts: [{ name: "prod", cluster: "c", user: "u", namespace: "shop", sourceFile: "/k" }],
+      connect: vi.fn(async () => true), selectNamespace,
+    });
+    expect(await connectContext("prod")).toBe(true);
+    expect(selectNamespace).toHaveBeenCalledWith("shop");
   });
 });
 
@@ -232,23 +181,21 @@ describe("Header", () => {
     expect(reconnect).toHaveBeenCalled();
   });
 
-  it("the context button toggles the navigator when contexts exist, and opens the picker otherwise", () => {
+  it("the context button toggles the navigator, with or without contexts", () => {
     const toggleSidebar = vi.fn(async () => {});
     useAppStore.setState({ contexts: [], connection: { ...initialState().connection }, toggleSidebar });
     const { unmount } = render(<Header />);
     fireEvent.click(screen.getByRole("button", { name: /choose cluster/i }));
-    expect(useAppStore.getState().pickerOpen).toBe(true);
-    expect(toggleSidebar).not.toHaveBeenCalled();
+    expect(toggleSidebar).toHaveBeenCalledTimes(1);
     unmount();
 
     useAppStore.setState({
       contexts: [{ name: "prod", cluster: "c", user: "u", namespace: null, sourceFile: "/k" }],
-      connection: { ...initialState().connection, context: "prod", state: "connected" }, pickerOpen: false, toggleSidebar,
+      connection: { ...initialState().connection, context: "prod", state: "connected" }, toggleSidebar,
     });
     render(<Header />);
     fireEvent.click(screen.getByRole("button", { name: /prod/ }));
-    expect(toggleSidebar).toHaveBeenCalled();
-    expect(useAppStore.getState().pickerOpen).toBe(false);
+    expect(toggleSidebar).toHaveBeenCalledTimes(2);
   });
 
   it("+ Create opens the create dialog, and is disabled until a namespace is selected", () => {

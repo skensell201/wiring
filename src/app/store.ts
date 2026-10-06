@@ -138,7 +138,6 @@ export interface AppState extends GraphState {
   tooLarge: TooLarge | null;
   search: string;
   toasts: Toast[];
-  pickerOpen: boolean;
   view: View;
   /** The kind of the most recent table view, so the Graph|Table switch can reopen it from Overview. */
   lastTableKind: Kind | null;
@@ -206,7 +205,6 @@ export interface AppState extends GraphState {
   setSearch: (q: string) => void;
   toast: (t: Omit<Toast, "id">) => void;
   dismissToast: (id: number) => void;
-  setPickerOpen: (open: boolean) => void;
   // views and tables
   showGraph: () => void;
   showTable: (kind: Kind) => Promise<void>;
@@ -309,7 +307,6 @@ export function initialState(): Omit<AppState, keyof Actions> {
     tooLarge: null,
     search: "",
     toasts: [],
-    pickerOpen: false,
     view: { name: "graph" },
     lastTableKind: null,
     sidebarCollapsed: false,
@@ -339,13 +336,13 @@ export function initialState(): Omit<AppState, keyof Actions> {
 }
 
 /** The state after the session is gone: graph, selection and connection reset, the context list,
- *  kind filters, toasts and the sidebar collapse preference kept. The Navigator lists the contexts
- *  to go to next; the modal picker opens only when there are none (its "add a kubeconfig" state). */
+ *  the kubeconfig sources, kind filters, toasts and the sidebar collapse preference kept. The
+ *  centre pane then shows the welcome, choose or failure pane (`connectionPane`). */
 export function disconnectedState(s: AppState): Omit<AppState, keyof Actions> {
   const lost = lostEditsToast(s);
   return {
     ...initialState(), contexts: s.contexts, hiddenKinds: s.hiddenKinds, toasts: lost ? [...s.toasts, { id: ++toastSeq, ...lost }] : s.toasts,
-    pickerOpen: s.contexts.length === 0, sidebarCollapsed: s.sidebarCollapsed, kubeconfigSources: s.kubeconfigSources,
+    sidebarCollapsed: s.sidebarCollapsed, kubeconfigSources: s.kubeconfigSources,
   };
 }
 
@@ -359,7 +356,7 @@ type Actions = Pick<AppState,
   | "applySnapshot" | "applyDelta" | "setObjectEvents" | "setConnectionState" | "loadContexts" | "addKubeconfig" | "connect"
   | "loadKubeconfigSources" | "rescanKubeconfigs" | "retryConnect" | "dismissConnectError" | "openNamespacePicker" | "showAllKinds"
   | "reconnect" | "disconnect" | "selectNamespace" | "selectScope" | "select" | "setHovered" | "toggleGroup" | "toggleKind" | "setSearch" | "toast"
-  | "dismissToast" | "setPickerOpen" | "showGraph" | "showTable" | "refreshTable" | "setIncludeHelmStorage"
+  | "dismissToast" | "showGraph" | "showTable" | "refreshTable" | "setIncludeHelmStorage"
   | "loadCustomKinds" | "showCustom" | "refreshCustom" | "applyCustomTable" | "showHelm" | "refreshHelm" | "selectRelease" | "clearRelease" | "focusInGraph" | "clearFocusRequest"
   | "toggleSidebar" | "startEdit" | "setBuffer" | "reviewEdit" | "backToEdit" | "applyEdit" | "cancelEdit" | "reloadEdit"
   | "confirmDiscard" | "cancelDiscard" | "openCreate" | "setCreateKind" | "setCreateNamespace" | "setCreateBuffer" | "submitCreate" | "closeCreate"
@@ -689,7 +686,6 @@ export const useAppStore = create<AppState>()((set, get) => ({
 
   toast: (t) => set((s) => ({ toasts: [...s.toasts, { id: ++toastSeq, ...t }] })),
   dismissToast: (id) => set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) })),
-  setPickerOpen: (pickerOpen) => set({ pickerOpen }),
 
   showGraph: () => {
     leaveCustomView(get().view, { name: "graph" });

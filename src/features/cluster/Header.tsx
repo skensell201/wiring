@@ -11,10 +11,10 @@ import { ForwardsIndicator } from "../forward/ForwardsIndicator";
 import { NamespacePicker } from "./NamespacePicker";
 
 export function Header() {
-  const { connection, search, hasContexts, sidebarCollapsed, setSearch, reconnect, setPickerOpen, toggleSidebar, openCreate } = useAppStore(
+  const { connection, search, sidebarCollapsed, setSearch, reconnect, toggleSidebar, openCreate } = useAppStore(
     useShallow((s) => ({
-      connection: s.connection, search: s.search, hasContexts: s.contexts.length > 0, sidebarCollapsed: s.sidebarCollapsed,
-      setSearch: s.setSearch, reconnect: s.reconnect, setPickerOpen: s.setPickerOpen, toggleSidebar: s.toggleSidebar, openCreate: s.openCreate,
+      connection: s.connection, search: s.search, sidebarCollapsed: s.sidebarCollapsed,
+      setSearch: s.setSearch, reconnect: s.reconnect, toggleSidebar: s.toggleSidebar, openCreate: s.openCreate,
     })),
   );
   const searchRef = useRef<HTMLInputElement>(null);
@@ -32,8 +32,6 @@ export function Header() {
 
   // The Navigator normally hosts the macOS traffic lights; its 48 px rail is too narrow for them.
   const inset = isMac && sidebarCollapsed ? "pl-12" : "";
-  // Cluster switching lives in the Navigator; the picker stays for the empty state.
-  const onContextClick = () => (hasContexts ? void toggleSidebar() : setPickerOpen(true));
 
   return (
     <header className={`drag-region flex h-16 shrink-0 items-center gap-3 border-b border-border bg-space/80 px-6 backdrop-blur-md ${inset}`}>
@@ -41,8 +39,8 @@ export function Header() {
         <img src={mark} alt="" width={22} height={22} className="select-none" draggable={false} />
         Wiring
       </span>
-      <button type="button" className="no-drag rounded-xl border border-border-strong bg-surface px-4 py-1.5 text-sm font-medium text-text-hi hover:bg-muted" onClick={onContextClick}
-        title={hasContexts ? "Toggle navigator" : "Choose a cluster"}>
+      <button type="button" className="no-drag rounded-xl border border-border-strong bg-surface px-4 py-1.5 text-sm font-medium text-text-hi hover:bg-muted" onClick={() => void toggleSidebar()}
+        title="Toggle navigator">
         ⎈ <span>{connection.context ?? "choose cluster"}</span>{connection.serverVersion ? <span className="ml-2 text-xs font-normal text-text-muted">{connection.serverVersion}</span> : null}
       </button>
       {connection.context && <NamespacePicker />}

@@ -324,7 +324,7 @@ describe("actions", () => {
     expect(s.toasts).toEqual([{ id: 1, kind: "info", message: "earlier" }]);
   });
 
-  it("disconnectedState keeps contexts, hidden kinds and toasts; the picker opens only with nothing to pick from", () => {
+  it("disconnectedState keeps contexts, hidden kinds and toasts", () => {
     const s = {
       ...applySnapshot(initialState(), { nodes: [node("Pod/p/a")], edges: [] }),
       contexts: [{ name: "prod", cluster: "c", user: "u", namespace: null, sourceFile: "/k" }],
@@ -337,10 +337,8 @@ describe("actions", () => {
     expect(d.contexts).toBe(s.contexts);
     expect(d.hiddenKinds).toBe(s.hiddenKinds);
     expect(d.toasts).toBe(s.toasts);
-    expect(d.pickerOpen).toBe(false); // the Navigator lists the contexts; no modal needed
     expect(d.connection).toEqual(initialState().connection);
     expect(d.nodes.size).toBe(0);
-    expect(disconnectedState({ ...s, contexts: [] as AppState["contexts"] } as AppState).pickerOpen).toBe(true);
   });
 
   it("disconnect failure is toasted and state is reset", async () => {
@@ -349,7 +347,6 @@ describe("actions", () => {
     await useAppStore.getState().disconnect();
     const s = useAppStore.getState();
     expect(s.connection.context).toBeNull();
-    expect(s.pickerOpen).toBe(true);
     expect(s.toasts[s.toasts.length - 1]).toMatchObject({ message: "boom" });
   });
 

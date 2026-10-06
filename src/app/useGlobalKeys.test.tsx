@@ -25,14 +25,6 @@ describe("global keys", () => {
     expect(document.activeElement).toBe(document.body);
   });
 
-  it("Escape does not touch the selection while the context picker is open", () => {
-    const select = vi.fn(async () => {});
-    useAppStore.setState({ connection: { ...initialState().connection, context: "prod", state: "connected" }, selectedId: "Pod/p/a", select, pickerOpen: true });
-    render(<App />);
-    fireEvent.keyDown(window, { key: "Escape" });
-    expect(select).not.toHaveBeenCalled();
-  });
-
   it("Escape restores a maximised details panel before touching the selection", () => {
     const select = vi.fn(async () => {});
     useAppStore.setState({ connection: { ...initialState().connection, context: "prod", state: "connected" }, selectedId: "Pod/p/a", select, detailsMaximized: true });
@@ -79,25 +71,24 @@ describe("editing keys", () => {
     expect(plain.defaultPrevented).toBe(false);
   });
 
-  it("Cmd/Ctrl+S is ignored under the picker or a dialog, and with Shift held", () => {
+  it("Cmd/Ctrl+S is ignored under a dialog, and with Shift held", () => {
     const reviewEdit = vi.fn();
     const { discardDialog, deleteDialog, createDialog } = initialState();
     useAppStore.setState({ ...connected(), ...editing("edit"), reviewEdit });
     render(<App />);
     const layers = [
-      { pickerOpen: true },
       { discardDialog: { ...discardDialog, open: true } },
       { deleteDialog: { open: true, nodeId: "Pod/p/a" } },
       { createDialog: { ...createDialog, open: true } },
     ];
     for (const layer of layers) {
-      useAppStore.setState({ pickerOpen: false, discardDialog, deleteDialog, createDialog, ...layer });
+      useAppStore.setState({ discardDialog, deleteDialog, createDialog, ...layer });
       const ev = cmdS();
       window.dispatchEvent(ev);
       expect(reviewEdit).not.toHaveBeenCalled();
       expect(ev.defaultPrevented).toBe(false);
     }
-    useAppStore.setState({ pickerOpen: false, discardDialog, deleteDialog, createDialog });
+    useAppStore.setState({ discardDialog, deleteDialog, createDialog });
     const shifted = new KeyboardEvent("keydown", { key: "S", metaKey: true, ctrlKey: true, shiftKey: true, cancelable: true, bubbles: true });
     window.dispatchEvent(shifted);
     expect(reviewEdit).not.toHaveBeenCalled();

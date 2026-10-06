@@ -4,7 +4,6 @@ import { startup } from "./app/startup";
 import { useAppStore } from "./app/store";
 import { useGlobalKeys } from "./app/useGlobalKeys";
 import { wireEvents } from "./app/wireEvents";
-import { ContextPicker } from "./features/cluster/ContextPicker";
 import { Header } from "./features/cluster/Header";
 import { DetailsPanel } from "./features/details/DetailsPanel";
 import { CreateDialog } from "./features/editor/CreateDialog";
@@ -68,7 +67,6 @@ export function App() {
         {!pane && <ErrorBoundary name="details panel"><DetailsPanel /></ErrorBoundary>}
       </div>
       {/* The dialogs sit outside the columns; a failure in one (the lazily loaded editor, say) must not blank the app. */}
-      <ErrorBoundary name="cluster picker"><ContextPicker /></ErrorBoundary>
       <ErrorBoundary name="create dialog"><CreateDialog /></ErrorBoundary>
       <ErrorBoundary name="action dialogs"><ActionDialogs /></ErrorBoundary>
       <ErrorBoundary name="actions menu"><ActionsMenu /></ErrorBoundary>
