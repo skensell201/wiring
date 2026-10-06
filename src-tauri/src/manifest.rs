@@ -203,9 +203,9 @@ mod tests {
 
     #[test]
     fn rejects_unwatched_kind() {
-        let err = parse("apiVersion: v1\nkind: Node\nmetadata:\n  name: n1\n").unwrap_err();
+        let err = parse("apiVersion: v1\nkind: Namespace\nmetadata:\n  name: n1\n").unwrap_err();
         assert_eq!(err.kind, ErrorKind::Invalid);
-        assert_eq!(err.message, "kind Node is not supported");
+        assert_eq!(err.message, "kind Namespace is not supported");
     }
 
     #[test]

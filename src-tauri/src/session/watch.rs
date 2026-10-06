@@ -75,6 +75,12 @@ into_object! {
     k8s_openapi::api::core::v1::PersistentVolume => PersistentVolume,
     k8s_openapi::api::core::v1::ServiceAccount => ServiceAccount,
     k8s_openapi::api::autoscaling::v2::HorizontalPodAutoscaler => HorizontalPodAutoscaler,
+    k8s_openapi::api::networking::v1::NetworkPolicy => NetworkPolicy,
+    k8s_openapi::api::rbac::v1::Role => Role,
+    k8s_openapi::api::rbac::v1::RoleBinding => RoleBinding,
+    k8s_openapi::api::rbac::v1::ClusterRole => ClusterRole,
+    k8s_openapi::api::rbac::v1::ClusterRoleBinding => ClusterRoleBinding,
+    k8s_openapi::api::core::v1::Node => Node,
 }
 
 /// Decide whether a watcher error ends the watcher for good (spec §8).
@@ -275,6 +281,7 @@ fn is_spawnable(kind: Kind) -> bool {
 fn spawn_stream(client: &Client, stream: &StreamId, namespaces: &[String], tx: &mpsc::Sender<StoreEvent>) -> JoinHandle<()> {
     use k8s_openapi::api::{
         apps::v1 as apps, autoscaling::v2 as autoscaling, batch::v1 as batch, core::v1 as core, networking::v1 as networking,
+        rbac::v1 as rbac,
     };
     match stream.kind {
         Kind::Deployment => spawn_namespaced::<apps::Deployment>(client, stream, namespaces, tx),
@@ -292,6 +299,12 @@ fn spawn_stream(client: &Client, stream: &StreamId, namespaces: &[String], tx: &
         Kind::ServiceAccount => spawn_namespaced::<core::ServiceAccount>(client, stream, namespaces, tx),
         Kind::HorizontalPodAutoscaler => spawn_namespaced::<autoscaling::HorizontalPodAutoscaler>(client, stream, namespaces, tx),
         Kind::PersistentVolume => spawn_watch(Api::<core::PersistentVolume>::all(client.clone()), stream.clone(), tx.clone()),
+        Kind::NetworkPolicy => spawn_namespaced::<networking::NetworkPolicy>(client, stream, namespaces, tx),
+        Kind::Role => spawn_namespaced::<rbac::Role>(client, stream, namespaces, tx),
+        Kind::RoleBinding => spawn_namespaced::<rbac::RoleBinding>(client, stream, namespaces, tx),
+        Kind::ClusterRole => spawn_watch(Api::<rbac::ClusterRole>::all(client.clone()), stream.clone(), tx.clone()),
+        Kind::ClusterRoleBinding => spawn_watch(Api::<rbac::ClusterRoleBinding>::all(client.clone()), stream.clone(), tx.clone()),
+        Kind::Node => spawn_watch(Api::<core::Node>::all(client.clone()), stream.clone(), tx.clone()),
         // Never planned (see `watch_plan`); a finished task keeps the caller's bookkeeping simple.
         Kind::PodGroup => tokio::spawn(async {}),
     }

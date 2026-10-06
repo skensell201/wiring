@@ -778,7 +778,7 @@ mod tests {
             (Kind::PodGroup, Some("g".to_string()), "Deployment/api".to_string())
         );
         assert!(parse_node_id("garbage").is_err());
-        assert!(parse_node_id("Node/x/y").is_err());
+        assert!(parse_node_id("Namespace/x/y").is_err());
     }
 
     #[test]

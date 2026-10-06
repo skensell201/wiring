@@ -175,7 +175,8 @@ mod tests {
         assert!(one.contains(&StreamId::cluster(Kind::PersistentVolume)));
 
         let two = watch_plan(&NamespaceScope::from_arg(Some(vec!["a".into(), "b".into()])).unwrap());
-        assert_eq!(two.len(), (Kind::WATCHED.len() - 1) * 2 + 1);
+        let cluster = Kind::WATCHED.iter().filter(|k| k.is_cluster_scoped()).count();
+        assert_eq!(two.len(), (Kind::WATCHED.len() - cluster) * 2 + cluster);
         assert!(two.contains(&StreamId::namespaced(Kind::Secret, "a")));
         assert!(two.contains(&StreamId::namespaced(Kind::Secret, "b")));
         assert_eq!(two.iter().filter(|s| s.kind == Kind::PersistentVolume).count(), 1);

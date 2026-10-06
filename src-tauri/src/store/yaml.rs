@@ -34,6 +34,12 @@ impl Object {
             Kind::PersistentVolume => de!(PersistentVolume),
             Kind::ServiceAccount => de!(ServiceAccount),
             Kind::HorizontalPodAutoscaler => de!(HorizontalPodAutoscaler),
+            Kind::NetworkPolicy => de!(NetworkPolicy),
+            Kind::Role => de!(Role),
+            Kind::RoleBinding => de!(RoleBinding),
+            Kind::ClusterRole => de!(ClusterRole),
+            Kind::ClusterRoleBinding => de!(ClusterRoleBinding),
+            Kind::Node => de!(Node),
             Kind::PodGroup => Err("PodGroup is synthetic and cannot be loaded".into()),
         }
     }
@@ -83,7 +89,7 @@ mod tests {
 
     #[test]
     fn unknown_kind_is_an_error() {
-        let err = Store::from_yaml_docs("apiVersion: v1\nkind: Node\nmetadata:\n  name: n1\n").unwrap_err();
-        assert!(err.contains("Node"), "{err}");
+        let err = Store::from_yaml_docs("apiVersion: v1\nkind: Namespace\nmetadata:\n  name: n1\n").unwrap_err();
+        assert!(err.contains("Namespace"), "{err}");
     }
 }

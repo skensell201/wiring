@@ -64,6 +64,13 @@ fn base_describe(obj: &Object, store: &Store) -> (Status, Badges) {
         Object::PersistentVolume(p) => pv(p),
         Object::ServiceAccount(_) => (Status::Ok, vec![]),
         Object::HorizontalPodAutoscaler(h) => hpa(h),
+        // Real Node health arrives with the status task; policies and RBAC objects are always ok.
+        Object::NetworkPolicy(_)
+        | Object::Role(_)
+        | Object::RoleBinding(_)
+        | Object::ClusterRole(_)
+        | Object::ClusterRoleBinding(_)
+        | Object::Node(_) => (Status::Ok, vec![]),
     }
 }
 

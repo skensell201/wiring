@@ -185,6 +185,24 @@ pub fn columns(kind: Kind) -> Vec<TableColumn> {
             age_c(),
         ],
         Kind::ServiceAccount => vec![name(), age_c()],
+        Kind::NetworkPolicy => vec![
+            name(),
+            col("podSelector", "Pod selector", false),
+            col("policyTypes", "Policy types", false),
+            age_c(),
+        ],
+        Kind::Role | Kind::ClusterRole => vec![name(), col("rules", "Rules", true), age_c()],
+        Kind::RoleBinding | Kind::ClusterRoleBinding => {
+            vec![name(), col("role", "Role", false), col("subjects", "Subjects", false), age_c()]
+        }
+        Kind::Node => vec![
+            name(),
+            col("status", "Status", false),
+            col("roles", "Roles", false),
+            col("version", "Version", false),
+            col("pods", "Pods", true),
+            age_c(),
+        ],
         Kind::PodGroup => vec![],
     }
 }
@@ -222,6 +240,48 @@ fn join<T: ToString>(items: Option<&Vec<T>>) -> String {
     items
         .map(|v| v.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(","))
         .unwrap_or_default()
+}
+
+/// `ServiceAccount s/web, User alice`.
+pub(crate) fn subjects_text(subjects: &[k8s_openapi::api::rbac::v1::Subject]) -> String {
+    subjects
+        .iter()
+        .map(|s| match &s.namespace {
+            Some(ns) => format!("{} {ns}/{}", s.kind, s.name),
+            None => format!("{} {}", s.kind, s.name),
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// `Ready`, `NotReady` (Ready condition not True) or `Unknown` (no Ready condition).
+pub(crate) fn node_ready_text(n: &k8s_openapi::api::core::v1::Node) -> String {
+    let ready = n
+        .status
+        .as_ref()
+        .and_then(|s| s.conditions.as_ref())
+        .and_then(|cs| cs.iter().find(|c| c.type_ == "Ready"));
+    match ready {
+        Some(c) if c.status == "True" => "Ready".into(),
+        Some(_) => "NotReady".into(),
+        None => "Unknown".into(),
+    }
+}
+
+/// Roles from `node-role.kubernetes.io/<role>` labels, `<none>` like kubectl.
+pub(crate) fn node_roles(n: &k8s_openapi::api::core::v1::Node) -> String {
+    let roles: Vec<&str> = n
+        .metadata
+        .labels
+        .iter()
+        .flatten()
+        .filter_map(|(k, _)| k.strip_prefix("node-role.kubernetes.io/"))
+        .collect();
+    if roles.is_empty() {
+        "<none>".into()
+    } else {
+        roles.join(",")
+    }
 }
 
 fn kind_cells<'a>(
@@ -422,6 +482,52 @@ fn kind_cells<'a>(
                 age_cell,
             ]
         }
+        Object::NetworkPolicy(np) => {
+            let spec = np.spec.as_ref();
+            vec![
+                // An absent podSelector behaves like an empty one: it selects every pod.
+                plain(crate::graph::selector::selector_text(
+                    spec.and_then(|s| s.pod_selector.as_ref()).unwrap_or(&Default::default()),
+                )),
+                plain(
+                    spec.and_then(|s| s.policy_types.as_ref())
+                        .map(|t| t.join(", "))
+                        .unwrap_or_else(|| "Ingress".into()),
+                ),
+                age_cell,
+            ]
+        }
+        Object::Role(r) => vec![plain(r.rules.as_ref().map_or(0, |v| v.len()).to_string()), age_cell],
+        Object::ClusterRole(r) => vec![plain(r.rules.as_ref().map_or(0, |v| v.len()).to_string()), age_cell],
+        Object::RoleBinding(b) => vec![
+            plain(format!("{}/{}", b.role_ref.kind, b.role_ref.name)),
+            plain(subjects_text(b.subjects.as_deref().unwrap_or_default())),
+            age_cell,
+        ],
+        Object::ClusterRoleBinding(b) => vec![
+            plain(format!("{}/{}", b.role_ref.kind, b.role_ref.name)),
+            plain(subjects_text(b.subjects.as_deref().unwrap_or_default())),
+            age_cell,
+        ],
+        Object::Node(n) => {
+            let pods = store
+                .iter_kind(Kind::Pod)
+                .filter(|p| matches!(p, Object::Pod(p) if p.spec.as_ref().and_then(|s| s.node_name.as_deref()) == Some(obj.name())))
+                .count();
+            vec![
+                coloured(node_ready_text(n), status),
+                plain(node_roles(n)),
+                plain(
+                    n.status
+                        .as_ref()
+                        .and_then(|s| s.node_info.as_ref())
+                        .map(|i| i.kubelet_version.clone())
+                        .unwrap_or_default(),
+                ),
+                plain(pods.to_string()),
+                age_cell,
+            ]
+        }
         Object::ServiceAccount(_) => vec![age_cell],
     }
 }
@@ -551,5 +657,29 @@ mod tests {
         let pv = Store::from_yaml_docs("apiVersion: v1\nkind: PersistentVolume\nmetadata: { name: pv-1 }\n").unwrap();
         let t = with_namespace_column(table(&pv, Kind::PersistentVolume, jiff::Timestamp::now()));
         assert_eq!(t.rows[0].cells[0].text, "—");
+    }
+
+    #[test]
+    fn the_new_kinds_have_kubectl_columns() {
+        let s = Store::from_fixture("graph-extras").unwrap();
+        let nodes = table(&s, Kind::Node, now());
+        assert_eq!(cell(&nodes, "node-a", "status").text, "Ready");
+        assert_eq!(cell(&nodes, "node-a", "roles").text, "control-plane");
+        assert_eq!(cell(&nodes, "node-a", "version").text, "v1.36.1");
+        assert_eq!(cell(&nodes, "node-a", "pods").text, "2");
+        assert_eq!(cell(&nodes, "node-b", "status").text, "NotReady");
+        assert_eq!(cell(&nodes, "node-c", "roles").text, "<none>");
+        let policies = table(&s, Kind::NetworkPolicy, now());
+        assert_eq!(cell(&policies, "web-ingress", "podSelector").text, "app=web");
+        assert_eq!(cell(&policies, "deny-all", "podSelector").text, "all pods");
+        assert_eq!(cell(&policies, "web-ingress", "policyTypes").text, "Ingress");
+        assert_eq!(cell(&table(&s, Kind::Role, now()), "reader", "rules").text, "2");
+        let bindings = table(&s, Kind::RoleBinding, now());
+        assert_eq!(cell(&bindings, "web-reader", "role").text, "Role/reader");
+        assert_eq!(cell(&bindings, "web-reader", "subjects").text, "ServiceAccount s/web, User alice");
+        assert_eq!(
+            cell(&table(&s, Kind::ClusterRoleBinding, now()), "web-cluster", "role").text,
+            "ClusterRole/view"
+        );
     }
 }
