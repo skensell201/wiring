@@ -56,17 +56,21 @@ Wiring reads your kubeconfig from `~/.kube/config`, or from `KUBECONFIG` when it
 
 <!-- #endregion kubeconfig -->
 
+### Login helpers
+
 <!-- #region login-helpers -->
 
-**Login helpers.** Clusters that sign in through a helper program, such as `gke-gcloud-auth-plugin`, `aws` or `kubelogin`, need it installed. On macOS and Linux, Wiring uses your login shell's `PATH`, so it finds a helper installed with Homebrew or a cloud SDK even when you start Wiring from the Dock or a launcher. (When you start Wiring from a terminal, it already has your `PATH`.) Restart Wiring after installing one.
+Clusters that sign in through a helper program, such as `gke-gcloud-auth-plugin`, `aws` or `kubelogin`, need it installed. On macOS and Linux, Wiring uses your login shell's `PATH`, so it finds a helper installed with Homebrew or a cloud SDK even when you start Wiring from the Dock or a launcher. (When you start Wiring from a terminal, it already has your `PATH`.) Restart Wiring after installing one.
 
 <!-- #endregion login-helpers -->
 
 ## Features
 
+### Graph
+
 <!-- #region graph -->
 
-**Graph.** The graph updates live from Kubernetes watches:
+The graph updates live from Kubernetes watches:
 - Filter it by kind with the chips under the title, or search it with <kbd>⌘K</kbd> / <kbd>Ctrl+K</kbd>.
 - Pods that belong to the same owner collapse into one group. Double-click a group to expand it.
 - Status dots and badges show what is healthy, degraded or failing.
@@ -75,15 +79,25 @@ Wiring reads your kubeconfig from `~/.kube/config`, or from `KUBECONFIG` when it
 
 <!-- #endregion graph -->
 
+### Navigator
+
 <!-- #region navigator -->
 
-**Navigator.** The left sidebar lists every kubeconfig context and the resources of the selected namespace by category: Workloads, Config, Network (with Network Policies), Storage, Access Control (Service Accounts, Roles and Role Bindings, Cluster Roles and Cluster Role Bindings) and Cluster (Nodes), followed by Custom Resources and Helm. Each kind shows a live count and the worst status among its objects. Kinds your RBAC role cannot read are struck through instead of failing. The sidebar collapses to an icon rail.
+The left sidebar lists every kubeconfig context and the resources of the selected namespace by category: Workloads, Config, Network (with Network Policies), Storage, Access Control (Service Accounts, Roles and Role Bindings, Cluster Roles and Cluster Role Bindings) and Cluster (Nodes), followed by Custom Resources and Helm. Each kind shows a live count and the worst status among its objects. The sidebar collapses to an icon rail.
 
 <!-- #endregion navigator -->
 
+<!-- #region rbac -->
+
+Kinds your RBAC role cannot read are struck through instead of failing.
+
+<!-- #endregion rbac -->
+
+### Empty and error states
+
 <!-- #region empty-states -->
 
-**Empty and error states.** When Wiring has nothing to show, the centre pane says why and offers the next step:
+When Wiring has nothing to show, the centre pane says why and offers the next step:
 - While connecting, the pane and the header show which cluster Wiring is dialling; **Cancel** stops it.
 - A failed connection names the cause, with **Retry** and **Choose another cluster**. The cause is one of: the cluster can't be reached, its certificate isn't trusted, the cluster didn't accept your credentials, a login helper isn't installed (with how to install it) or can't be run, or the cluster didn't answer within 20 seconds.
 - A namespace with no objects, a namespace you have no access to (RBAC), every kind hidden by the chips, and a search with no matches each get their own message and button. When there are too many objects to draw, the graph switches to tables and says so.
@@ -92,15 +106,19 @@ Wiring reads your kubeconfig from `~/.kube/config`, or from `KUBECONFIG` when it
 
 <!-- #endregion empty-states -->
 
+### Several namespaces
+
 <!-- #region namespaces -->
 
-**Several namespaces.** The namespace picker in the header takes one namespace (click its name), several (tick them, then **Apply**) or **All namespaces**. With more than one, the graph shows a lane per namespace, tables get a Namespace column, and the navigator counts across all of them. Up to 20 namespaces can be selected at once. Objects keep their own namespace for details, editing, logs, the terminal and actions; **+ Create** has a namespace select. A selection with more than 1,500 objects is shown as tables only. *All namespaces* needs permission to list and watch cluster-wide. A kind your role cannot list that way is watched per namespace and marked *partial*.
+The namespace picker in the header takes one namespace (click its name), several (tick them, then **Apply**) or **All namespaces**. With more than one, the graph shows a lane per namespace, tables get a Namespace column, and the navigator counts across all of them. Up to 20 namespaces can be selected at once. Objects keep their own namespace for details, editing, logs, the terminal and actions; **+ Create** has a namespace select. A selection with more than 1,500 objects is shown as tables only. *All namespaces* needs permission to list and watch cluster-wide. A kind your role cannot list that way is watched per namespace and marked *partial*.
 
 <!-- #endregion namespaces -->
 
+### Tables
+
 <!-- #region tables -->
 
-**Tables.** Click a kind to open a `kubectl get`-style table:
+Click a kind to open a `kubectl get`-style table:
 - Sort by any column, and filter with the search box.
 - Move between rows with <kbd>↑</kbd>/<kbd>↓</kbd>.
 - Double-click a row, or press <kbd>Enter</kbd>, to jump to the object in the graph.
@@ -109,27 +127,34 @@ Wiring reads your kubeconfig from `~/.kube/config`, or from `KUBECONFIG` when it
 
 <!-- #endregion tables -->
 
+### Custom resources
+
 <!-- #region custom-resources -->
 
-**Custom resources.** The navigator's **Custom Resources** section lists the API groups of the custom resource kinds the cluster's CRDs define, whether or not your role can list their objects. If you can't read CRDs, it falls back to API discovery and shows the kinds you can list instead, which may include kinds served by aggregated API servers; built-in groups such as `metrics.k8s.io` are never shown. Groups start collapsed; expand one to see its kinds (for example `cert-manager.io` → Certificate). The refresh button re-runs discovery. Click a kind to open a table of its objects in the selected namespaces, with the columns `kubectl get` shows for that kind, and Age. A kind's count appears once its table has been opened. The table updates live while it is open. Its details panel has **Overview** (including the status conditions), **YAML** with the same edit, diff and apply flow as built-in kinds, and **Events**. Custom resources are not watched for the graph, but one that owns a watched object (a Certificate owning a Secret, a Rollout owning ReplicaSets) appears there as its owner. Toggle those nodes with the *Custom* chip. **+ Create** starts from a minimal manifest of the kind, and if access is lost while a table is open it shows the reason with **Retry**.
+The navigator's **Custom Resources** section lists the API groups of the custom resource kinds the cluster's CRDs define, whether or not your role can list their objects. If you can't read CRDs, it falls back to API discovery and shows the kinds you can list instead, which may include kinds served by aggregated API servers; built-in groups such as `metrics.k8s.io` are never shown. Groups start collapsed; expand one to see its kinds (for example `cert-manager.io` → Certificate). The refresh button re-runs discovery. Click a kind to open a table of its objects in the selected namespaces, with the columns `kubectl get` shows for that kind, and Age. A kind's count appears once its table has been opened. The table updates live while it is open. Its details panel has **Overview** (including the status conditions), **YAML** with the same edit, diff and apply flow as built-in kinds, and **Events**. Custom resources are not watched for the graph, but one that owns a watched object (a Certificate owning a Secret, a Rollout owning ReplicaSets) appears there as its owner. Toggle those nodes with the *Custom* chip. **+ Create** starts from a minimal manifest of the kind, and if access is lost while a table is open it shows the reason with **Retry**.
 
 <!-- #endregion custom-resources -->
 
+### Helm
+
 <!-- #region helm -->
 
-**Helm.** The **Helm** section opens its own view: a table of the releases in the selected namespaces, read from Helm 3's release Secrets, with chart and version, app version, revision, status and when it was last deployed. The list follows changes live, such as new revisions and status changes. Select a release to see its tabs below the table: **Overview**, the user-supplied **Values**, the **History** of stored revisions, the chart's **Notes**, and the **Resources** it installed that exist in the cluster; opening one of those shows it in the details panel. Its objects are highlighted on the graph, whose header reads `Release web highlighted · Clear`. Closing the release, **Clear** or switching namespaces removes the highlight. Wiring reads releases only: it never installs, upgrades or rolls back. Values can contain credentials, so Wiring never logs them. Helm's release Secrets are left out of the graph and the Secrets table. **Show Helm storage** in the Secrets table reveals them.
+The **Helm** section opens its own view: a table of the releases in the selected namespaces, read from Helm 3's release Secrets, with chart and version, app version, revision, status and when it was last deployed. The list follows changes live, such as new revisions and status changes. Select a release to see its tabs below the table: **Overview**, the user-supplied **Values**, the **History** of stored revisions, the chart's **Notes**, and the **Resources** it installed that exist in the cluster; opening one of those shows it in the details panel. Its objects are highlighted on the graph, whose header reads `Release web highlighted · Clear`. Closing the release, **Clear** or switching namespaces removes the highlight. Wiring reads releases only: it never installs, upgrades or rolls back. Values can contain credentials, so Wiring never logs them. Helm's release Secrets are left out of the graph and the Secrets table. **Show Helm storage** in the Secrets table reveals them.
 
 <!-- #endregion helm -->
 
+### Details panel
+
 <!-- #region details-panel -->
 
-**Details panel.** The panel shows **Overview**, **YAML** and **Events** tabs for the selected object, plus **Logs** and **Terminal** for pods and workloads, and **History** for Deployments, StatefulSets and DaemonSets. Drag its top edge to resize it (or focus the edge and use <kbd>↑</kbd>/<kbd>↓</kbd>). Maximise it with ⤢ and restore it with <kbd>Esc</kbd>.
+The panel shows **Overview**, **YAML** and **Events** tabs for the selected object, plus **Logs** and **Terminal** for pods and workloads, and **History** for Deployments, StatefulSets and DaemonSets. Drag its top edge to resize it (or focus the edge and use <kbd>↑</kbd>/<kbd>↓</kbd>). Maximise it with ⤢ and restore it with <kbd>Esc</kbd>.
 
 <!-- #endregion details-panel -->
 
+### Editing
+
 <!-- #region editing -->
 
-**Editing:**
 1. **Edit** on the YAML tab opens the object in an editor.
 2. **Save** (<kbd>⌘S</kbd> / <kbd>Ctrl+S</kbd>) shows a line diff of what will be sent.
 3. **Apply** replaces the object on the server with strict field validation, so unknown fields are rejected rather than silently dropped.
@@ -140,9 +165,11 @@ If the object changed on the server while you were editing, you can **Reload** (
 
 <!-- #endregion editing -->
 
+### Rollout actions
+
 <!-- #region actions -->
 
-**Rollout actions.** **Actions ▾** in the details panel, or a right-click on a graph node or a table row, opens the actions for the object:
+**Actions ▾** in the details panel, or a right-click on a graph node or a table row, opens the actions for the object:
 - **Scale…** (Deployments, StatefulSets) sets the replica count. When a HorizontalPodAutoscaler manages the workload, the dialog warns that it will override the value.
 - **Restart** (Deployments, StatefulSets, DaemonSets) replaces the pods the way `kubectl rollout restart` does.
 - **Rollback…** opens the **History** tab. Pick a revision to see its pod template diff, then roll back to it.
@@ -151,15 +178,19 @@ While a rollout runs, the node shows `rolling updated/desired`. A Deployment tha
 
 <!-- #endregion actions -->
 
+### Port-forward
+
 <!-- #region port-forward -->
 
-**Port-forward.** **Port-forward…** in the Actions menu (Pods, Services, Deployments, StatefulSets, DaemonSets) forwards a local port on `127.0.0.1` to the object. Pick one of its ports. The local port defaults to the same number when it is free. A Service or workload forward follows ready pods, so it keeps working through restarts and rollouts. The **⇄** button in the header lists the running forwards, with **Open** (in the browser), **Copy** and **Stop**. Forwards stop when you switch cluster or disconnect.
+**Port-forward…** in the Actions menu (Pods, Services, Deployments, StatefulSets, DaemonSets) forwards a local port on `127.0.0.1` to the object. Pick one of its ports. The local port defaults to the same number when it is free. A Service or workload forward follows ready pods, so it keeps working through restarts and rollouts. The **⇄** button in the header lists the running forwards, with **Open** (in the browser), **Copy** and **Stop**. Forwards stop when you switch cluster or disconnect.
 
 <!-- #endregion port-forward -->
 
+### Logs
+
 <!-- #region logs -->
 
-**Logs.** Pods and workloads (Deployment, StatefulSet, DaemonSet, Job, CronJob and pod groups) get a **Logs** tab:
+Pods and workloads (Deployment, StatefulSet, DaemonSet, Job, CronJob and pod groups) get a **Logs** tab:
 - It shows the last 500 lines of each container and then follows live output.
 - A workload's pods are merged into one view, each line prefixed with a coloured `[pod/container]` tag.
 - You can pick a container, switch to the previous run of a crashing container, and toggle server timestamps and line wrapping.
@@ -170,21 +201,27 @@ While a rollout runs, the node shows `rolling updated/desired`. A Deployment tha
 
 <!-- #endregion logs -->
 
+### Terminal
+
 <!-- #region terminal -->
 
-**Terminal.** Pods and workloads (Deployment, StatefulSet, DaemonSet, Job and pod groups) get a **Terminal** tab. Pick the pod and container, then **Connect** to open a shell in it (`bash` when the image has it, otherwise `sh`). It is a full terminal, with colours, cursor keys, resizing with the panel, and copy with ⌘C / Ctrl+Shift+C. The terminal keeps Tab for the shell; press Ctrl+Shift+Tab to move focus back to the toolbar. The session ends with `exit`, **Disconnect**, or when you select something else. Images without a shell (distroless) say so.
+Pods and workloads (Deployment, StatefulSet, DaemonSet, Job and pod groups) get a **Terminal** tab. Pick the pod and container, then **Connect** to open a shell in it (`bash` when the image has it, otherwise `sh`). It is a full terminal, with colours, cursor keys, resizing with the panel, and copy with ⌘C / Ctrl+Shift+C. The terminal keeps Tab for the shell; press Ctrl+Shift+Tab to move focus back to the toolbar. The session ends with `exit`, **Disconnect**, or when you select something else. Images without a shell (distroless) say so.
 
 <!-- #endregion terminal -->
 
+### Metrics
+
 <!-- #region metrics -->
 
-**Metrics.** When the cluster runs metrics-server, the Pod, Deployment, StatefulSet and DaemonSet tables get CPU and Memory columns in `kubectl top` style (a workload sums its pods), and Overview shows usage against the summed requests and limits. A pod or workload at 80 % or more of a CPU or memory limit gets a `cpu 85%` / `mem 92%` badge on the graph. Usage is sampled every 15 s and never changes an object's status. Without metrics-server, or without access to pod metrics, Overview says so.
+When the cluster runs metrics-server, the Pod, Deployment, StatefulSet and DaemonSet tables get CPU and Memory columns in `kubectl top` style (a workload sums its pods), and Overview shows usage against the summed requests and limits. A pod or workload at 80 % or more of a CPU or memory limit gets a `cpu 85%` / `mem 92%` badge on the graph. Usage is sampled every 15 s and never changes an object's status. Without metrics-server, or without access to pod metrics, Overview says so.
 
 <!-- #endregion metrics -->
 
+### Updates
+
 <!-- #region updates -->
 
-**Updates.** Wiring checks for a new release 10 seconds after launch and every 6 hours; on macOS you can also check from **Wiring → Check for Updates…**. When one is available, the header shows **Update X.Y.Z**. Its dialog shows the release notes, with **Install and restart** or **Later**.
+Wiring checks for a new release 10 seconds after launch and every 6 hours; on macOS you can also check from **Wiring → Check for Updates…**. When one is available, the header shows **Update X.Y.Z**. Its dialog shows the release notes, with **Install and restart** or **Later**.
 
 <!-- #endregion updates -->
 
