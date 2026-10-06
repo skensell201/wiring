@@ -256,4 +256,11 @@ describe("NamespacePicker on request", () => {
     act(() => useAppStore.getState().openNamespacePicker());
     expect(screen.getByRole("textbox", { name: "Namespace" })).toHaveFocus();
   });
+
+  it("does not open when only the scope changes", () => {
+    useAppStore.setState({ connection: { ...initialState().connection, context: "prod", namespaces: ["blog", "shop"], scope: null } });
+    render(<NamespacePicker />);
+    act(() => useAppStore.setState({ connection: { ...useAppStore.getState().connection, scope: ["shop"] } }));
+    expect(screen.queryByRole("dialog", { name: "Namespaces" })).toBeNull();
+  });
 });
