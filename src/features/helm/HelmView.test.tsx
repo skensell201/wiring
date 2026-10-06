@@ -33,8 +33,16 @@ describe("HelmView", () => {
   it("says releases are unreadable when Secrets are denied, not that there are none", () => {
     useAppStore.setState({ helmReleases: [], deniedKinds: new Set(["Secret"]) });
     render(<HelmView />);
-    expect(screen.getByText("No access to Helm releases: they are read from Secrets (RBAC)")).toBeInTheDocument();
-    expect(screen.queryByText(/No Helm releases/)).toBeNull();
+    expect(screen.getByRole("status", { name: "No access" })).toHaveTextContent(
+      "You can't list Secrets in shop, and Helm keeps its releases there (RBAC). Ask your cluster admin, or pick another namespace.",
+    );
+    expect(screen.queryByText(/has no Helm releases/)).toBeNull();
+  });
+
+  it("says when the scope has no releases", () => {
+    useAppStore.setState({ helmReleases: [] });
+    render(<HelmView />);
+    expect(screen.getByRole("status", { name: "Nothing here yet" })).toHaveTextContent("shop has no Helm releases.");
   });
 
   it("hides an open release's details once Secrets are denied", () => {
