@@ -87,7 +87,7 @@ While a rollout runs, the node shows `rolling updated/desired`. A Deployment tha
 - Search with match stepping, clear the view, or download the log to a file.
 - ANSI colours are rendered.
 
-**Terminal.** Pods and workloads (Deployment, StatefulSet, DaemonSet, Job and pod groups) get a **Terminal** tab. Pick the pod and container, then **Connect** to open a shell in it (`bash` when the image has it, otherwise `sh`). It is a full terminal, with colours, cursor keys, resizing with the panel, and copy with ⌘C / Ctrl+Shift+C. The session ends with `exit`, **Disconnect**, or when you select something else. Images without a shell (distroless) say so.
+**Terminal.** Pods and workloads (Deployment, StatefulSet, DaemonSet, Job and pod groups) get a **Terminal** tab. Pick the pod and container, then **Connect** to open a shell in it (`bash` when the image has it, otherwise `sh`). It is a full terminal, with colours, cursor keys, resizing with the panel, and copy with ⌘C / Ctrl+Shift+C. The terminal keeps Tab for the shell; press Ctrl+Shift+Tab to move focus back to the toolbar. The session ends with `exit`, **Disconnect**, or when you select something else. Images without a shell (distroless) say so.
 
 ![The Deployments table with live logs of the web Deployment, merged across its three pods](docs/images/logs.png)
 

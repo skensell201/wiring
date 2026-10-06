@@ -16,6 +16,7 @@ export function TerminalTab({ nodeId }: { nodeId: NodeId }) {
   const [pod, setPod] = useState("");
   const [container, setContainer] = useState("");
   const box = useRef<HTMLDivElement>(null);
+  const toolbar = useRef<HTMLDivElement>(null);
   const term = useRef<TermHandle | null>(null);
   const session = useExecSession({
     onOutput: (bytes) => term.current?.write(bytes),
@@ -70,6 +71,7 @@ export function TerminalTab({ nodeId }: { nodeId: NodeId }) {
     const t = createTerminal(box.current);
     t.onData((data) => sessionRef.current.send(data));
     t.onBinary((bytes) => sessionRef.current.send(bytes));
+    t.onLeave(() => toolbar.current?.querySelector<HTMLElement>("select:not(:disabled), button:not(:disabled)")?.focus());
     t.onResize((cols, rows) => {
       if (resizeTimer.current) clearTimeout(resizeTimer.current);
       resizeTimer.current = setTimeout(() => { resizeTimer.current = null; sessionRef.current.resize(cols, rows); }, RESIZE_DEBOUNCE_MS);
@@ -95,7 +97,7 @@ export function TerminalTab({ nodeId }: { nodeId: NodeId }) {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex h-12 shrink-0 items-center gap-2 border-b border-border px-5">
+      <div ref={toolbar} className="flex h-12 shrink-0 items-center gap-2 border-b border-border px-5">
         {pods && pods.length > 0 && (
           <>
             {!isPod && (
@@ -109,6 +111,7 @@ export function TerminalTab({ nodeId }: { nodeId: NodeId }) {
             </select>
             <button type="button" className={action} onClick={() => (live ? session.disconnect() : void connect())}>{label}</button>
             <span className="ml-auto text-xs text-text-muted">{session.status === "connecting" ? "connecting…" : session.status === "open" ? "connected" : ""}</span>
+            <span className="text-xs text-text-muted"><kbd>Ctrl+Shift+Tab</kbd> to leave</span>
           </>
         )}
         {notice && <span className="text-xs text-text-muted">{notice}</span>}

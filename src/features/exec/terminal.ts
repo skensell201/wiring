@@ -1,6 +1,7 @@
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal, type ITheme } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
+import { keyAction } from "./keys";
 
 export interface TermHandle {
   write(data: Uint8Array | string): void;
@@ -8,6 +9,8 @@ export interface TermHandle {
   /** Non-UTF-8 input xterm produces (e.g. some mouse reports), as raw bytes. */
   onBinary(cb: (bytes: Uint8Array) => void): void;
   onResize(cb: (cols: number, rows: number) => void): void;
+  /** Ctrl+Shift+Tab: the user wants focus out of the terminal. */
+  onLeave(cb: () => void): void;
   fit(): void;
   readonly cols: number;
   readonly rows: number;
@@ -34,11 +37,14 @@ export function createTerminal(el: HTMLElement): TermHandle {
   const fit = new FitAddon();
   term.loadAddon(fit);
   term.open(el);
-  // xterm draws its selection itself, so the native Copy cannot see it: ⌘C / Ctrl+Shift+C copy it here.
+  const leave: Array<() => void> = [];
   term.attachCustomKeyEventHandler((e) => {
-    const copy = e.type === "keydown" && e.key.toLowerCase() === "c" && (e.metaKey || (e.ctrlKey && e.shiftKey));
-    if (copy && term.hasSelection()) { void navigator.clipboard.writeText(term.getSelection()); return false; }
-    return true;
+    switch (keyAction(e, term.hasSelection())) {
+      case "copy": void navigator.clipboard.writeText(term.getSelection()); return false;
+      case "leave": e.preventDefault(); leave.forEach((cb) => cb()); return false;
+      case "swallow": return false;
+      case "pass": return true;
+    }
   });
   fit.fit();
   return {
@@ -47,6 +53,7 @@ export function createTerminal(el: HTMLElement): TermHandle {
     // xterm hands binary data as a string of byte-valued chars.
     onBinary: (cb) => { term.onBinary((data) => cb(Uint8Array.from(data, (c) => c.charCodeAt(0) & 0xff))); },
     onResize: (cb) => { term.onResize(({ cols, rows }) => cb(cols, rows)); },
+    onLeave: (cb) => { leave.push(cb); },
     fit: () => fit.fit(),
     get cols() { return term.cols; },
     get rows() { return term.rows; },

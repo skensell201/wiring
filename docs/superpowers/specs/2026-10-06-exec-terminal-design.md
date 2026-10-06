@@ -18,7 +18,7 @@ Ephemeral debug containers (`kubectl debug`), running arbitrary one-off commands
 - **Shell.** The command is `sh -c "command -v bash >/dev/null && exec bash || exec sh"`, so bash is used when present. The terminal is an xterm.js view with the app's monospace font and theme colours, 5 000 lines of scrollback, and fits the panel; resizing the panel or window resizes the remote TTY.
 - **End.** `exit` in the shell, **Disconnect**, switching the selection, the tab, the namespace or disconnecting the cluster ends the session; the view shows `[session ended]` (with the exit code when known) and offers **Reconnect**.
 - **Errors** are lines in the terminal, not toasts: no shell in the image (`exec: "sh": executable file not found` → *This container has no shell (distroless image?)*), RBAC without `pods/exec` (*No permission to exec into pods (pods/exec)*), the pod not Running, the container not found.
-- **Keys.** While the terminal has focus every key goes to the shell — including Escape, ⌘K / Ctrl+K and ⌘S — so app shortcuts don't steal them; clicking outside or Tab-ing out of the terminal returns them to the app. Copy: select + ⌘C / Ctrl+Shift+C; paste: ⌘V / Ctrl+Shift+V.
+- **Keys.** While the terminal has focus every key goes to the shell — including Escape, ⌘K / Ctrl+K and ⌘S — so app shortcuts don't steal them; xterm consumes Tab, so **Ctrl+Shift+Tab** (all platforms) moves focus out of the terminal to the toolbar's first enabled control without sending anything to the shell (the toolbar shows "Ctrl+Shift+Tab to leave"); clicking outside also returns keys to the app. Copy: select + ⌘C / Ctrl+Shift+C; paste: ⌘V / Ctrl+Shift+V.
 
 ## 4. Backend (`src-tauri/src/exec/`)
 

@@ -4,7 +4,7 @@ import type { ExecMessage } from "../../shared/ipc/types";
 import { TerminalTab } from "./TerminalTab";
 
 const fakeTerm = {
-  write: vi.fn(), onData: vi.fn(), onBinary: vi.fn(), onResize: vi.fn(), fit: vi.fn(), focus: vi.fn(), dispose: vi.fn(),
+  write: vi.fn(), onData: vi.fn(), onBinary: vi.fn(), onLeave: vi.fn(), onResize: vi.fn(), fit: vi.fn(), focus: vi.fn(), dispose: vi.fn(),
   cols: 100, rows: 30,
 };
 vi.mock("./terminal", () => ({ createTerminal: vi.fn(() => fakeTerm) }));
@@ -134,6 +134,18 @@ describe("TerminalTab", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("Ctrl+Shift+Tab moves focus out of the terminal to the toolbar's first control", async () => {
+    await connected();
+    expect(screen.getByText((_, el) => el?.textContent === "Ctrl+Shift+Tab to leave")).toBeTruthy();
+    act(() => fakeTerm.onLeave.mock.calls[0][0]());
+    // While connected the pickers are disabled: the first control that can take focus.
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Disconnect" }));
+    act(() => push({ type: "ended", sessionId: 7, code: 0, message: null }));
+    act(() => fakeTerm.onLeave.mock.calls[0][0]());
+    expect(document.activeElement).toBe(screen.getByRole("combobox", { name: "Pod" }));
+    expect(execInput).not.toHaveBeenCalled();
   });
 
   it("shows the no-shell message as a line", async () => {
