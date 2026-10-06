@@ -8,26 +8,21 @@ import { filterRows, nextSort, sortRows, type SortState } from "./sort";
 import { HeaderCell, Row } from "./TableView";
 
 /** The table of one custom kind, kept live by `custom_table` events while it is open. No arrow-key
- *  navigation and no Actions menu: a custom resource is deleted from the details panel. */
+ *  navigation and no Actions menu: a custom resource is deleted from the details panel. `App` keys
+ *  it by the kind, so a new kind starts afresh (unsorted). */
 export function CustomTableView() {
-  const { resource, table, error, search, selectedId, scope, namespaces, select, focusInGraph, refreshCustom } = useAppStore(
+  const { resource, table, error, search, selectedId, scope, namespaces, nodes, select, focusInGraph, refreshCustom } = useAppStore(
     useShallow((s) => {
       const resource = s.view.name === "custom" ? s.view.resource : null;
       const key = resource ? refKey(resource) : null;
       return {
         resource, table: key ? s.customTables.get(key) : undefined, error: key ? s.customTableErrors.get(key) ?? null : null,
-        search: s.search, selectedId: s.selectedId, scope: s.connection.scope, namespaces: s.connection.namespaces,
+        search: s.search, selectedId: s.selectedId, scope: s.connection.scope, namespaces: s.connection.namespaces, nodes: s.nodes,
         select: s.select, focusInGraph: s.focusInGraph, refreshCustom: s.refreshCustom,
       };
     }),
   );
-  const key = resource ? refKey(resource) : null;
   const [sort, setSort] = useState<SortState>(null);
-  const [sortKey, setSortKey] = useState<string | null>(key);
-  if (sortKey !== key) { // a new kind starts unsorted
-    setSortKey(key);
-    setSort(null);
-  }
   const rows = useMemo(() => (table ? sortRows(filterRows(table.rows, search), table.columns, sort) : []), [table, search, sort]);
   if (!resource) return null;
 
@@ -60,7 +55,7 @@ export function CustomTableView() {
           <tbody>
             {rows.map((r) => (
               <Row key={r.nodeId} row={r} columns={table.columns} selected={r.nodeId === selectedId}
-                onClick={() => void select(r.nodeId)} onDoubleClick={() => void focusInGraph(r.nodeId)} onContextMenu={(e) => e.preventDefault()} />
+                onClick={() => void select(r.nodeId)} onDoubleClick={() => { if (nodes.has(r.nodeId)) void focusInGraph(r.nodeId); }} onContextMenu={(e) => e.preventDefault()} />
             ))}
           </tbody>
         </table>

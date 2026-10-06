@@ -1,6 +1,6 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { initialState, useAppStore } from "../../app/store";
+import { initialState, useAppStore, viewEditor } from "../../app/store";
 import { headingFromId } from "../details/DetailsPanel";
 import { invoke } from "../../shared/ipc/tauri";
 import type { ResourceRef, Table } from "../../shared/ipc/types";
@@ -71,5 +71,56 @@ describe("CustomTableView", () => {
 
   it("headings of custom ids show the custom kind's name and namespace", () => {
     expect(headingFromId(id("web-tls"))).toEqual({ name: "web-tls", kind: "Custom", namespace: "shop" });
+  });
+
+  it("double-clicking a row that is not on the graph does nothing", () => {
+    const focusInGraph = vi.fn(async () => {});
+    show();
+    useAppStore.setState({ focusInGraph });
+    render(<CustomTableView />);
+    fireEvent.doubleClick(screen.getByText("web-tls"));
+    expect(focusInGraph).not.toHaveBeenCalled();
+    const node = { id: id("web-tls"), kind: "Custom" as const, namespace: "shop", name: "web-tls", status: "ok" as const, badges: [], group: null };
+    act(() => useAppStore.setState({ nodes: new Map([[node.id, node]]) }));
+    fireEvent.doubleClick(screen.getByText("web-tls"));
+    expect(focusInGraph).toHaveBeenCalledWith(id("web-tls"));
+  });
+});
+
+describe("the selection of a custom resource", () => {
+  const selected = (nodeId: string) => ({
+    selectedId: nodeId,
+    details: { nodeId, loading: false, editor: viewEditor("kind: Certificate\n"), data: { yaml: "kind: Certificate\n", summary: [], related: [] }, events: [] },
+  });
+
+  it("clears after deleting it from the details panel", async () => {
+    show();
+    useAppStore.setState({ ...selected(id("web-tls")), deleteDialog: { open: true, nodeId: id("web-tls") } });
+    await useAppStore.getState().confirmDelete();
+    expect(invoke).toHaveBeenCalledWith("delete_object", { nodeId: id("web-tls") });
+    expect(useAppStore.getState().selectedId).toBeNull();
+    expect(useAppStore.getState().details).toBeNull();
+  });
+
+  it("clears when a table update drops its row", () => {
+    show();
+    useAppStore.setState(selected(id("web-tls")));
+    useAppStore.getState().applyCustomTable({ resource: cert, table: { ...table, rows: table.rows.slice(1) }, error: null });
+    expect(useAppStore.getState().selectedId).toBeNull();
+    expect(useAppStore.getState().details).toBeNull();
+  });
+
+  it("survives an update that does not carry a just-created object's row yet", () => {
+    show();
+    useAppStore.setState(selected(id("new-tls")));
+    useAppStore.getState().applyCustomTable({ resource: cert, table, error: null });
+    expect(useAppStore.getState().selectedId).toBe(id("new-tls"));
+  });
+
+  it("survives a terminal error, which empties the rows without deleting anything", () => {
+    show();
+    useAppStore.setState(selected(id("web-tls")));
+    useAppStore.getState().applyCustomTable({ resource: cert, table: { ...table, rows: [] }, error: "No access to Certificate (RBAC)" });
+    expect(useAppStore.getState().selectedId).toBe(id("web-tls"));
   });
 });

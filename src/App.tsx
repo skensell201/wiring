@@ -12,6 +12,7 @@ import { ViewHeader } from "./features/graph/ViewHeader";
 import { Navigator } from "./features/navigator/Navigator";
 import { CustomTableView } from "./features/table/CustomTableView";
 import { TableView } from "./features/table/TableView";
+import { refKey } from "./shared/customId";
 import { ErrorBoundary } from "./shared/ui/ErrorBoundary";
 import { ActionDialogs } from "./features/actions/ActionDialogs";
 import { ActionsMenu } from "./features/actions/ActionsMenu";
@@ -23,6 +24,7 @@ export function App() {
   useGlobalKeys();
   useUpdateChecker();
   const viewName = useAppStore((s) => s.view.name);
+  const customKey = useAppStore((s) => (s.view.name === "custom" ? refKey(s.view.resource) : null));
   const maximized = useAppStore((s) => s.detailsMaximized);
   useEffect(() => {
     let active = true;
@@ -47,7 +49,7 @@ export function App() {
           <>
             <ViewHeader />
             <main className="min-h-0 flex-1">
-              <ErrorBoundary name="main view">{viewName === "graph" ? <Canvas /> : viewName === "custom" ? <CustomTableView /> : <TableView />}</ErrorBoundary>
+              <ErrorBoundary name="main view">{viewName === "graph" ? <Canvas /> : viewName === "custom" ? <CustomTableView key={customKey} /> : <TableView />}</ErrorBoundary>
             </main>
           </>
         )}

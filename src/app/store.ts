@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { customTemplate, isCreatable, template, type CreatableKind } from "../features/editor/templates";
-import { parseCustomId, refKey } from "../shared/customId";
+import { isCustomId, parseCustomId, refKey } from "../shared/customId";
 import { KIND_META } from "../features/graph/kindMeta";
 import { logBuffer } from "../features/logs/logBuffer";
 import { applyLogMessage, initialLogs, type LogsState } from "../features/logs/logsState";
@@ -690,7 +690,13 @@ export const useAppStore = create<AppState>()((set, get) => ({
       customTables.set(key, t.table);
       const customTableErrors = new Map(s.customTableErrors);
       if (t.error) customTableErrors.set(key, t.error); else customTableErrors.delete(key);
-      return { customTables, customTableErrors };
+      // Deleted by someone else: the selected row was in this kind's previous rows and is not now. A
+      // just-created object is selected before its row arrives, and a terminal error empties the
+      // rows without deleting anything; neither drops the selection.
+      const sel = s.selectedId;
+      const dropped = sel !== null && !t.error && (s.customTables.get(key)?.rows.some((r) => r.nodeId === sel) ?? false)
+        && !t.table.rows.some((r) => r.nodeId === sel);
+      return dropSelection({ ...s, customTables, customTableErrors }, dropped);
     }),
 
   showHelm: async () => {
@@ -884,6 +890,8 @@ export const useAppStore = create<AppState>()((set, get) => ({
       await commands.deleteObject(nodeId);
       // Its editor has nothing left to save; back to view, and the watch's removal clears the selection.
       set((s) => (s.details?.nodeId === nodeId ? { details: { ...s.details, editor: viewEditor(s.details.editor.original) } } : {}));
+      // A custom resource off the graph has no watch removal to clear it.
+      if (isCustomId(nodeId)) set((s) => dropSelection(s, s.selectedId === nodeId));
       get().toast({ kind: "info", message: `Deleted ${describeDeleted(nodeId, count)}` });
     } catch (e) {
       get().toast(toAppError(e));
