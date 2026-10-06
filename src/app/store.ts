@@ -1,13 +1,13 @@
 import { create } from "zustand";
 import { isCreatable, template, type CreatableKind } from "../features/editor/templates";
-import { parseCustomId } from "../shared/customId";
+import { parseCustomId, refKey } from "../shared/customId";
 import { KIND_META } from "../features/graph/kindMeta";
 import { logBuffer } from "../features/logs/logBuffer";
 import { applyLogMessage, initialLogs, type LogsState } from "../features/logs/logsState";
 import { commands } from "../shared/ipc/commands";
 import type {
-  AppError, ConnectionState, ContextInfo, Graph, GraphDelta, GraphEdge, Forward, GraphNode, K8sEvent, Kind, LogMessage, NamespaceScope, NodeId, ObjectDetails,
-  Status, Table, TooLarge,
+  AppError, ConnectionState, ContextInfo, CustomKind, CustomTable, Graph, GraphDelta, GraphEdge, Forward, GraphNode, K8sEvent, Kind, LogMessage, NamespaceScope, NodeId, ObjectDetails,
+  HelmRelease, ResourceRef, Status, Table, TooLarge,
 } from "../shared/ipc/types";
 import { toAppError } from "../shared/ipc/types";
 import { firstNamespace, inScope } from "../shared/scope";
@@ -70,8 +70,12 @@ function describeDeleted(id: NodeId, groupCount: number): string {
   return `${groupCount} ${groupCount === 1 ? "pod" : "pods"} of ${parts[2]} ${parts[3]}`;
 }
 
-/** The centre pane: the graph, or a per-kind table. */
-export type View = { name: "graph" } | { name: "table"; kind: Kind };
+/** The centre pane: the graph, a per-kind table, a custom kind's table, or the Helm releases. */
+export type View =
+  | { name: "graph" }
+  | { name: "table"; kind: Kind }
+  | { name: "custom"; resource: ResourceRef }
+  | { name: "helm" };
 
 /** Bumped every time the graph should centre on `nodeId` (even re-focusing the same node). */
 export interface FocusRequest { nodeId: NodeId; seq: number }
@@ -120,6 +124,16 @@ export interface AppState extends GraphState {
   lastTableKind: Kind | null;
   sidebarCollapsed: boolean;
   tables: Map<Kind, Table>;
+  /** Custom kinds from discovery; `null` until loaded for this connection. */
+  customKinds: CustomKind[] | null;
+  customKindsLoading: boolean;
+  customKindsError: AppError | null;
+  /** Rows of each custom kind's table by `refKey`, kept after leaving it for the navigator count. */
+  customTables: Map<string, Table>;
+  /** Why a custom kind's watch ended for good (RBAC revoked, kind no longer served), by `refKey`. */
+  customTableErrors: Map<string, string>;
+  /** Helm releases in the scope; `null` until fetched. */
+  helmReleases: HelmRelease[] | null;
   focusRequest: FocusRequest | null;
   createDialog: CreateDialog;
   deleteDialog: DeleteDialog;
@@ -162,6 +176,12 @@ export interface AppState extends GraphState {
   showGraph: () => void;
   showTable: (kind: Kind) => Promise<void>;
   refreshTable: (kind: Kind) => Promise<void>;
+  loadCustomKinds: (refresh?: boolean) => Promise<void>;
+  showCustom: (resource: ResourceRef) => Promise<void>;
+  refreshCustom: (resource: ResourceRef) => Promise<void>;
+  applyCustomTable: (t: CustomTable) => void;
+  showHelm: () => Promise<void>;
+  refreshHelm: () => Promise<void>;
   focusInGraph: (id: NodeId) => Promise<void>;
   /** The canvas has centred on the requested node; drop the request so it does not replay. */
   clearFocusRequest: () => void;
@@ -252,6 +272,12 @@ export function initialState(): Omit<AppState, keyof Actions> {
     lastTableKind: null,
     sidebarCollapsed: false,
     tables: new Map(),
+    customKinds: null,
+    customKindsLoading: false,
+    customKindsError: null,
+    customTables: new Map(),
+    customTableErrors: new Map(),
+    helmReleases: null,
     focusRequest: null,
     createDialog: { open: false, kind: "Deployment", buffer: "", namespace: "", error: null, submitting: false },
     deleteDialog: { open: false, nodeId: null },
@@ -287,7 +313,8 @@ function lostEditsToast(s: Pick<AppState, "details">): Omit<Toast, "id"> | null 
 type Actions = Pick<AppState,
   | "applySnapshot" | "applyDelta" | "setObjectEvents" | "setConnectionState" | "loadContexts" | "addKubeconfig" | "connect"
   | "reconnect" | "disconnect" | "selectNamespace" | "selectScope" | "select" | "setHovered" | "toggleGroup" | "toggleKind" | "setSearch" | "toast"
-  | "dismissToast" | "setPickerOpen" | "showGraph" | "showTable" | "refreshTable" | "focusInGraph" | "clearFocusRequest"
+  | "dismissToast" | "setPickerOpen" | "showGraph" | "showTable" | "refreshTable"
+  | "loadCustomKinds" | "showCustom" | "refreshCustom" | "applyCustomTable" | "showHelm" | "refreshHelm" | "focusInGraph" | "clearFocusRequest"
   | "toggleSidebar" | "startEdit" | "setBuffer" | "reviewEdit" | "backToEdit" | "applyEdit" | "cancelEdit" | "reloadEdit"
   | "confirmDiscard" | "cancelDiscard" | "openCreate" | "setCreateKind" | "setCreateNamespace" | "setCreateBuffer" | "submitCreate" | "closeCreate"
   | "requestDelete" | "confirmDelete" | "cancelDelete" | "startLogs" | "stopLogs" | "setLogsContainer" | "toggleLogsPrevious"
@@ -365,6 +392,17 @@ function dropSelection<S extends GraphState>(s: S, dropped: boolean): S {
 }
 
 // ---- store ----------------------------------------------------------------
+
+/** A custom table's watch has no reader once another view replaces it. */
+function leaveCustomView(prev: View, next: View): void {
+  if (prev.name !== "custom") return;
+  if (next.name === "custom" && refKey(next.resource) === refKey(prev.resource)) return;
+  void commands.stopCustom().catch(() => {});
+}
+
+/** Custom kinds load generations: only the newest load owns `customKindsLoading` and the result, so
+ *  a load left over from a previous connection neither lands nor ends the next one's. */
+let customKindsGen = 0;
 
 export const useAppStore = create<AppState>()((set, get) => ({
   ...initialState(),
@@ -471,10 +509,12 @@ export const useAppStore = create<AppState>()((set, get) => ({
     const previous = {
       nodes: before.nodes, edges: before.edges, graphReady: before.graphReady, tooLarge: before.tooLarge,
       deniedKinds: before.deniedKinds, partialKinds: before.partialKinds, tables: before.tables, scope: before.connection.scope,
+      customTables: before.customTables, customTableErrors: before.customTableErrors, helmReleases: before.helmReleases,
     };
     set((s) => ({
       nodes: new Map(), edges: new Map(), graphReady: false, tooLarge: null, selectedId: null, details: null, hoveredId: null,
       deniedKinds: new Set(), partialKinds: new Set(), tables: new Map(), focusRequest: null, connection: { ...s.connection, scope },
+      customTables: new Map(), customTableErrors: new Map(), helmReleases: null,
       deleteDialog: initialState().deleteDialog, discardDialog: initialState().discardDialog, detailsMaximized: false,
       actionsMenu: null, actionDialog: null, requestedTab: null,
     }));
@@ -547,9 +587,13 @@ export const useAppStore = create<AppState>()((set, get) => ({
   dismissToast: (id) => set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) })),
   setPickerOpen: (pickerOpen) => set({ pickerOpen }),
 
-  showGraph: () => set({ view: { name: "graph" } }),
+  showGraph: () => {
+    leaveCustomView(get().view, { name: "graph" });
+    set({ view: { name: "graph" } });
+  },
 
   showTable: async (kind) => {
+    leaveCustomView(get().view, { name: "table", kind });
     set({ view: { name: "table", kind }, lastTableKind: kind });
     if (get().deniedKinds.has(kind)) return; // the table shows its RBAC state; the fetch would only fail
     await get().refreshTable(kind);
@@ -580,6 +624,80 @@ export const useAppStore = create<AppState>()((set, get) => ({
     }
   },
 
+  loadCustomKinds: async (refresh = false) => {
+    if (get().customKindsLoading) return;
+    const gen = ++customKindsGen;
+    const context = get().connection.context;
+    const current = () => gen === customKindsGen && get().connection.context === context;
+    set({ customKindsLoading: true, customKindsError: null });
+    try {
+      const kinds = await (refresh ? commands.refreshCustomKinds() : commands.customKinds());
+      // `?? []`: an answer without a list still counts as loaded, or the navigator would ask again forever.
+      if (current()) set({ customKinds: kinds ?? [] });
+    } catch (e) {
+      if (current()) set({ customKindsError: toAppError(e) });
+    } finally {
+      if (gen === customKindsGen) set({ customKindsLoading: false });
+    }
+  },
+
+  showCustom: async (resource) => {
+    const next: View = { name: "custom", resource };
+    leaveCustomView(get().view, next);
+    set({ view: next });
+    await get().refreshCustom(resource);
+  },
+
+  refreshCustom: async (resource) => {
+    const scope = get().connection.scope;
+    const key = refKey(resource);
+    try {
+      const t = await commands.listCustom(resource);
+      if (scope === null || get().connection.scope !== scope) return;
+      const view = get().view;
+      if (view.name !== "custom") {
+        // Left while listing: the watch list_custom just started has no reader.
+        void commands.stopCustom().catch(() => {});
+        return;
+      }
+      if (refKey(view.resource) !== key) {
+        // Another kind was opened meanwhile, and this late answer replaced its watch; restart it.
+        void get().refreshCustom(view.resource);
+        return;
+      }
+      get().applyCustomTable(t);
+    } catch (e) {
+      get().toast(toAppError(e));
+    }
+  },
+
+  applyCustomTable: (t) =>
+    set((s) => {
+      const key = refKey(t.resource);
+      const customTables = new Map(s.customTables);
+      customTables.set(key, t.table);
+      const customTableErrors = new Map(s.customTableErrors);
+      if (t.error) customTableErrors.set(key, t.error); else customTableErrors.delete(key);
+      return { customTables, customTableErrors };
+    }),
+
+  showHelm: async () => {
+    leaveCustomView(get().view, { name: "helm" });
+    set({ view: { name: "helm" } });
+    await get().refreshHelm();
+  },
+
+  refreshHelm: async () => {
+    const scope = get().connection.scope;
+    try {
+      const releases = await commands.helmReleases();
+      if (scope === null || get().connection.scope !== scope) return;
+      set({ helmReleases: releases ?? [] }); // as with custom kinds: a missing list must not re-trigger the fetch
+    } catch (e) {
+      get().toast(toAppError(e));
+    }
+  },
+
   focusInGraph: async (id) => {
     if (get().tooLarge) {
       get().toast({ kind: "info", message: "The graph is too large to show \u2014 use the table" });
@@ -592,6 +710,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
       return;
     }
     if (get().hiddenKinds.has(target.kind)) get().toggleKind(target.kind); // a hidden node cannot be centred on
+    leaveCustomView(get().view, { name: "graph" });
     // The request is in place before the canvas mounts, so its whole-graph fit yields to the focus.
     set((s) => ({ view: { name: "graph" }, focusRequest: { nodeId: id, seq: (s.focusRequest?.seq ?? 0) + 1 } }));
     await get().select(id);

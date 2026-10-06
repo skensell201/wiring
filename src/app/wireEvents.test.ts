@@ -305,3 +305,19 @@ describe("update events", () => {
     stop();
   });
 });
+
+describe("custom_table events", () => {
+  const cert = { group: "cert-manager.io", version: "v1", kind: "Certificate", plural: "certificates", namespaced: true };
+  const empty = { kind: "Custom" as const, columns: [], rows: [] };
+
+  it("store the open kind's terminal error and ignore any other kind", async () => {
+    const stop = await wireEvents();
+    useAppStore.setState({ view: { name: "custom", resource: cert } });
+    hoisted.handlers!.custom_table({ resource: { ...cert, kind: "Issuer", plural: "issuers" }, table: empty, error: null });
+    expect(useAppStore.getState().customTables.size).toBe(0);
+    hoisted.handlers!.custom_table({ resource: cert, table: empty, error: "Certificate: forbidden" });
+    expect(useAppStore.getState().customTableErrors.get("cert-manager.io/v1/Certificate")).toBe("Certificate: forbidden");
+    expect(useAppStore.getState().customTables.get("cert-manager.io/v1/Certificate")?.rows).toEqual([]);
+    stop();
+  });
+});

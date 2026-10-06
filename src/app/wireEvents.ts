@@ -1,3 +1,4 @@
+import { refKey } from "../shared/customId";
 import { commands } from "../shared/ipc/commands";
 import { listenAll } from "../shared/ipc/events";
 import type { GraphDelta, Kind } from "../shared/ipc/types";
@@ -26,6 +27,9 @@ export function wireEvents(): Promise<() => void> {
       s().applySnapshot(g);
       const view = s().view;
       if (view.name === "table") void s().refreshTable(view.kind);
+      // A scope switch stopped the custom watch and changed the Secrets Helm reads; re-list both.
+      if (view.name === "custom") void s().refreshCustom(view.resource);
+      if (view.name === "helm") void s().refreshHelm();
       // A too-large snapshot carries no nodes to diff the open details against; the backend sends
       // one per (debounced) rebuild, so it is the details' cue to reload too.
       if (g.tooLarge) requestDetailsRefresh();
@@ -37,12 +41,18 @@ export function wireEvents(): Promise<() => void> {
         const kind = view.kind;
         scheduleTableRefresh(() => void useAppStore.getState().refreshTable(kind));
       }
+      // Helm storage Secrets are not graph nodes, but a release change touches its objects too.
+      if (view.name === "helm") scheduleTableRefresh(() => void useAppStore.getState().refreshHelm());
     },
     object_events: ({ nodeId, events }) => s().setObjectEvents(nodeId, events),
     forwards_changed: (forwards) => s().setForwards(forwards),
     update_progress: (p) => useUpdateStore.getState().setProgress(p),
     menu_check_updates: () => void useUpdateStore.getState().check(true),
-    custom_table: () => {}, // replaced when the custom resources view lands
+    // Only the table on screen: a late event of a table just left must not resurrect it.
+    custom_table: (t) => {
+      const view = s().view;
+      if (view.name === "custom" && refKey(view.resource) === refKey(t.resource)) s().applyCustomTable(t);
+    },
     metrics_updated: () => {
       const view = s().view;
       if (view.name === "table" && USAGE_KINDS.has(view.kind)) {
