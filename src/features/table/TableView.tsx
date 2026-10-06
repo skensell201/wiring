@@ -101,8 +101,7 @@ export function TableView() {
         </table>
       )}
       {empty && (
-        <TableEmpty state={empty} noun={plural} onCreate={isCreatable(kind) ? () => openCreate() : undefined}
-          noAccessBody={clusterScoped ? `You can't list ${plural} on this cluster (RBAC). Ask your cluster admin.` : undefined} />
+        <TableEmpty state={empty} noun={plural} clusterScoped={clusterScoped} onCreate={isCreatable(kind) ? () => openCreate() : undefined} />
       )}
     </div>
   );

@@ -177,6 +177,29 @@ describe("TableView", () => {
     expect(screen.queryByText("Choose a namespace")).not.toBeInTheDocument();
   });
 
+  it("a denied cluster-scoped kind offers no namespace picker", () => {
+    useAppStore.setState({ view: { name: "table", kind: "Node" }, deniedKinds: new Set(["Node"]), tables: new Map() });
+    render(<TableView />);
+    const state = screen.getByRole("status", { name: "No access" });
+    expect(state).toHaveTextContent("You can't list Nodes on this cluster (RBAC). Ask your cluster admin.");
+    expect(within(state).queryByRole("button")).not.toBeInTheDocument();
+  });
+
+  it("an empty cluster-scoped kind offers only + Create, when creatable", () => {
+    const pvs: Table = { kind: "PersistentVolume", columns: [{ key: "name", label: "Name", numeric: false }], rows: [] };
+    useAppStore.setState({ deniedLoaded: true, view: { name: "table", kind: "PersistentVolume" }, tables: new Map([["PersistentVolume", pvs]]) });
+    const { unmount } = render(<TableView />);
+    expect(screen.getByRole("button", { name: "+ Create" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /another namespace/ })).not.toBeInTheDocument();
+    unmount();
+    const nodes: Table = { kind: "Node", columns: pvs.columns, rows: [] };
+    useAppStore.setState({ view: { name: "table", kind: "Node" }, tables: new Map([["Node", nodes]]) });
+    render(<TableView />);
+    const state = screen.getByRole("status", { name: "Nothing here yet" });
+    expect(state).toHaveTextContent("The cluster has no Nodes.");
+    expect(within(state).queryByRole("button")).not.toBeInTheDocument();
+  });
+
   it("shows a loading state until the table arrives", () => {
     useAppStore.setState({ tables: new Map() });
     render(<TableView />);
