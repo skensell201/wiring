@@ -29,6 +29,34 @@ describe("ScaleDialog", () => {
     expect(scaleObject).toHaveBeenCalledWith(WEB, 5);
   });
 
+  it("leaves the count empty and says replicas and HPA are unknown while the graph is too large", () => {
+    const scaleObject = vi.fn(async () => {});
+    const tooLarge = { nodes: 1873, kinds: [{ kind: "Deployment" as const, count: 120, worst: "ok" as const }] };
+    useAppStore.setState({ ...applySnapshot(initialState(), { nodes: [], edges: [], tooLarge }), tooLarge, scaleObject, actionDialog: { type: "scale", nodeId: WEB } });
+    render(<ActionDialogs />);
+    const input = screen.getByRole("spinbutton", { name: "Replicas" });
+    expect(input).toHaveValue(null);
+    expect(input).toBeRequired();
+    expect(screen.getByRole("note")).toHaveTextContent("Current replicas and HPA unknown while the graph is too large");
+    const apply = screen.getByRole("button", { name: "Apply" });
+    expect(apply).toBeDisabled();
+    fireEvent.click(apply);
+    expect(scaleObject).not.toHaveBeenCalled();
+    fireEvent.change(input, { target: { value: "4" } });
+    expect(apply).toBeEnabled();
+    fireEvent.click(apply);
+    expect(scaleObject).toHaveBeenCalledWith(WEB, 4);
+  });
+
+  it("says replicas and HPA are unknown when the workload is simply not in the graph", () => {
+    useAppStore.setState({ actionDialog: { type: "scale", nodeId: "Deployment/p/other" } });
+    render(<ActionDialogs />);
+    expect(screen.getByRole("spinbutton", { name: "Replicas" })).toHaveValue(null);
+    expect(screen.getByRole("note")).toHaveTextContent("Current replicas and HPA unknown");
+    expect(screen.getByRole("note")).not.toHaveTextContent("too large");
+    expect(screen.getByRole("button", { name: "Apply" })).toBeDisabled();
+  });
+
   it("refuses counts outside 0 … 10000", () => {
     useAppStore.setState({ actionDialog: { type: "scale", nodeId: WEB } });
     render(<ActionDialogs />);
