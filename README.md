@@ -9,6 +9,10 @@
 </p>
 
 <p align="center">
+  <a href="https://wiringk8s.xyz"><b>Website and documentation</b></a>
+</p>
+
+<p align="center">
   <a href="https://github.com/skensell201/wiring/releases/latest"><img src="https://img.shields.io/github/v/release/skensell201/wiring?label=download" alt="Latest release"></a>
   <a href="https://github.com/skensell201/wiring/actions/workflows/ci.yml"><img src="https://github.com/skensell201/wiring/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows-lightgrey" alt="macOS | Windows">
