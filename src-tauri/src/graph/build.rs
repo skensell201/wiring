@@ -296,9 +296,11 @@ fn collapse_pod_groups(nodes: &mut HashMap<NodeId, Node>, edges: &mut Vec<Edge>,
     // owner id -> member pod ids
     let mut members: BTreeMap<NodeId, Vec<NodeId>> = BTreeMap::new();
     for e in edges.iter() {
-        let owner_kind = nodes.get(&e.source).map(|n| n.kind);
         // A PodGroup id names its owner as `<Kind>/<name>`, which a custom owner cannot be.
-        if e.relation == Relation::Owns && nodes.get(&e.target).map(|n| n.kind) == Some(Kind::Pod) && owner_kind != Some(Kind::Custom) {
+        if e.relation == Relation::Owns
+            && nodes.get(&e.target).map(|n| n.kind) == Some(Kind::Pod)
+            && nodes.get(&e.source).map(|n| n.kind) != Some(Kind::Custom)
+        {
             members.entry(e.source.clone()).or_default().push(e.target.clone());
         }
     }
