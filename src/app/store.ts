@@ -224,6 +224,9 @@ let toastSeq = 0;
  *  with the next session, and a stop must orphan the channel it leaves behind. */
 let logsGen = 0;
 
+/** Kinds whose chips start off: RBAC objects and Nodes would crowd most graphs. */
+export const DEFAULT_HIDDEN_KINDS: readonly Kind[] = ["Role", "RoleBinding", "ClusterRole", "ClusterRoleBinding", "Node"];
+
 export function initialState(): Omit<AppState, keyof Actions> {
   return {
     contexts: [],
@@ -235,7 +238,7 @@ export function initialState(): Omit<AppState, keyof Actions> {
     details: null,
     hoveredId: null,
     expandedGroups: new Set(),
-    hiddenKinds: new Set(),
+    hiddenKinds: new Set(DEFAULT_HIDDEN_KINDS),
     deniedKinds: new Set(),
     partialKinds: new Set(),
     tooLarge: null,
