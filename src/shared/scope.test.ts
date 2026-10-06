@@ -16,6 +16,8 @@ describe("namespace scope helpers", () => {
     expect(scopeLabel(["shop", "blog"], [])).toBe("shop, blog");
     expect(scopeLabel("all", ["a", "b", "c"])).toBe("All namespaces (3)");
     expect(scopeLabel("all", [])).toBe("All namespaces");
+    expect(scopeLabel(["a", "b", "c", "d", "e"], [], 2)).toBe("a, b +3");
+    expect(scopeLabel(["a", "b"], [], 2)).toBe("a, b");
   });
   it("knows when several namespaces are shown", () => {
     expect(isMulti(null)).toBe(false);

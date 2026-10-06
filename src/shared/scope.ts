@@ -1,10 +1,12 @@
 import type { NamespaceScope } from "./ipc/types";
 
-/** The header/caption text for a scope; `null` before any selection. */
-export function scopeLabel(scope: NamespaceScope | null, known: string[]): string | null {
+/** The header/caption text for a scope (`shop, blog`, `All namespaces (12)`); `null` before any
+ *  selection. With `maxNames`, a longer list is cut to `shop, blog +3`. */
+export function scopeLabel(scope: NamespaceScope | null, known: string[], maxNames = Infinity): string | null {
   if (scope === null) return null;
   if (scope === "all") return known.length > 0 ? `All namespaces (${known.length})` : "All namespaces";
-  return scope.join(", ");
+  const head = scope.slice(0, maxNames).join(", ");
+  return scope.length > maxNames ? `${head} +${scope.length - maxNames}` : head;
 }
 
 /** Several namespaces on screen: lanes in the graph, a Namespace column in tables. */

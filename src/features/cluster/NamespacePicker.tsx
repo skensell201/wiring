@@ -4,6 +4,7 @@ import { createPortal } from "react-dom";
 import { useShallow } from "zustand/react/shallow";
 import { useAppStore } from "../../app/store";
 import type { NamespaceScope } from "../../shared/ipc/types";
+import { scopeLabel } from "../../shared/scope";
 import { Button } from "../../shared/ui/Button";
 
 const FIELD = "no-drag h-9 rounded-xl border border-border-strong bg-transparent px-3 text-sm font-medium text-text-hi outline-none focus:border-accent";
@@ -13,14 +14,6 @@ const MARGIN = 8;
 /** The backend accepts at most this many explicit namespaces. */
 export const MAX_NAMESPACES = 20;
 const DNS_LABEL = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/;
-
-/** `shop`, `shop, blog`, `shop, blog +3` or `All namespaces (12)`. */
-function label(scope: NamespaceScope | null, known: string[]): string {
-  if (scope === null || (scope !== "all" && scope.length === 0)) return "namespace…";
-  if (scope === "all") return known.length > 0 ? `All namespaces (${known.length})` : "All namespaces";
-  const head = scope.slice(0, 2).join(", ");
-  return scope.length > 2 ? `${head} +${scope.length - 2}` : head;
-}
 
 /** One namespace (click its name), several (tick them, then Apply) or all of them. */
 export function NamespacePicker() {
@@ -117,7 +110,7 @@ export function NamespacePicker() {
   return (
     <div className="no-drag relative">
       <button ref={button} type="button" aria-label="Namespace" aria-haspopup="dialog" aria-expanded={open} className={`${FIELD} flex items-center gap-2`} onClick={toggleOpen}>
-        <span className="max-w-56 truncate">{label(scope, namespaces)}</span>
+        <span className="max-w-56 truncate">{scopeLabel(scope, namespaces, 2) || "namespace…"}</span>
         <ChevronDown className="size-4 text-text-muted" />
       </button>
       {open && createPortal(

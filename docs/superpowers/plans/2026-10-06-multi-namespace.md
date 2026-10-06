@@ -2190,7 +2190,7 @@ EOF
 2. **`denied_kinds` is unchanged; partial kinds come from a new `partial_kinds` command** instead of being mixed into `denied_kinds`, so the existing contract and its callers keep their meaning.
 3. **The 1 500 limit counts all nodes the backend builds** (pod groups count as one node), not "visible" nodes — the backend does not know which kinds the frontend hides.
 4. **With a too-large graph, Overview's Related list is empty and pod-group details are unavailable** (they come from the graph, which is not kept); tables, YAML, events, logs, terminal and actions still work.
-5. **Metrics for a set of namespaces are listed one namespace at a time per tick, and the first failure answers for the tick** (a 403 in one namespace hides metrics for the whole selection). Rare; kept simple.
+5. **Metrics for a set of namespaces are listed one namespace at a time per tick; a namespace that forbids PodMetrics is skipped**, so the rest of the selection keeps its usage, and the tick counts as forbidden only when every namespace is. Any other error still fails the tick. With *All namespaces* the list is one cluster-wide call with no per-namespace fallback (see the spec's §3 RBAC).
 6. **The too-large message uses `1,873`** (en-US grouping) rather than a thin-space `1 873`.
 7. **Picking a namespace by name applies at once; several are ticked and applied with Apply**, so a multi-select doesn't restart every watcher on each tick.
 8. **The settings key is `lastScope`; `lastNamespace` is only read for migration.**
