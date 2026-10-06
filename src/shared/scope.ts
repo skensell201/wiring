@@ -43,3 +43,10 @@ export function scopeText(scope: NamespaceScope | null, known: string[], cluster
   const label = scopeLabel(scope, known);
   return label === null ? null : clusterScoped ? "The cluster" : label;
 }
+
+/** The "Choose a namespace" sentence, shared by the graph and the tables. */
+export function noNamespaceBody(canListNamespaces: boolean): string {
+  return canListNamespaces
+    ? "Pick one or more namespaces to see their resources."
+    : "You can't list namespaces on this cluster. Type the name of one you have access to.";
+}

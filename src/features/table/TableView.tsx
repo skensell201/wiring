@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEve
 import { useShallow } from "zustand/react/shallow";
 import { useAppStore } from "../../app/store";
 import { isCreatable } from "../editor/templates";
-import { CLUSTER_SCOPED } from "../graph/graphEmptyState";
+import { CLUSTER_SCOPED } from "../../shared/kinds";
 import { scopeText } from "../../shared/scope";
 import type { Kind, Status, TableColumn, TableRow } from "../../shared/ipc/types";
 import { KIND_PLURAL } from "../navigator/kindTree";

@@ -2,7 +2,7 @@ import { Inbox, Layers, LoaderCircle, SearchX, ShieldOff } from "lucide-react";
 import { useShallow } from "zustand/react/shallow";
 import { useAppStore } from "../../app/store";
 import { EmptyState } from "../../shared/EmptyState";
-import { noNamespaceBody } from "../graph/graphEmptyState";
+import { noNamespaceBody } from "../../shared/scope";
 import type { TableSituation } from "./tableEmptyState";
 
 /** A table view's empty state. `noun` is what the table lists ("Pods", "certificates");

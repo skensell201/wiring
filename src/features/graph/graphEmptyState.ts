@@ -1,20 +1,12 @@
 import { KINDS, type GraphNode, type Kind, type NamespaceScope, type NodeId, type TooLarge } from "../../shared/ipc/types";
+import { CLUSTER_SCOPED } from "../../shared/kinds";
 import { isMulti, scopeLabel } from "../../shared/scope";
 import { matchesSearch } from "./toFlow";
 
-/** Kinds that live outside any namespace: their RBAC and rows do not depend on the scope. */
-export const CLUSTER_SCOPED = new Set<Kind>(["PersistentVolume", "ClusterRole", "ClusterRoleBinding", "Node"]);
 /** The cluster-scoped kinds plus the synthetic ones, which a namespace's RBAC does not decide about. */
 const NOT_NAMESPACED = new Set<Kind>([...CLUSTER_SCOPED, "PodGroup", "Custom"]);
 /** The watched kinds a namespace's RBAC decides about. */
 export const NAMESPACED_KINDS: Kind[] = KINDS.filter((k) => !NOT_NAMESPACED.has(k));
-
-/** The "Choose a namespace" sentence, shared by the graph and the tables. */
-export function noNamespaceBody(canListNamespaces: boolean): string {
-  return canListNamespaces
-    ? "Pick one or more namespaces to see their resources."
-    : "You can't list namespaces on this cluster. Type the name of one you have access to.";
-}
 
 export type GraphSituation =
   | { type: "noNamespace"; canListNamespaces: boolean }

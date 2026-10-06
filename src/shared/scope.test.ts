@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { firstNamespace, inScope, isMulti, restoredScope, scopeLabel } from "./scope";
+import { firstNamespace, inScope, isMulti, noNamespaceBody, restoredScope, scopeLabel } from "./scope";
 
 describe("namespace scope helpers", () => {
   it("restores a remembered scope, or falls back", () => {
@@ -36,5 +36,12 @@ describe("namespace scope helpers", () => {
     expect(firstNamespace("all", ["a", "b"])).toBe("a");
     expect(firstNamespace("all", [])).toBeNull();
     expect(firstNamespace(null, ["a"])).toBeNull();
+  });
+});
+
+describe("noNamespaceBody", () => {
+  it("asks to pick namespaces, or to type one when they can't be listed", () => {
+    expect(noNamespaceBody(true)).toBe("Pick one or more namespaces to see their resources.");
+    expect(noNamespaceBody(false)).toBe("You can't list namespaces on this cluster. Type the name of one you have access to.");
   });
 });

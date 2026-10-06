@@ -2,7 +2,8 @@ import { EyeOff, Inbox, Layers, LoaderCircle, Network, SearchX, ShieldOff } from
 import { useShallow } from "zustand/react/shallow";
 import { useAppStore } from "../../app/store";
 import { EmptyState } from "../../shared/EmptyState";
-import { noNamespaceBody, type GraphSituation } from "./graphEmptyState";
+import { noNamespaceBody } from "../../shared/scope";
+import type { GraphSituation } from "./graphEmptyState";
 
 /** The graph's empty state, floated over the (empty) canvas. */
 export function GraphEmpty({ state }: { state: GraphSituation }) {
