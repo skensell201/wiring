@@ -2,6 +2,7 @@ import { ArrowDown, ArrowUp } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { useAppStore } from "../../app/store";
+import { scopeLabel } from "../../shared/scope";
 import type { Kind, Status, TableColumn, TableRow } from "../../shared/ipc/types";
 import { KIND_PLURAL } from "../navigator/kindTree";
 import { filterRows, nextSort, sortRows, type SortState } from "./sort";
@@ -10,12 +11,12 @@ const STATUS_TEXT: Record<Status, string> = { ok: "text-status-ok", warn: "text-
 
 /** The per-kind table: sortable, filtered by the header search, keyboard-navigable. */
 export function TableView() {
-  const { kind, table, search, selectedId, denied, namespace, graphReady, select, focusInGraph, openActionsMenu } = useAppStore(
+  const { kind, table, search, selectedId, denied, scope, namespaces, graphReady, select, focusInGraph, openActionsMenu } = useAppStore(
     useShallow((s) => {
       const kind = s.view.name === "table" ? s.view.kind : null;
       return {
         kind, table: kind ? s.tables.get(kind) : undefined, search: s.search, selectedId: s.selectedId,
-        denied: kind ? s.deniedKinds.has(kind) : false, namespace: s.connection.namespace, graphReady: s.graphReady,
+        denied: kind ? s.deniedKinds.has(kind) : false, scope: s.connection.scope, namespaces: s.connection.namespaces, graphReady: s.graphReady,
         select: s.select, focusInGraph: s.focusInGraph, openActionsMenu: s.openActionsMenu,
       };
     }),
@@ -42,9 +43,9 @@ export function TableView() {
   const plural = KIND_PLURAL[kind];
   let message: string | null = null;
   if (denied) message = `No access to ${plural} (RBAC)`;
-  else if (!namespace) message = "Select a namespace to see its resources.";
+  else if (!scope) message = "Select a namespace to see its resources.";
   else if (!table || !graphReady) message = `Loading ${plural}…`; // rows are refetched once the snapshot lands
-  else if (table.rows.length === 0) message = `No ${plural} in ${namespace}`;
+  else if (table.rows.length === 0) message = `No ${plural} in ${scopeLabel(scope, namespaces)}`;
   else if (rows.length === 0) message = `No ${plural} match “${search.trim()}”`;
 
   const onKeyDown = (e: KeyboardEvent) => {

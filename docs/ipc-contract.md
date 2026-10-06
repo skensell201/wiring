@@ -6,9 +6,9 @@ The JSON fixtures in `src/shared/ipc/fixtures/` are the authoritative payload sh
 
 | Type | Values |
 |---|---|
-| `Kind` | `Deployment`, `StatefulSet`, `DaemonSet`, `ReplicaSet`, `Job`, `CronJob`, `Pod`, `Service`, `Ingress`, `ConfigMap`, `Secret`, `PersistentVolumeClaim`, `PersistentVolume`, `ServiceAccount`, `HorizontalPodAutoscaler`, `PodGroup` |
+| `Kind` | `Deployment`, `StatefulSet`, `DaemonSet`, `ReplicaSet`, `Job`, `CronJob`, `Pod`, `Service`, `Ingress`, `ConfigMap`, `Secret`, `PersistentVolumeClaim`, `PersistentVolume`, `ServiceAccount`, `HorizontalPodAutoscaler`, `NetworkPolicy`, `Role`, `RoleBinding`, `ClusterRole`, `ClusterRoleBinding`, `Node`, `PodGroup` (`ClusterRole`, `ClusterRoleBinding` and `Node` are cluster-scoped: ids `Kind//name`) |
 | `Status` | `ok`, `warn`, `err`, `unknown` |
-| `Relation` | `owns`, `selects`, `routes`, `mounts`, `envFrom`, `claims`, `binds`, `usesSA`, `scales` |
+| `Relation` | `owns`, `selects`, `routes`, `mounts`, `envFrom`, `claims`, `binds`, `usesSA`, `scales`, `applies`, `allows`, `grants`, `subject`, `runsOn` |
 | `ErrorKind` | `auth`, `network`, `forbidden`, `notFound`, `conflict`, `invalid`, `internal` — `conflict` is HTTP 409 (stale `resourceVersion` on a write); `invalid` is HTTP 400/422 (the message is the server's, listing the bad fields) |
 | `ConnectionState` | `connected`, `degraded`, `disconnected` |
 
@@ -22,11 +22,12 @@ Argument names are camelCase on the JS side; Tauri maps them to the Rust snake_c
 | `add_kubeconfig` | `{ path }` | `ContextInfo[]` — rejects with `AppError` if the file is missing or unparseable |
 | `connect` | `{ context }` | `ConnectInfo` — a **rejected promise** carries the `AppError`; no `connection_error` event is sent for connect failures |
 | `disconnect` | — | `null` |
-| `select_namespace` | `{ namespace, expandedGroups: string[] }` | `null` — the graph arrives via events |
+| `select_namespaces` | `{ namespaces: string[] \| null, expandedGroups: string[] }` | `null` — `null` watches all namespaces (refused with `invalid` when `ConnectInfo.canListNamespaces` is false); a list watches those (trimmed, deduplicated, each a DNS-1123 label, at most 20; an empty or longer list rejects with `invalid`: "pick up to 20 namespaces, or All namespaces"). The graph arrives via events. |
 | `set_expanded_groups` | `{ expandedGroups: string[] }` | `null` |
 | `get_object` | `{ nodeId }` | `ObjectDetails` (`summary` is an ordered `[string, string][]`) |
 | `watch_events` | `{ nodeId: string \| null }` | `null` — `null` stops the current watcher |
 | `denied_kinds` | — | `Kind[]` — kinds the session could not watch (RBAC 403 / API group missing) |
+| `partial_kinds` | — | `Kind[]` — kinds watched in some namespaces but forbidden in others (or forbidden cluster-wide and watched per namespace instead) |
 | `list_rows` | `{ kind }` | `Table` — kubectl-like columns/rows for `kind`, computed from the cached store |
 | `update_object` | `{ nodeId, yaml, force: boolean }` | `ObjectDetails` — fresh YAML/summary of the saved object (see [Writes](#writes)) |
 | `create_object` | `{ namespace, yaml }` | `NodeId` of the created object; it reaches the graph through the watch |
@@ -36,7 +37,7 @@ Argument names are camelCase on the JS side; Tauri maps them to the Rust snake_c
 | `rollout_history` | `{ nodeId }` | `Revision[]`, newest first |
 | `rollback_object` | `{ nodeId, revision }` | `ObjectDetails` |
 
-`ConnectInfo.namespaces` may be **empty** when the user cannot list namespaces (namespace-scoped RBAC); offer a free-text namespace input in that case. If the kubeconfig context has a default namespace it is included.
+`ConnectInfo.namespaces` may be **empty** when the user cannot list namespaces (namespace-scoped RBAC); offer a free-text namespace input in that case. If the kubeconfig context has a default namespace it is included. `ConnectInfo.canListNamespaces` is `true` only when `namespaces` came from listing them; when it is `false` (listing was forbidden, so the list is just the context namespace) do not offer *All namespaces* — the backend refuses it.
 
 ### Writes
 
@@ -59,7 +60,7 @@ Argument names are camelCase on the JS side; Tauri maps them to the Rust snake_c
 |---|---|---|
 | `connection_state` | `"connected" \| "degraded" \| "disconnected"` | `connected` is emitted after `connect` succeeds and again whenever a namespace session starts; `disconnected` on `disconnect` and before a re-`connect` tears down the old session |
 | `connection_error` | `AppError` | Per-kind failures: message is `"<Kind>: <reason>"`. `forbidden`/`notFound` per kind ⇒ the kind is dropped, call `denied_kinds` to mark its chip. A transient error is reported once per kind until it recovers. A fatal `auth` error (expired/invalid credentials) is reported once and followed by `disconnected`; the user must reconnect. |
-| `graph_snapshot` | `Graph` | Full replace. Arrives after every kind finished its initial list, and again after recovery from `degraded`. |
+| `graph_snapshot` | `Graph` | Full replace. Arrives after every kind finished its initial list, and again after recovery from `degraded`. When the graph has more than 1 500 nodes the snapshot is `{ nodes: [], edges: [], tooLarge: { nodes, kinds: [{ kind, count, worst }] } }` (a PodGroup counts its pods under `Pod`); every change of `tooLarge` (entering, leaving, or new counts) arrives as a new snapshot, never as a delta. |
 | `graph_delta` | `GraphDelta` | Apply `addedNodes`/`updatedNodes` (full node objects) / `removedNodes` (ids) / `addedEdges` / `removedEdges` (ids). Only sent when non-empty. |
 | `object_events` | `ObjectEvents` | Full list, newest first, for the node passed to `watch_events`. Ignore payloads whose `nodeId` is not the current selection. |
 | `forwards_changed` | `Forward[]` | Every running forward, ordered by id, after each start, stop and status change (see [Port-forward](#port-forward)). Empty after a disconnect. |
@@ -67,13 +68,14 @@ Argument names are camelCase on the JS side; Tauri maps them to the Rust snake_c
 
 ### Ordering rules the frontend must follow
 
-- After `select_namespace`, clear the graph and ignore `graph_delta` until the next `graph_snapshot`. (The backend also drops events from the torn-down namespace session, but the rule keeps the UI correct regardless.)
+- After `select_namespaces`, clear the graph and ignore `graph_delta` until the next `graph_snapshot`. (The backend also drops events from the torn-down namespace session, but the rule keeps the UI correct regardless.)
 - Treat every `graph_snapshot` as a full replace, not only the first one.
+- A snapshot whose namespaced nodes fall outside the current selection belongs to the previous one and is ignored.
 - `degraded` may arrive before any snapshot if a watcher cannot connect; a `connection_error` explains why.
 
 ## Node ids
 
-- Namespaced: `Kind/<namespace>/<name>`; cluster-scoped: `PersistentVolume//<name>`.
+- Namespaced: `Kind/<namespace>/<name>`; cluster-scoped: `PersistentVolume//<name>` (likewise `ClusterRole//`, `ClusterRoleBinding//`, `Node//`).
 - Collapsed pods: `PodGroup/<namespace>/<OwnerKind>/<ownerName>`. The owner is the *visible* owner — a Deployment whose single ReplicaSet is hidden yields `PodGroup/ns/Deployment/web`. During a rollout two ReplicaSets are visible, so the groups are `PodGroup/ns/ReplicaSet/<rs>` and the id changes back when the old ReplicaSet drains; expanded-group state does not survive that.
 - `get_object` on a PodGroup returns `yaml: ""` and a summary of member counts; `watch_events` on a PodGroup is a no-op.
 
@@ -85,19 +87,30 @@ A node whose `status` is `warn` or `err` may carry `problem: { reason, message, 
 - A PodGroup's problem summarises its members: `K of N pods: <reason>` with the message of the first such pod by name, prefixed with the pod name.
 - Problems change with the objects, so they arrive through the usual `graph_snapshot` / `graph_delta` (`updatedNodes`).
 
+## Policies, RBAC and Nodes
+
+- `applies`: NetworkPolicy to each selected Pod (or PodGroup). `allows`: a Pod (or PodGroup) that matches an ingress peer (`podSelector` / `namespaceSelector`) to the NetworkPolicy that admits it. Peers that are `ipBlock`s or empty draw nothing. Egress rules appear in Overview text only, with no edges.
+- `grants`: RoleBinding / ClusterRoleBinding to its Role / ClusterRole. `subject`: binding to each ServiceAccount subject. `runsOn`: Pod (or PodGroup) to its Node.
+- ClusterRole, ClusterRoleBinding and Node appear only when connected to the scope (bound to a ServiceAccount or Role in it, or running one of its pods).
+- A Pod selected by any NetworkPolicy in its namespace carries the `policy` badge.
+- Node status: `ok` when Ready, `err` when the Ready condition is not `True`, `warn` when Ready but `MemoryPressure`, `DiskPressure`, `PIDPressure` or `NetworkUnavailable` is `True` (the condition is added to the badges). A Pending/Unknown pod on a red node gets the node as its problem `cause`.
+- `namespaceSelector` peers are matched on the `kubernetes.io/metadata.name` label only (Namespaces are not watched); other namespace labels match nothing, though the rule text still lists them.
+- Fixture: `graph_extras.json`.
+
 ## Table
 
 `list_rows({ kind })` returns `Table { kind, columns: TableColumn[], rows: TableRow[] }`:
 
 - `TableColumn { key, label, numeric }` — one entry per kubectl-like column for that kind (see `graph::rows::columns`); `name` is always first.
 - `TableRow { nodeId, status, cells: TableCell[] }` — `cells` align 1:1 with `columns`; rows are sorted by name.
+- With several namespaces selected `list_rows` returns a leading `namespace` column (`—` for cluster-scoped kinds) and rows sorted by namespace, then name.
 - `TableCell { text, status: Status | null }` — `status` colours the cell (e.g. the Pod `status` cell, or a workload's `ready` cell) and is `null` for plain cells.
 - `PodGroup` is not a table kind (`columns` is empty, `rows` is always empty) — `list_rows({ kind: "Pod" })` always lists individual pods; collapsing pods into groups is a graph-only concern.
 - Requesting a kind the session could not watch (see `denied_kinds`) returns an empty table, not an error — the frontend shows the RBAC empty state itself.
 
 ## Metrics
 
-- Source: `metrics.k8s.io/v1beta1` `PodMetrics` in the selected namespace, polled every 15 s while the namespace session lives.
+- Source: `metrics.k8s.io/v1beta1` `PodMetrics` in the selected namespaces (keyed `namespace/name`; forbidden namespaces skipped), polled every 15 s while the namespace session lives.
 - Tables: Pod, Deployment, StatefulSet and DaemonSet gain numeric `cpu` (`CPU`) and `memory` (`Memory`) columns. Values are `kubectl top` style — CPU always in millicores (`120m`), memory always in whole MiB (`64Mi`) — so the leading number sorts correctly; `—` without a sample. Workloads sum the pods they own.
 - `get_object` summary for those kinds ends with `CPU usage` and `Memory usage` rows (`120m / req 100m / lim 500m (24%)`: requests and limits summed over containers, a total omitted when any container lacks it; the percentage is of the limit, else of the request), or a single `Usage` row: `waiting for the first metrics sample`, `Metrics API not available (install metrics-server)`, `No access to pod metrics (RBAC)` or `no sample yet`.
 - Graph: a pod or workload at ≥ 80 % of a CPU or memory limit gets a last badge `mem 92%` / `cpu 85%` (the higher; memory on a tie). Usage never changes `status`.
@@ -115,6 +128,7 @@ The backend stores `extraKubeconfigs: string[]` in `settings.json` (tauri-plugin
 | `extraKubeconfigs` | `string[]` | backend | Kubeconfig files added via "Add kubeconfig…" |
 | `lastContext` | `string` | frontend | Context to reconnect on startup |
 | `lastNamespace` | `Record<string, string>` | frontend | Last selected namespace, keyed by context name |
+| `lastScope` | `Record<string, "all" \| string[]>` | frontend | Last selected scope per context; supersedes `lastNamespace`, which is still read once for migration |
 | `sidebarCollapsed` | `boolean` | frontend | Whether the Navigator is collapsed to its icon rail |
 
 ## Security notes
@@ -132,6 +146,11 @@ Container logs stream through a Tauri `Channel` passed to `start_logs`, not thro
 |---|---|---|
 | `start_logs` | `{ nodeId, container: string \| null, previous: bool, timestamps: bool, onMessage: Channel<LogMessage> }` | `sessionId: number` |
 | `stop_logs` | `{ sessionId }` | `null` |
+| `exec_pods` | `{ nodeId }` | `ExecPod[]` — running pods of a Pod / Deployment / StatefulSet / DaemonSet / Job / PodGroup with their regular containers; other kinds `invalid` |
+| `start_exec` | `{ nodeId, pod, container, cols, rows, onMessage: Channel<ExecMessage> }` | `number` session id; see [Exec](#exec) |
+| `exec_input` | `{ sessionId, data }` | `null` — `data` is base64 keystrokes; not base64 → `invalid` |
+| `exec_resize` | `{ sessionId, cols, rows }` | `null` |
+| `stop_exec` | `{ sessionId }` | `null` — nothing reaches the channel afterwards |
 | `save_text` | `{ path, text }` | `null` — writes a file chosen with the save dialog |
 
 `nodeId` may be a `Pod`, `Deployment`, `StatefulSet`, `DaemonSet`, `Job`, `CronJob` or `PodGroup`; anything else is `invalid`. A selection that resolves to no container at all (an unknown `container`, a workload without pods) is `notFound`, so a session always has something to stream. Each `(pod, container)` the node stands for is one stream (`tail_lines=500`, `follow` unless `previous`). Pods that appear or disappear while streaming start/stop their streams, and a container that restarts gets a stream for its new run. At most 64 streams per session.
@@ -148,6 +167,16 @@ Container logs stream through a Tauri `Channel` passed to `start_logs`, not thro
 
 `ended` means the stream is over, whether the server closed it or the session stopped it because its pod (or that run of its container) went away. Batches arrive at most every 50 ms or every 256 lines. After `stop_logs` nothing more is sent on that channel. Fixture: `log_message.json`.
 
+## Exec
+
+`start_exec` checks the request against the cached store (`pod` must be a running pod of `nodeId`, `container` one of its regular containers — otherwise `invalid` / `notFound`) and returns at once. The session then opens `sh -c "command -v bash >/dev/null && exec bash || exec sh"` with a TTY of `cols`x`rows` (each clamped to 1...1000) and pushes `ExecMessage`s (tagged by `type`) through the channel:
+
+- `{ type: "output", sessionId, data }` — `data` is base64 of the raw TTY bytes, chunked as they arrive.
+- `{ type: "ended", sessionId, code, message }` — the shell exited: `code` from the exit status (`0` on success, `null` when unknown); `message` is `"This container has no shell (distroless image?)"` when the image has no `sh`, the server's message for other failures, else `null`.
+- `{ type: "error", sessionId, message }` — the connection could not be opened: `"No permission to exec into pods (pods/exec)"`, `"timed out connecting to the container"` (15 s), or the API error.
+
+Input sent before the connection is up is queued. Sessions end with the namespace session (namespace switch, disconnect) like log sessions. Nothing typed or printed is logged. Fixtures: `exec_message.json`, `exec_pod.json`.
+
 ## Port-forward
 
 ### Commands
@@ -160,7 +189,7 @@ Container logs stream through a Tauri `Channel` passed to `start_logs`, not thro
 | `stop_forward` | `{ id }` | `null` — unknown ids are a no-op; the local port is released when the call returns |
 | `open_forward` | `{ id }` | `null` — opens `http://127.0.0.1:<localPort>` in the default browser; unknown id is `notFound` |
 
-`nodeId` may be a `Pod`, `Service`, `Deployment`, `StatefulSet` or `DaemonSet` (anything else, and PodGroups, are `invalid`). `localPort` below 1024 is `invalid`; a port already in use is `conflict` ("port N is already in use"). Forwards bind `127.0.0.1` only, survive `select_namespace` and stop on `disconnect` / `connect`.
+`nodeId` may be a `Pod`, `Service`, `Deployment`, `StatefulSet` or `DaemonSet` (anything else, and PodGroups, are `invalid`). `localPort` below 1024 is `invalid`; a port already in use is `conflict` ("port N is already in use"). Forwards bind `127.0.0.1` only, survive `select_namespaces` and stop on `disconnect` / `connect`.
 
 Each accepted local connection picks its pod at that moment: a Pod target itself (Running and Ready), otherwise the ready pod with the smallest name among those the Service's or workload's selector matches. For a Service, `remotePort` is a Service port mapped to its `targetPort` (a number, or a name looked up in the chosen pod's container ports). A connection that finds no pod is closed and sets the status. A selector with only `matchExpressions` is not supported (status `error`, "unsupported selector (matchExpressions)").
 

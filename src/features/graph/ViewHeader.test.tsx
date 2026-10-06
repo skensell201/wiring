@@ -59,4 +59,10 @@ describe("ViewHeader", () => {
     render(<ViewHeader />);
     expect(screen.getByText("2 objects")).toBeInTheDocument();
   });
+
+  it("shows the too-large object count on the graph caption", () => {
+    useAppStore.setState({ tooLarge: { nodes: 1873, kinds: [{ kind: "Pod", count: 1500, worst: "ok" }] } });
+    render(<ViewHeader />);
+    expect(screen.getByText(/1873 objects$/)).toBeInTheDocument();
+  });
 });

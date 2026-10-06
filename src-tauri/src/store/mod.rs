@@ -8,8 +8,9 @@ use std::collections::HashMap;
 use k8s_openapi::api::apps::v1::{DaemonSet, Deployment, ReplicaSet, StatefulSet};
 use k8s_openapi::api::autoscaling::v2::HorizontalPodAutoscaler;
 use k8s_openapi::api::batch::v1::{CronJob, Job};
-use k8s_openapi::api::core::v1::{ConfigMap, PersistentVolume, PersistentVolumeClaim, Pod, Secret, Service, ServiceAccount};
-use k8s_openapi::api::networking::v1::Ingress;
+use k8s_openapi::api::core::v1::{ConfigMap, Node, PersistentVolume, PersistentVolumeClaim, Pod, Secret, Service, ServiceAccount};
+use k8s_openapi::api::networking::v1::{Ingress, NetworkPolicy};
+use k8s_openapi::api::rbac::v1::{ClusterRole, ClusterRoleBinding, Role, RoleBinding};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use serde::{Deserialize, Serialize};
 
@@ -30,12 +31,18 @@ pub enum Kind {
     PersistentVolume,
     ServiceAccount,
     HorizontalPodAutoscaler,
+    NetworkPolicy,
+    Role,
+    RoleBinding,
+    ClusterRole,
+    ClusterRoleBinding,
+    Node,
     /// Synthetic node kind: a collapsed group of pods. Never stored.
     PodGroup,
 }
 
 impl Kind {
-    pub const WATCHED: [Kind; 15] = [
+    pub const WATCHED: [Kind; 21] = [
         Kind::Deployment,
         Kind::StatefulSet,
         Kind::DaemonSet,
@@ -51,6 +58,12 @@ impl Kind {
         Kind::PersistentVolume,
         Kind::ServiceAccount,
         Kind::HorizontalPodAutoscaler,
+        Kind::NetworkPolicy,
+        Kind::Role,
+        Kind::RoleBinding,
+        Kind::ClusterRole,
+        Kind::ClusterRoleBinding,
+        Kind::Node,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -70,6 +83,12 @@ impl Kind {
             Kind::PersistentVolume => "PersistentVolume",
             Kind::ServiceAccount => "ServiceAccount",
             Kind::HorizontalPodAutoscaler => "HorizontalPodAutoscaler",
+            Kind::NetworkPolicy => "NetworkPolicy",
+            Kind::Role => "Role",
+            Kind::RoleBinding => "RoleBinding",
+            Kind::ClusterRole => "ClusterRole",
+            Kind::ClusterRoleBinding => "ClusterRoleBinding",
+            Kind::Node => "Node",
             Kind::PodGroup => "PodGroup",
         }
     }
@@ -79,7 +98,10 @@ impl Kind {
     }
 
     pub fn is_cluster_scoped(self) -> bool {
-        matches!(self, Kind::PersistentVolume)
+        matches!(
+            self,
+            Kind::PersistentVolume | Kind::ClusterRole | Kind::ClusterRoleBinding | Kind::Node
+        )
     }
 }
 
@@ -125,6 +147,12 @@ pub enum Object {
     PersistentVolume(PersistentVolume),
     ServiceAccount(ServiceAccount),
     HorizontalPodAutoscaler(HorizontalPodAutoscaler),
+    NetworkPolicy(NetworkPolicy),
+    Role(Role),
+    RoleBinding(RoleBinding),
+    ClusterRole(ClusterRole),
+    ClusterRoleBinding(ClusterRoleBinding),
+    Node(Node),
 }
 
 macro_rules! for_each_object {
@@ -145,6 +173,12 @@ macro_rules! for_each_object {
             Object::PersistentVolume($o) => $body,
             Object::ServiceAccount($o) => $body,
             Object::HorizontalPodAutoscaler($o) => $body,
+            Object::NetworkPolicy($o) => $body,
+            Object::Role($o) => $body,
+            Object::RoleBinding($o) => $body,
+            Object::ClusterRole($o) => $body,
+            Object::ClusterRoleBinding($o) => $body,
+            Object::Node($o) => $body,
         }
     };
 }
@@ -167,6 +201,12 @@ impl Object {
             Object::PersistentVolume(_) => Kind::PersistentVolume,
             Object::ServiceAccount(_) => Kind::ServiceAccount,
             Object::HorizontalPodAutoscaler(_) => Kind::HorizontalPodAutoscaler,
+            Object::NetworkPolicy(_) => Kind::NetworkPolicy,
+            Object::Role(_) => Kind::Role,
+            Object::RoleBinding(_) => Kind::RoleBinding,
+            Object::ClusterRole(_) => Kind::ClusterRole,
+            Object::ClusterRoleBinding(_) => Kind::ClusterRoleBinding,
+            Object::Node(_) => Kind::Node,
         }
     }
 
@@ -334,5 +374,33 @@ mod tests {
         let with_managed_fields_json = with_managed_fields.to_json_value();
         assert_eq!(plain_json, with_managed_fields_json);
         assert!(with_managed_fields_json["metadata"].get("managedFields").is_none());
+    }
+
+    #[test]
+    fn the_six_new_kinds_parse_and_cluster_scope_correctly() {
+        for (s, cluster) in [
+            ("NetworkPolicy", false),
+            ("Role", false),
+            ("RoleBinding", false),
+            ("ClusterRole", true),
+            ("ClusterRoleBinding", true),
+            ("Node", true),
+        ] {
+            let k = Kind::parse(s).unwrap_or_else(|| panic!("{s} does not parse"));
+            assert_eq!(k.as_str(), s);
+            assert_eq!(k.is_cluster_scoped(), cluster, "{s}");
+        }
+        assert_eq!(Kind::WATCHED.len(), 21);
+    }
+
+    #[test]
+    fn the_extras_fixture_loads() {
+        let s = Store::from_fixture("graph-extras").unwrap();
+        assert_eq!(s.iter_kind(Kind::NetworkPolicy).count(), 2);
+        assert_eq!(s.iter_kind(Kind::Node).count(), 5);
+        assert!(
+            s.find(Kind::ClusterRole, Some("ignored"), "view").is_some(),
+            "cluster-scoped lookups ignore the namespace"
+        );
     }
 }

@@ -7,8 +7,8 @@ import { CREATABLE_KINDS, type CreatableKind } from "./templates";
 
 /** The **+ Create** modal: a kind picker, a templated manifest to edit and **Create**. */
 export function CreateDialog() {
-  const { dialog, namespace, setCreateKind, setCreateBuffer, submitCreate, closeCreate } = useAppStore(useShallow((s) => ({
-    dialog: s.createDialog, namespace: s.connection.namespace,
+  const { dialog, namespaces, setCreateNamespace, setCreateKind, setCreateBuffer, submitCreate, closeCreate } = useAppStore(useShallow((s) => ({
+    dialog: s.createDialog, namespaces: s.connection.namespaces, setCreateNamespace: s.setCreateNamespace,
     setCreateKind: s.setCreateKind, setCreateBuffer: s.setCreateBuffer, submitCreate: s.submitCreate, closeCreate: s.closeCreate,
   })));
 
@@ -27,7 +27,20 @@ export function CreateDialog() {
               {CREATABLE_KINDS.map((k) => <option key={k} value={k}>{KIND_META[k].label}</option>)}
             </select>
           </label>
-          {namespace && <span className="text-xs text-text-muted">in {namespace}</span>}
+          {dialog.kind !== "PersistentVolume" && (
+            <label className="flex items-center gap-2 text-xs text-text-muted">
+              Namespace
+              {namespaces.length > 0 ? (
+                <select aria-label="Namespace" value={dialog.namespace} onChange={(e) => setCreateNamespace(e.target.value)} disabled={dialog.submitting}
+                  className="h-9 rounded-xl border border-border-strong bg-surface px-3 text-sm text-text-hi outline-none focus:border-accent">
+                  {(namespaces.includes(dialog.namespace) ? namespaces : [dialog.namespace, ...namespaces]).map((ns) => <option key={ns} value={ns}>{ns}</option>)}
+                </select>
+              ) : (
+                <input aria-label="Namespace" value={dialog.namespace} onChange={(e) => setCreateNamespace(e.target.value)} disabled={dialog.submitting}
+                  className="h-9 w-40 rounded-xl border border-border-strong bg-surface px-3 text-sm text-text-hi outline-none focus:border-accent" />
+              )}
+            </label>
+          )}
         </div>
         {dialog.error && (
           <div role="alert" className="mb-3 shrink-0 rounded-lg border border-status-err/40 bg-status-err/10 px-3 py-2 text-xs">

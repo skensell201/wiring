@@ -1,5 +1,6 @@
 {
   "context": "prod-eu",
   "serverVersion": "v1.33.2",
-  "namespaces": ["default", "kube-system", "payments"]
+  "namespaces": ["default", "kube-system", "payments"],
+  "canListNamespaces": true
 }

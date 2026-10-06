@@ -112,3 +112,23 @@ describe("nextSort", () => {
     expect(sortRows(rows, cols, { key: "memory", dir: "asc" }).map((r) => r.cells[0].text)).toEqual(["b", "d", "a", "c"]);
   });
 });
+
+describe("sortRows with a leading namespace column", () => {
+  const cols: TableColumn[] = [{ key: "namespace", label: "Namespace", numeric: false }, ...columns];
+  const nrow = (ns: string, name: string): TableRow => ({
+    nodeId: `Pod/${ns}/${name}`, status: "ok",
+    cells: [ns, name, "1/1", "1m"].map((text) => ({ text, status: null })),
+  });
+  const rows = [nrow("b", "a"), nrow("a", "z"), nrow("b", "b")];
+  const keys = (rs: TableRow[]) => rs.map((r) => `${r.cells[0].text}/${r.cells[1].text}`);
+
+  it("orders by namespace, then name, when unsorted", () => {
+    expect(keys(sortRows(rows, cols, null))).toEqual(["a/z", "b/a", "b/b"]);
+  });
+
+  it("sorts by namespace with names breaking ties, and the filter matches it", () => {
+    expect(keys(sortRows(rows, cols, { key: "namespace", dir: "desc" }))).toEqual(["b/a", "b/b", "a/z"]);
+    expect(keys(filterRows(rows, "a"))).toEqual(["b/a", "a/z"]);
+    expect(keys(filterRows(rows, "Z"))).toEqual(["a/z"]);
+  });
+});

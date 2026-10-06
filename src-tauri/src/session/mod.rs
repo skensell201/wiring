@@ -4,6 +4,7 @@ pub mod emitter;
 pub mod metrics;
 pub mod reducer;
 pub mod rollout;
+pub mod scope;
 pub mod shared;
 pub mod watch;
 pub mod write;
@@ -23,6 +24,9 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use crate::error::{AppError, AppResult, ErrorKind};
+use crate::exec::remote::KubeExec;
+use crate::exec::session::{ExecRequest, ExecSessions};
+use crate::exec::{ExecPod, ExecSink};
 use crate::forward::kube::KubeConnector;
 use crate::forward::manager::ForwardManager;
 use crate::forward::{self, Forward, PortOption};
@@ -34,7 +38,6 @@ use crate::store::{Kind, Store};
 use emitter::{ClosableEmitter, Emitter, K8sEvent, ObjectEvents, OutEvent};
 use reducer::{spawn_reducer, ReducerConfig, ReducerMsg};
 use shared::Shared;
-use watch::spawn_all;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -42,6 +45,9 @@ pub struct ConnectInfo {
     pub context: String,
     pub server_version: String,
     pub namespaces: Vec<String>,
+    /// `namespaces` came from listing them, not from the context-namespace fallback; only
+    /// then is all namespaces offered (and accepted by `select_namespaces`).
+    pub can_list_namespaces: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -74,16 +80,17 @@ fn exec_plugin_command(kubeconfig: &Kubeconfig, context: &str) -> Option<String>
 
 /// Users without cluster-wide `list namespaces` (common with namespace-scoped RBAC) can
 /// still browse the namespace their context names, so a 403 here must not fail `connect`.
-fn namespaces_or_fallback(listed: Result<Vec<String>, kube::Error>, context_namespace: Option<&str>) -> AppResult<Vec<String>> {
+/// The flag says whether the list came from listing (`true`) or from that fallback.
+fn namespaces_or_fallback(listed: Result<Vec<String>, kube::Error>, context_namespace: Option<&str>) -> AppResult<(Vec<String>, bool)> {
     match listed {
-        Ok(namespaces) => Ok(namespaces),
+        Ok(namespaces) => Ok((namespaces, true)),
         Err(e) => {
             let err = AppError::from(&e);
             if err.kind != ErrorKind::Forbidden {
                 return Err(err);
             }
             tracing::warn!(error = %err.message, "cannot list namespaces; falling back to the context namespace");
-            Ok(context_namespace.map(str::to_owned).into_iter().collect())
+            Ok((context_namespace.map(str::to_owned).into_iter().collect(), false))
         }
     }
 }
@@ -116,6 +123,13 @@ pub struct Session {
     next_log_id: u32,
     /// Port-forwards outlive namespace switches; they end with the connection.
     forwards: ForwardManager,
+    /// Live terminals; they end with the namespace session, like log sessions.
+    execs: ExecSessions,
+    /// What the namespace session watches (`None` before the first selection).
+    scope: Option<scope::NamespaceScope>,
+    /// The namespaces `connect` listed, which a forbidden cluster-wide watch falls back to;
+    /// `None` when listing namespaces was forbidden, and then all namespaces is refused.
+    namespaces: Option<Vec<String>>,
 }
 
 impl Session {
@@ -145,17 +159,21 @@ impl Session {
             .list(&ListParams::default())
             .await
             .map(|list| list.items.into_iter().filter_map(|n| n.metadata.name).collect::<Vec<_>>());
-        let namespaces = namespaces_or_fallback(listed, context_namespace.as_deref())?;
+        let (namespaces, can_list_namespaces) = namespaces_or_fallback(listed, context_namespace.as_deref())?;
 
         let info = ConnectInfo {
             context: context.to_string(),
             server_version: version.git_version,
             namespaces,
+            can_list_namespaces,
         };
-        Ok((Session::new(client, emitter), info))
+        let mut session = Session::new(client, emitter);
+        session.namespaces = can_list_namespaces.then(|| info.namespaces.clone());
+        Ok((session, info))
     }
 
     fn new(client: Client, emitter: Arc<dyn Emitter>) -> Session {
+        let execs = ExecSessions::new(Arc::new(KubeExec::new(client.clone())));
         let forwards = ForwardManager::new(Arc::new(KubeConnector::new(client.clone())), emitter.clone());
         Session {
             client,
@@ -168,6 +186,9 @@ impl Session {
             logs: HashMap::new(),
             next_log_id: 1,
             forwards,
+            execs,
+            scope: None,
+            namespaces: None,
         }
     }
 
@@ -184,14 +205,36 @@ impl Session {
         v
     }
 
-    /// Tear down any previous watchers and start watching `namespace`.
-    pub async fn select_namespace(&mut self, namespace: &str, expanded_groups: HashSet<NodeId>) -> AppResult<()> {
+    /// Kinds shown incompletely: watched per namespace because their cluster-wide watch was
+    /// forbidden, or forbidden in some of the selected namespaces. A denied kind is not partial.
+    pub fn partial_kinds(&self) -> Vec<Kind> {
+        let mut v: Vec<Kind> = self.shared.partial_kinds().iter().copied().collect();
+        v.sort();
+        v
+    }
+
+    /// Tear down any previous watchers and start watching `scope`. All namespaces needs
+    /// the namespace list (it is what a forbidden cluster-wide watch falls back to), so it is
+    /// refused, before anything is torn down, when `connect` could not list namespaces.
+    pub async fn select_scope(&mut self, scope: scope::NamespaceScope, expanded_groups: HashSet<NodeId>) -> AppResult<()> {
+        if scope == scope::NamespaceScope::All && self.namespaces.is_none() {
+            return Err(AppError::new(
+                ErrorKind::Invalid,
+                "all namespaces needs permission to list namespaces; pick namespaces by name",
+            ));
+        }
+        self.execs.stop_all().await;
         self.stop_watchers();
         self.shared = Shared::default();
         *self.shared.expanded_groups() = expanded_groups;
         self.ns_emitter = ClosableEmitter::new(self.emitter.clone());
 
-        let (reducer_tx, reducer_task) = spawn_reducer(ReducerConfig::default(), self.shared.clone(), Arc::new(self.ns_emitter.clone()));
+        let plan = scope::watch_plan(&scope);
+        let config = ReducerConfig {
+            streams: plan.clone(),
+            ..Default::default()
+        };
+        let (reducer_tx, reducer_task) = spawn_reducer(config, self.shared.clone(), Arc::new(self.ns_emitter.clone()));
         let (store_tx, mut store_rx) = mpsc::channel(4096);
         // Bridge StoreEvent -> ReducerMsg so watchers do not know about the reducer.
         let bridge_tx = reducer_tx.clone();
@@ -202,10 +245,13 @@ impl Session {
                 }
             }
         });
-        self.tasks = spawn_all(&self.client, namespace, &store_tx);
+        // Known limitation: the namespaces a forbidden cluster-wide watch falls back to are the
+        // list taken at `connect`; a namespace created later is not watched until reconnecting.
+        let fallback = self.namespaces.as_deref().unwrap_or_default();
+        self.tasks = watch::spawn_plan(&self.client, &plan, fallback, &store_tx);
         self.tasks.push(metrics::spawn(
             self.client.clone(),
-            namespace,
+            &scope,
             self.shared.clone(),
             reducer_tx.clone(),
             Arc::new(self.ns_emitter.clone()),
@@ -213,6 +259,7 @@ impl Session {
         self.tasks.push(bridge);
         self.tasks.push(reducer_task);
         self.reducer_tx = Some(reducer_tx);
+        self.scope = Some(scope);
         Ok(())
     }
 
@@ -241,8 +288,15 @@ impl Session {
     }
 
     pub fn list_rows(&self, kind: Kind) -> Table {
-        let store = self.shared.store();
-        crate::graph::rows::table(&store, kind, k8s_openapi::jiff::Timestamp::now())
+        let table = {
+            let store = self.shared.store();
+            crate::graph::rows::table(&store, kind, k8s_openapi::jiff::Timestamp::now())
+        };
+        if self.scope.as_ref().is_some_and(scope::NamespaceScope::is_multi) {
+            crate::graph::rows::with_namespace_column(table)
+        } else {
+            table
+        }
     }
 
     /// Watch core/v1 Events for one object (or stop when `None`).
@@ -296,6 +350,29 @@ impl Session {
         }
     }
 
+    /// The running pods and containers the Terminal tab offers for `node_id`.
+    pub fn exec_pods(&self, node_id: &str) -> AppResult<Vec<ExecPod>> {
+        crate::exec::targets::exec_pods(&self.shared.store(), node_id)
+    }
+
+    /// Validate against the store and start a terminal; connect errors arrive as messages.
+    pub fn start_exec(&mut self, req: ExecRequest, sink: Arc<dyn ExecSink>) -> AppResult<u32> {
+        let namespace = crate::exec::targets::check_target(&self.shared.store(), &req.node_id, &req.pod, &req.container)?;
+        Ok(self.execs.start(namespace, req, sink))
+    }
+
+    pub fn exec_input(&self, id: u32, data: Vec<u8>) {
+        self.execs.input(id, data);
+    }
+
+    pub fn exec_resize(&self, id: u32, cols: u16, rows: u16) {
+        self.execs.resize(id, cols, rows);
+    }
+
+    pub async fn stop_exec(&mut self, id: u32) {
+        self.execs.stop(id).await;
+    }
+
     /// The remote ports the Port-forward dialog offers for `node_id`.
     pub fn forward_ports(&self, node_id: &str) -> AppResult<Vec<PortOption>> {
         let target = forward::resolve::target(node_id)?;
@@ -337,6 +414,7 @@ impl Session {
 
     /// Ends watchers, logs and forwards (awaited, so the ports are free), then announces the disconnect.
     pub async fn shutdown(&mut self) {
+        self.execs.stop_all().await;
         self.stop_watchers();
         self.forwards.stop_all().await;
         self.emitter.emit(OutEvent::ConnectionState(emitter::ConnectionState::Disconnected));
@@ -499,6 +577,40 @@ mod tests {
     use super::*;
     use crate::store::{Kind, Store};
 
+    fn offline_session() -> Session {
+        use crate::session::emitter::ChannelEmitter;
+        let (emitter, _rx) = ChannelEmitter::new();
+        let client = Client::try_from(Config::new("https://127.0.0.1:1".parse().unwrap())).unwrap();
+        Session::new(client, Arc::new(emitter))
+    }
+
+    #[tokio::test]
+    async fn a_session_takes_a_scope_without_waiting_for_the_cluster() {
+        let mut session = offline_session();
+        session.namespaces = Some(vec!["a".into(), "b".into()]);
+        session.select_scope(scope::NamespaceScope::All, HashSet::new()).await.unwrap();
+        assert_eq!(session.scope, Some(scope::NamespaceScope::All));
+        assert!(session.partial_kinds().is_empty());
+        session.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn all_namespaces_is_refused_when_namespaces_could_not_be_listed() {
+        let mut session = offline_session();
+        assert_eq!(session.namespaces, None, "a new session has not listed namespaces");
+        let err = session.select_scope(scope::NamespaceScope::All, HashSet::new()).await.unwrap_err();
+        assert_eq!(err.kind, ErrorKind::Invalid);
+        assert_eq!(session.scope, None);
+        assert!(session.tasks.is_empty(), "nothing was started");
+        // A named namespace still works, as with namespace-scoped RBAC today.
+        session
+            .select_scope(scope::NamespaceScope::single("team-a").unwrap(), HashSet::new())
+            .await
+            .unwrap();
+        assert_eq!(session.scope, Some(scope::NamespaceScope::single("team-a").unwrap()));
+        session.shutdown().await;
+    }
+
     #[test]
     fn object_details_carry_usage_rows() {
         let store = crate::metrics::usage::tests::sampled();
@@ -593,12 +705,16 @@ mod tests {
         };
         assert_eq!(
             namespaces_or_fallback(Err(forbidden()), Some("team-a")).unwrap(),
-            vec!["team-a".to_string()]
+            (vec!["team-a".to_string()], false),
+            "a fallback list is not a listing: all namespaces is not offered"
         );
-        assert_eq!(namespaces_or_fallback(Err(forbidden()), None).unwrap(), Vec::<String>::new());
+        assert_eq!(
+            namespaces_or_fallback(Err(forbidden()), None).unwrap(),
+            (Vec::<String>::new(), false)
+        );
         assert_eq!(
             namespaces_or_fallback(Ok(vec!["a".into(), "b".into()]), Some("team-a")).unwrap(),
-            vec!["a".to_string(), "b".to_string()]
+            (vec!["a".to_string(), "b".to_string()], true)
         );
         let unauthorized = kube::Error::Api(Box::new(kube::core::Status {
             code: 401,
@@ -662,7 +778,7 @@ mod tests {
             (Kind::PodGroup, Some("g".to_string()), "Deployment/api".to_string())
         );
         assert!(parse_node_id("garbage").is_err());
-        assert!(parse_node_id("Node/x/y").is_err());
+        assert!(parse_node_id("Namespace/x/y").is_err());
     }
 
     #[test]

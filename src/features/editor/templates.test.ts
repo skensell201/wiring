@@ -3,8 +3,15 @@ import { KINDS } from "../../shared/ipc/types";
 import { CREATABLE_KINDS, template } from "./templates";
 
 describe("templates", () => {
-  it("covers every watched kind except the synthetic PodGroup", () => {
-    expect(CREATABLE_KINDS).toEqual(KINDS.filter((k) => k !== "PodGroup"));
+  it("covers every watched kind except PodGroup and the cluster-level RBAC objects and Nodes", () => {
+    const skipped = ["PodGroup", "ClusterRole", "ClusterRoleBinding", "Node"];
+    expect(CREATABLE_KINDS).toEqual(KINDS.filter((k) => !skipped.includes(k)));
+    expect(CREATABLE_KINDS).not.toContain("Node");
+    expect(CREATABLE_KINDS).not.toContain("ClusterRole");
+  });
+
+  it.each(["NetworkPolicy", "Role", "RoleBinding"] as const)("%s: namespaced template", (kind) => {
+    expect(template(kind, "shop")).toMatch(new RegExp(`kind: ${kind}\\n[\\s\\S]*namespace: shop`));
   });
 
   it.each(CREATABLE_KINDS)("%s: names the kind, a my- placeholder and the current namespace", (kind) => {

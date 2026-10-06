@@ -14,10 +14,13 @@ const IDLE = "text-text-dim hover:bg-surface hover:text-text-hi";
 
 /** Overview plus the resource categories, each kind with its live count and worst status. */
 export function ResourceTree() {
-  const { nodes, view, deniedKinds, showGraph, showTable } = useAppStore(
-    useShallow((s) => ({ nodes: s.nodes, view: s.view, deniedKinds: s.deniedKinds, showGraph: s.showGraph, showTable: s.showTable })),
+  const { nodes, tooLarge, partialKinds, view, deniedKinds, showGraph, showTable } = useAppStore(
+    useShallow((s) => ({ nodes: s.nodes, tooLarge: s.tooLarge, partialKinds: s.partialKinds, view: s.view, deniedKinds: s.deniedKinds, showGraph: s.showGraph, showTable: s.showTable })),
   );
-  const stats = useMemo(() => kindStats(nodes), [nodes]);
+  const stats = useMemo(
+    () => (tooLarge ? new Map(tooLarge.kinds.map((k) => [k.kind, { count: k.count, worst: k.worst }])) : kindStats(nodes)),
+    [nodes, tooLarge],
+  );
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
   const toggle = (id: string) =>
     setCollapsed((prev) => {
@@ -38,7 +41,7 @@ export function ResourceTree() {
       {SECTIONS.map((section) => (
         <SectionGroup key={section.id} section={section} open={!collapsed.has(section.id)} onToggle={() => toggle(section.id)}>
           {section.kinds.map((kind) => (
-            <KindRow key={kind} kind={kind} active={kind === activeKind} denied={deniedKinds.has(kind)} stat={stats.get(kind)} onClick={() => void showTable(kind)} />
+            <KindRow key={kind} kind={kind} active={kind === activeKind} denied={deniedKinds.has(kind)} partial={partialKinds.has(kind)} stat={stats.get(kind)} onClick={() => void showTable(kind)} />
           ))}
         </SectionGroup>
       ))}
@@ -62,13 +65,14 @@ function SectionGroup({ section, open, onToggle, children }: { section: Section;
   );
 }
 
-function KindRow({ kind, active, denied, stat, onClick }: {
-  kind: Kind; active: boolean; denied: boolean; stat: { count: number; worst: Status } | undefined; onClick: () => void;
+function KindRow({ kind, active, denied, partial, stat, onClick }: {
+  kind: Kind; active: boolean; denied: boolean; partial: boolean; stat: { count: number; worst: Status } | undefined; onClick: () => void;
 }) {
   return (
     <button type="button" aria-current={active ? "page" : undefined} title={denied ? "No access (RBAC)" : undefined} onClick={onClick}
       className={`${ROW} pl-8 ${active ? ACTIVE : IDLE} ${denied ? "line-through text-text-muted" : ""}`}>
       <span className="flex-1 truncate">{KIND_PLURAL[kind]}</span>
+      {partial && <span className="text-[11px] italic text-text-muted" title="Some namespaces are not readable (RBAC)">partial</span>}
       {stat && <span className="text-xs tabular-nums text-text-muted">{stat.count}</span>}
       {stat && <Dot status={stat.worst} className="size-1.5 shrink-0" />}
     </button>

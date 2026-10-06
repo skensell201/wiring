@@ -26,6 +26,9 @@ export function wireEvents(): Promise<() => void> {
       s().applySnapshot(g);
       const view = s().view;
       if (view.name === "table") void s().refreshTable(view.kind);
+      // A too-large snapshot carries no nodes to diff the open details against; the backend sends
+      // one per (debounced) rebuild, so it is the details' cue to reload too.
+      if (g.tooLarge) requestDetailsRefresh();
     },
     graph_delta: (d) => {
       s().applyDelta(d);
@@ -66,7 +69,9 @@ export function wireEvents(): Promise<() => void> {
     connection_error: (err) => {
       s().toast(err);
       if (err.kind === "forbidden" || err.kind === "notFound") {
-        void commands.deniedKinds().then((kinds) => useAppStore.setState({ deniedKinds: new Set(kinds) })).catch(() => {});
+        void Promise.all([commands.deniedKinds(), commands.partialKinds()])
+          .then(([denied, partial]) => useAppStore.setState({ deniedKinds: new Set(denied), partialKinds: new Set(partial) }))
+          .catch(() => {});
       }
     },
   });

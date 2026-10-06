@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use super::model::{node_id, Edge, Graph, GroupInfo, Node, NodeId, Problem, Relation, Status};
 use super::relations::all_edges;
-use super::status::{describe_with, problem as own_problem};
+use super::status::{describe_with, problem as own_problem, PolicyPods};
 use crate::metrics::usage::PodIndex;
 use crate::store::{Kind, Object, ObjectKey, Store};
 
@@ -27,13 +27,14 @@ impl Default for BuildOptions {
 pub fn build(store: &Store, opts: &BuildOptions) -> Graph {
     let mut nodes: HashMap<NodeId, Node> = HashMap::new();
     let pods = PodIndex::new(store);
+    let policy_pods = PolicyPods::new(store, store.iter_kind(Kind::Pod));
     for obj in store.iter() {
         // Must run before `hide_single_replicasets`, which counts a Deployment's *remaining*
         // ReplicaSet children: a stale RS has to be excluded from that count, not hidden by it.
         if is_stale_replicaset(obj) {
             continue;
         }
-        let (status, badges) = describe_with(obj, store, &pods);
+        let (status, badges) = describe_with(obj, store, &pods, &policy_pods);
         let problem = own_problem(obj, status, store);
         let id = node_id(obj.kind(), obj.namespace(), obj.name());
         nodes.insert(
@@ -57,6 +58,7 @@ pub fn build(store: &Store, opts: &BuildOptions) -> Graph {
         .collect();
 
     retain_bound_persistent_volumes(&mut nodes, &edges);
+    retain_connected_cluster_objects(&mut nodes, &mut edges);
 
     hide_single_replicasets(&mut nodes, &mut edges);
     collapse_pod_groups(&mut nodes, &mut edges, opts);
@@ -69,6 +71,7 @@ pub fn build(store: &Store, opts: &BuildOptions) -> Graph {
     let mut graph = Graph {
         nodes: nodes.into_values().collect(),
         edges,
+        too_large: None,
     };
     graph.normalize();
     graph
@@ -145,6 +148,42 @@ fn is_stale_replicaset(obj: &Object) -> bool {
 fn retain_bound_persistent_volumes(nodes: &mut HashMap<NodeId, Node>, edges: &[Edge]) {
     let bound: HashSet<&NodeId> = edges.iter().filter(|e| e.relation == Relation::Binds).map(|e| &e.source).collect();
     nodes.retain(|id, n| n.kind != Kind::PersistentVolume || bound.contains(id));
+}
+
+/// Cluster-scoped objects only appear when they touch the scope: a Node hosting a pod here, a
+/// ClusterRoleBinding with a ServiceAccount subject here, a ClusterRole a shown binding grants.
+/// Edges to what is dropped go too.
+fn retain_connected_cluster_objects(nodes: &mut HashMap<NodeId, Node>, edges: &mut Vec<Edge>) {
+    let kind_of = |id: &str| nodes.get(id).map(|n| n.kind);
+    let hosting: HashSet<NodeId> = edges
+        .iter()
+        .filter(|e| e.relation == Relation::RunsOn)
+        .map(|e| e.target.clone())
+        .collect();
+    let bound: HashSet<NodeId> = edges
+        .iter()
+        .filter(|e| e.relation == Relation::Subject && kind_of(&e.source) == Some(Kind::ClusterRoleBinding))
+        .map(|e| e.source.clone())
+        .collect();
+    let granted: HashSet<NodeId> = edges
+        .iter()
+        .filter(|e| {
+            e.relation == Relation::Grants
+                && match kind_of(&e.source) {
+                    Some(Kind::RoleBinding) => true,
+                    Some(Kind::ClusterRoleBinding) => bound.contains(&e.source),
+                    _ => false,
+                }
+        })
+        .map(|e| e.target.clone())
+        .collect();
+    nodes.retain(|id, n| match n.kind {
+        Kind::Node => hosting.contains(id),
+        Kind::ClusterRoleBinding => bound.contains(id),
+        Kind::ClusterRole => granted.contains(id),
+        _ => true,
+    });
+    edges.retain(|e| nodes.contains_key(&e.source) && nodes.contains_key(&e.target));
 }
 
 /// A Deployment with exactly one ReplicaSet child: drop the RS node, re-point RS->X edges to the Deployment.
@@ -333,13 +372,28 @@ fn link_causes(nodes: &mut HashMap<NodeId, Node>, edges: &[Edge]) {
             let relation = match n.kind {
                 Kind::Deployment | Kind::StatefulSet | Kind::DaemonSet | Kind::ReplicaSet | Kind::Job | Kind::CronJob => Relation::Owns,
                 Kind::Service => Relation::Selects,
+                // A pod stuck because its node is down: the node is the cause. Pods on a
+                // NotReady node usually stay Running but not Ready, or hang in Terminating.
+                Kind::Pod
+                    if n.problem
+                        .as_ref()
+                        .is_some_and(|p| matches!(p.reason.as_str(), "Pending" | "Unknown" | "Not ready" | "Terminating")) =>
+                {
+                    Relation::RunsOn
+                }
                 _ => return None,
             };
             outgoing
                 .get(&(n.id.as_str(), relation))?
                 .iter()
                 .filter_map(|t| nodes.get(*t))
-                .filter(|t| t.status >= Status::Warn)
+                .filter(|t| {
+                    if relation == Relation::RunsOn {
+                        t.status == Status::Err
+                    } else {
+                        t.status >= Status::Warn
+                    }
+                })
                 .max_by(|a, b| a.status.cmp(&b.status).then_with(|| b.id.cmp(&a.id)))
                 .map(|t| (n.id.clone(), t.id.clone()))
         })
@@ -357,8 +411,126 @@ mod tests {
     use crate::graph::model::{Problem, Status};
     use crate::store::{Kind, Store};
 
+    #[test]
+    fn a_pending_pod_on_a_not_ready_node_points_at_the_node() {
+        let s = Store::from_fixture("graph-extras").unwrap();
+        let g = build(&s, &BuildOptions::default());
+        let p = g
+            .nodes
+            .iter()
+            .find(|n| n.id == "Pod/s/client-1")
+            .and_then(|n| n.problem.as_ref())
+            .unwrap();
+        assert_eq!(p.cause.as_deref(), Some("Node//node-b"));
+        let other = g.nodes.iter().find(|n| n.id == "Pod/t/other-1").and_then(|n| n.problem.as_ref());
+        assert!(other.is_none_or(|p| p.cause.is_none()), "a healthy node causes nothing");
+    }
+
+    #[test]
+    fn a_running_not_ready_or_terminating_pod_on_a_not_ready_node_points_at_the_node() {
+        use crate::store::Object;
+        use k8s_openapi::api::core::v1::{PodCondition, PodStatus};
+        use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
+        let base = Store::from_fixture("graph-extras").unwrap();
+        let client = || {
+            let Some(Object::Pod(p)) = base
+                .iter_kind(Kind::Pod)
+                .find(|o| o.meta().name.as_deref() == Some("client-1"))
+                .cloned()
+            else {
+                panic!("client-1 in the fixture")
+            };
+            p
+        };
+        let cause = |pod| {
+            let mut s = base.clone();
+            s.upsert(Object::Pod(pod));
+            let g = build(&s, &BuildOptions::default());
+            let p = g
+                .nodes
+                .iter()
+                .find(|n| n.id == "Pod/s/client-1")
+                .and_then(|n| n.problem.clone())
+                .unwrap();
+            (p.reason, p.cause)
+        };
+        let mut running = client();
+        running.status = Some(PodStatus {
+            phase: Some("Running".into()),
+            conditions: Some(vec![PodCondition {
+                type_: "Ready".into(),
+                status: "False".into(),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        });
+        assert_eq!(cause(running.clone()), ("Not ready".into(), Some("Node//node-b".into())));
+        let mut terminating = running;
+        terminating.metadata.deletion_timestamp = Some(Time("2026-10-06T10:00:00Z".parse().unwrap()));
+        assert_eq!(cause(terminating), ("Terminating".into(), Some("Node//node-b".into())));
+    }
+
+    #[test]
+    fn the_policy_badge_comes_from_the_shared_precomputed_set() {
+        let s = Store::from_fixture("graph-extras").unwrap();
+        let g = build(&s, &BuildOptions::default());
+        let badged = |id: &str| g.node(id).unwrap().badges.contains(&"policy".to_string());
+        assert!(badged("Pod/s/web-1") && badged("Pod/s/client-1"));
+        assert!(!badged("Pod/t/other-1"));
+    }
+
     fn edge_ids(g: &Graph) -> Vec<&str> {
         g.edges.iter().map(|e| e.id.as_str()).collect()
+    }
+
+    #[test]
+    fn cluster_scoped_rbac_and_nodes_only_show_when_connected() {
+        let s = Store::from_fixture("graph-extras").unwrap();
+        let g = build(&s, &BuildOptions::default());
+        let has = |id: &str| g.node(id).is_some();
+        assert!(has("Node//node-a") && has("Node//node-b"), "nodes hosting pods stay");
+        assert!(!has("Node//node-c"), "a node without pods here is hidden");
+        assert!(has("ClusterRoleBinding//web-cluster"), "binds a ServiceAccount in the scope");
+        assert!(!has("ClusterRoleBinding//system-only"), "only Group subjects");
+        assert!(has("ClusterRole//view"), "granted by shown bindings");
+        assert!(!has("ClusterRole//unused"), "only granted by a hidden binding");
+        assert!(
+            g.edges.iter().all(|e| g.node(&e.source).is_some() && g.node(&e.target).is_some()),
+            "no dangling edges"
+        );
+    }
+
+    #[test]
+    fn policy_and_node_edges_retarget_to_pod_groups() {
+        let s = Store::from_fixture("graph-extras-group").unwrap();
+        let group = "PodGroup/g/Deployment/api";
+        let g = build(&s, &BuildOptions::default());
+        let ids = edge_ids(&g);
+        for e in [
+            format!("NetworkPolicy/g/api-ingress->{group}:applies"),
+            format!("{group}->NetworkPolicy/g/api-ingress:allows"),
+            format!("{group}->Node//node-a:runsOn"),
+        ] {
+            assert_eq!(ids.iter().filter(|i| **i == e).count(), 1, "{e} in {ids:?}");
+        }
+
+        let opts = BuildOptions {
+            expanded_groups: [group.to_string()].into(),
+            ..Default::default()
+        };
+        let g = build(&s, &opts);
+        let ids = edge_ids(&g);
+        assert!(g.node(group).is_none());
+        for n in 1..=6 {
+            let pod = format!("Pod/g/api-1-p{n}");
+            for e in [
+                format!("NetworkPolicy/g/api-ingress->{pod}:applies"),
+                format!("{pod}->NetworkPolicy/g/api-ingress:allows"),
+                format!("{pod}->Node//node-a:runsOn"),
+            ] {
+                assert_eq!(ids.iter().filter(|i| **i == e).count(), 1, "{e} in {ids:?}");
+            }
+        }
     }
 
     #[test]

@@ -70,6 +70,16 @@ pub enum Relation {
     UsesSa,
     #[serde(rename = "scales")]
     Scales,
+    #[serde(rename = "applies")]
+    Applies,
+    #[serde(rename = "allows")]
+    Allows,
+    #[serde(rename = "grants")]
+    Grants,
+    #[serde(rename = "subject")]
+    Subject,
+    #[serde(rename = "runsOn")]
+    RunsOn,
 }
 
 impl Relation {
@@ -84,6 +94,11 @@ impl Relation {
             Relation::Binds => "binds",
             Relation::UsesSa => "usesSA",
             Relation::Scales => "scales",
+            Relation::Applies => "applies",
+            Relation::Allows => "allows",
+            Relation::Grants => "grants",
+            Relation::Subject => "subject",
+            Relation::RunsOn => "runsOn",
         }
     }
 }
@@ -109,13 +124,60 @@ impl Edge {
     }
 }
 
+/// Above this many nodes the graph is not sent; the frontend shows tables instead.
+pub const MAX_GRAPH_NODES: usize = 1500;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KindStat {
+    pub kind: Kind,
+    pub count: usize,
+    pub worst: Status,
+}
+
+/// Sent instead of the nodes of a graph with more than `MAX_GRAPH_NODES` nodes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TooLarge {
+    pub nodes: usize,
+    pub kinds: Vec<KindStat>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Graph {
     pub nodes: Vec<Node>,
     pub edges: Vec<Edge>,
+    #[serde(rename = "tooLarge", default, skip_serializing_if = "Option::is_none")]
+    pub too_large: Option<TooLarge>,
 }
 
 impl Graph {
+    /// What crosses IPC instead of `full` when it is too large: no nodes or edges, only the node
+    /// count and per-kind totals (a PodGroup counts its pods as Pods) for the navigator.
+    pub fn summarised(full: &Graph) -> Graph {
+        let mut by_kind: std::collections::BTreeMap<Kind, (usize, Status)> = std::collections::BTreeMap::new();
+        for n in &full.nodes {
+            let (kind, count) = match (n.kind, &n.group) {
+                (Kind::PodGroup, group) => (Kind::Pod, group.as_ref().map_or(0, |g| g.count)),
+                (kind, _) => (kind, 1),
+            };
+            let entry = by_kind.entry(kind).or_insert((0, Status::Unknown));
+            entry.0 += count;
+            entry.1 = entry.1.max(n.status);
+        }
+        Graph {
+            nodes: vec![],
+            edges: vec![],
+            too_large: Some(TooLarge {
+                nodes: full.nodes.len(),
+                kinds: by_kind
+                    .into_iter()
+                    .map(|(kind, (count, worst))| KindStat { kind, count, worst })
+                    .collect(),
+            }),
+        }
+    }
+
     /// Sort nodes and edges by id and drop duplicate edges, so equal graphs compare equal.
     pub fn normalize(&mut self) {
         self.nodes.sort_by(|a, b| a.id.cmp(&b.id));
@@ -160,6 +222,60 @@ pub fn node_id(kind: Kind, namespace: Option<&str>, name: &str) -> NodeId {
 mod tests {
     use super::*;
     use crate::store::Kind;
+
+    #[test]
+    fn a_summarised_graph_keeps_only_counts() {
+        let mut full = Graph::default();
+        for i in 0..3 {
+            full.nodes.push(Node {
+                id: format!("ConfigMap/n/c{i}"),
+                kind: Kind::ConfigMap,
+                namespace: Some("n".into()),
+                name: format!("c{i}"),
+                status: if i == 0 { Status::Warn } else { Status::Ok },
+                badges: vec![],
+                group: None,
+                problem: None,
+            });
+        }
+        full.nodes.push(Node {
+            id: "PodGroup/n/Deployment/web".into(),
+            kind: Kind::PodGroup,
+            namespace: Some("n".into()),
+            name: "web".into(),
+            status: Status::Ok,
+            badges: vec![],
+            group: Some(GroupInfo {
+                count: 7,
+                ok: 7,
+                warn: 0,
+                err: 0,
+            }),
+            problem: None,
+        });
+        let s = Graph::summarised(&full);
+        assert!(s.nodes.is_empty() && s.edges.is_empty());
+        let t = s.too_large.clone().unwrap();
+        assert_eq!(t.nodes, 4);
+        assert_eq!(
+            t.kinds,
+            vec![
+                KindStat {
+                    kind: Kind::Pod,
+                    count: 7,
+                    worst: Status::Ok
+                },
+                KindStat {
+                    kind: Kind::ConfigMap,
+                    count: 3,
+                    worst: Status::Warn
+                },
+            ]
+        );
+        let json = serde_json::to_value(&s).unwrap();
+        assert_eq!(json["tooLarge"]["nodes"], 4);
+        assert!(serde_json::to_value(Graph::default()).unwrap().get("tooLarge").is_none());
+    }
 
     #[test]
     fn node_id_formats_namespaced_and_cluster_scoped() {
@@ -222,10 +338,12 @@ mod tests {
         let mut a = Graph {
             nodes: vec![c_node.clone(), a_node.clone(), b_node.clone()],
             edges: vec![e_bc.clone(), e_ab.clone()],
+            too_large: None,
         };
         let mut b = Graph {
             nodes: vec![b_node, c_node, a_node],
             edges: vec![e_ab.clone(), e_bc, e_ab],
+            too_large: None,
         };
 
         a.normalize();

@@ -11,6 +11,7 @@ use tokio::task::JoinHandle;
 
 use super::emitter::{Emitter, OutEvent};
 use super::reducer::ReducerMsg;
+use super::scope::NamespaceScope;
 use super::shared::Shared;
 use crate::metrics::sample::parse_pod_metrics;
 use crate::metrics::{MetricsSample, MetricsState, MetricsUpdate};
@@ -105,23 +106,63 @@ fn end(shared: &Shared, state: MetricsState) -> MetricsState {
     state
 }
 
-/// The live poller for `namespace`. It is pushed to the namespace session's tasks, so a
-/// namespace switch or disconnect aborts it with the watchers.
+/// One PodMetrics list per tick: cluster-wide for `All`, one per namespace of a set.
+fn scope_apis(client: Client, scope: &NamespaceScope) -> Vec<Api<DynamicObject>> {
+    let ar = ApiResource::from_gvk_with_plural(&GroupVersionKind::gvk("metrics.k8s.io", "v1beta1", "PodMetrics"), "pods");
+    match scope {
+        NamespaceScope::All => vec![Api::all_with(client, &ar)],
+        NamespaceScope::Set(set) => set.iter().map(|ns| Api::namespaced_with(client.clone(), ns, &ar)).collect(),
+    }
+}
+
+/// One tick's PodMetrics lists (one per namespace of a set), run concurrently and combined into
+/// one sample. A namespace that forbids PodMetrics is skipped, so the rest of the selection keeps
+/// its usage; the tick is forbidden only when every list is. Any other error answers for the whole
+/// tick: a missing API is missing everywhere, and a transient one keeps the last sample.
+async fn list_all<Fut>(lists: impl IntoIterator<Item = Fut>) -> Result<Vec<Value>, kube::Error>
+where
+    Fut: Future<Output = Result<Vec<Value>, kube::Error>>,
+{
+    let mut items = Vec::new();
+    let mut forbidden = None;
+    let mut listed = false;
+    for result in futures::future::join_all(lists).await {
+        match result {
+            Ok(list) => {
+                listed = true;
+                items.extend(list);
+            }
+            Err(kube::Error::Api(s)) if s.code == 403 => {
+                forbidden.get_or_insert(kube::Error::Api(s));
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    match forbidden {
+        Some(e) if !listed => Err(e),
+        _ => Ok(items),
+    }
+}
+
+/// The live poller for `scope`. It is pushed to the namespace session's tasks, so a scope
+/// switch or disconnect aborts it with the watchers.
 pub fn spawn(
     client: Client,
-    namespace: &str,
+    scope: &NamespaceScope,
     shared: Shared,
     reducer: mpsc::Sender<ReducerMsg>,
     emitter: Arc<dyn Emitter>,
 ) -> JoinHandle<()> {
-    let ar = ApiResource::from_gvk_with_plural(&GroupVersionKind::gvk("metrics.k8s.io", "v1beta1", "PodMetrics"), "pods");
-    let api: Api<DynamicObject> = Api::namespaced_with(client, namespace, &ar);
+    let apis = scope_apis(client, scope);
     tokio::spawn(run(
         move || {
-            let api = api.clone();
+            let apis = apis.clone();
             async move {
-                let list = api.list(&ListParams::default()).await?;
-                Ok(list.items.into_iter().filter_map(|o| serde_json::to_value(o).ok()).collect())
+                list_all(apis.into_iter().map(|api| async move {
+                    let list = api.list(&ListParams::default()).await?;
+                    Ok(list.items.into_iter().filter_map(|o| serde_json::to_value(o).ok()).collect())
+                }))
+                .await
             }
         },
         shared,
@@ -158,6 +199,90 @@ mod tests {
 
     fn item() -> Value {
         json!({ "metadata": { "name": "a" }, "containers": [ { "name": "c", "usage": { "cpu": "250m", "memory": "64Mi" } } ] })
+    }
+
+    #[tokio::test]
+    async fn all_namespaces_list_once_and_a_set_lists_each_namespace() {
+        let client = Client::try_from(kube::Config::new("https://127.0.0.1:1".parse().unwrap())).unwrap();
+        let urls = |scope: &NamespaceScope| -> Vec<String> {
+            scope_apis(client.clone(), scope)
+                .iter()
+                .map(|a| a.resource_url().to_string())
+                .collect()
+        };
+        assert_eq!(urls(&NamespaceScope::All), vec!["/apis/metrics.k8s.io/v1beta1/pods"]);
+        assert_eq!(
+            urls(&NamespaceScope::Set(["blog".to_string(), "shop".to_string()].into_iter().collect())),
+            vec![
+                "/apis/metrics.k8s.io/v1beta1/namespaces/blog/pods",
+                "/apis/metrics.k8s.io/v1beta1/namespaces/shop/pods"
+            ]
+        );
+    }
+
+    /// A fake namespace's PodMetrics list: `Ok` items, or an API error code.
+    fn fake_list(answer: Result<Vec<Value>, u16>) -> futures::future::BoxFuture<'static, Result<Vec<Value>, kube::Error>> {
+        Box::pin(async move { answer.map_err(api_error) })
+    }
+
+    #[tokio::test]
+    async fn a_forbidden_namespace_is_skipped_and_only_all_forbidden_is_forbidden() {
+        let items = list_all([fake_list(Ok(vec![item()])), fake_list(Err(403)), fake_list(Ok(vec![item()]))])
+            .await
+            .unwrap();
+        assert_eq!(items.len(), 2, "the allowed namespaces still give a sample");
+        let all = list_all([fake_list(Err(403)), fake_list(Err(403))]).await;
+        assert_eq!(classify(all), Outcome::Forbidden);
+        // Any other error still answers for the tick.
+        assert_eq!(
+            classify(list_all([fake_list(Err(403)), fake_list(Err(404))]).await),
+            Outcome::Unavailable
+        );
+        assert_eq!(
+            classify(list_all([fake_list(Ok(vec![])), fake_list(Err(503))]).await),
+            Outcome::Transient
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn namespaces_are_listed_concurrently() {
+        // Each list waits for the other to start: sequential lists would never finish.
+        let barrier = Arc::new(tokio::sync::Barrier::new(2));
+        let list = || {
+            let b = barrier.clone();
+            Box::pin(async move {
+                b.wait().await;
+                Ok(vec![item()])
+            }) as futures::future::BoxFuture<'static, Result<Vec<Value>, kube::Error>>
+        };
+        let items = tokio::time::timeout(Duration::from_secs(5), list_all([list(), list()]))
+            .await
+            .expect("both lists run at once")
+            .unwrap();
+        assert_eq!(items.len(), 2);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_poller_over_a_partly_forbidden_selection_keeps_its_sample() {
+        let shared = Shared::default();
+        let (tx, mut reducer) = mpsc::channel(8);
+        let (emitter, mut events) = ChannelEmitter::new();
+        let task = tokio::spawn(run(
+            || list_all([fake_list(Err(403)), fake_list(Ok(vec![item()]))]),
+            shared.clone(),
+            tx,
+            Arc::new(emitter),
+            Duration::from_secs(15),
+        ));
+        assert!(matches!(next(&mut reducer).await, Some(ReducerMsg::Rebuild)));
+        assert_eq!(
+            next_event(&mut events).await,
+            Some(OutEvent::MetricsUpdated(MetricsUpdate {
+                state: MetricsState::Available
+            }))
+        );
+        assert_eq!(shared.store().metrics.pods.len(), 1);
+        task.abort();
     }
 
     #[test]

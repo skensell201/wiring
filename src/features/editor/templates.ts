@@ -1,8 +1,10 @@
 import { KINDS, type Kind } from "../../shared/ipc/types";
 
-/** Kinds the Create dialog offers: every watched kind but the synthetic PodGroup. */
-export type CreatableKind = Exclude<Kind, "PodGroup">;
-export const CREATABLE_KINDS: CreatableKind[] = KINDS.filter((k): k is CreatableKind => k !== "PodGroup");
+/** Kinds the Create dialog offers: every watched kind but the synthetic PodGroup and the cluster-level RBAC objects and Nodes. */
+export type CreatableKind = Exclude<Kind, "PodGroup" | "ClusterRole" | "ClusterRoleBinding" | "Node">;
+const NOT_CREATABLE = new Set<Kind>(["PodGroup", "ClusterRole", "ClusterRoleBinding", "Node"]);
+export const isCreatable = (k: Kind): k is CreatableKind => !NOT_CREATABLE.has(k);
+export const CREATABLE_KINDS: CreatableKind[] = KINDS.filter(isCreatable);
 
 const PAUSE = "registry.k8s.io/pause:3.9";
 
@@ -57,6 +59,18 @@ const BODIES: Record<CreatableKind, { apiVersion: string; name: string; body: st
   HorizontalPodAutoscaler: {
     apiVersion: "autoscaling/v2", name: "my-hpa",
     body: "spec:\n  scaleTargetRef:\n    apiVersion: apps/v1\n    kind: Deployment\n    name: my-deployment\n  minReplicas: 1\n  maxReplicas: 3\n  metrics:\n    - type: Resource\n      resource:\n        name: cpu\n        target:\n          type: Utilization\n          averageUtilization: 80\n",
+  },
+  NetworkPolicy: {
+    apiVersion: "networking.k8s.io/v1", name: "my-networkpolicy",
+    body: "spec:\n  podSelector:\n    matchLabels:\n      app: my-app\n  policyTypes:\n    - Ingress\n  ingress:\n    - from:\n        - podSelector:\n            matchLabels:\n              app: my-client\n",
+  },
+  Role: {
+    apiVersion: "rbac.authorization.k8s.io/v1", name: "my-role",
+    body: "rules:\n  - apiGroups: [\"\"]\n    resources: [\"pods\"]\n    verbs: [\"get\", \"list\"]\n",
+  },
+  RoleBinding: {
+    apiVersion: "rbac.authorization.k8s.io/v1", name: "my-rolebinding",
+    body: "roleRef:\n  apiGroup: rbac.authorization.k8s.io\n  kind: Role\n  name: my-role\nsubjects:\n  - kind: ServiceAccount\n    name: default\n",
   },
 };
 

@@ -12,12 +12,18 @@ import {
 import { useCallback, useEffect, useMemo, useRef } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { useAppStore } from "../../app/store";
+import { isMulti, scopeLabel } from "../../shared/scope";
 import { RelationEdge } from "./RelationEdge";
+import { LaneNode } from "./LaneNode";
 import { ResourceNode } from "./ResourceNode";
-import { toFlow, type ResourceFlowNode } from "./toFlow";
+import { toFlow, type FlowNode } from "./toFlow";
 
-const nodeTypes = { resource: ResourceNode };
+const nodeTypes = { resource: ResourceNode, lane: LaneNode };
 const edgeTypes = { relation: RelationEdge };
+
+/** Lanes would paint solid blocks over the minimap's nodes; draw only resources there. */
+const miniMapColor = (n: FlowNode) => (n.type === "lane" ? "transparent" : "#3a3340");
+const miniMapStroke = (n: FlowNode) => (n.type === "lane" ? "transparent" : "#b997ff");
 
 /** If React Flow never reports the nodes measured (it can when nothing changed), settle anyway. */
 const FOCUS_SETTLE_FALLBACK_MS = 150;
@@ -25,15 +31,19 @@ const FOCUS_SETTLE_FALLBACK_MS = 150;
 function CanvasInner() {
   const s = useAppStore(
     useShallow((s) => ({
-      nodes: s.nodes, edges: s.edges, graphReady: s.graphReady, hiddenKinds: s.hiddenKinds,
+      nodes: s.nodes, edges: s.edges, tooLarge: s.tooLarge, graphReady: s.graphReady, hiddenKinds: s.hiddenKinds,
       search: s.search, hoveredId: s.hoveredId, selectedId: s.selectedId, expandedGroups: s.expandedGroups,
-      namespace: s.connection.namespace, context: s.connection.context, focusRequest: s.focusRequest,
+      scope: s.connection.scope, namespaces: s.connection.namespaces, context: s.connection.context, focusRequest: s.focusRequest,
       select: s.select, openActionsMenu: s.openActionsMenu, setHovered: s.setHovered, toggleGroup: s.toggleGroup,
       clearFocusRequest: s.clearFocusRequest,
     })),
   );
 
-  const flow = useMemo(() => toFlow(s), [s.nodes, s.edges, s.hiddenKinds, s.search, s.hoveredId, s.selectedId, s.expandedGroups]);
+  const flow = useMemo(() => {
+    const { lanes, nodes, edges } = toFlow(s);
+    // Lanes first, so their frames sit behind the nodes in DOM order too (they also carry zIndex -1).
+    return { nodes: lanes.length > 0 ? [...lanes, ...nodes] : (nodes as FlowNode[]), edges };
+  }, [s.nodes, s.edges, s.hiddenKinds, s.search, s.hoveredId, s.selectedId, s.expandedGroups]);
 
   const { fitView } = useReactFlow();
   const nodesInitialized = useNodesInitialized();
@@ -51,7 +61,7 @@ function CanvasInner() {
     fitView({ padding: 0.2, maxZoom: 1 });
     const timeout = setTimeout(() => { if (!focusPending.current) void fitView({ padding: 0.2, maxZoom: 1 }); }, 50);
     return () => clearTimeout(timeout);
-  }, [s.graphReady, s.namespace, fitView]);
+  }, [s.graphReady, s.scope, fitView]);
 
   // "Show in graph": centre on the requested node every time the request is bumped. Coming from a
   // table the canvas has just mounted, so the node is unmeasured: focus once now, and once more
@@ -73,23 +83,30 @@ function CanvasInner() {
     return () => clearTimeout(timeout);
   }, [focusSeq, focusNodeId, nodesInitialized, fitView, s.clearFocusRequest]);
 
-  const onNodeClick = useCallback<NodeMouseHandler<ResourceFlowNode>>((_, node) => void s.select(node.id), [s.select]);
-  const onNodeDoubleClick = useCallback<NodeMouseHandler<ResourceFlowNode>>((_, node) => {
-    if (node.data.node.kind === "PodGroup") void s.toggleGroup(node.id);
+  // Lane frames take no pointer events, so these only ever see resources; the guards keep it so.
+  const onNodeClick = useCallback<NodeMouseHandler<FlowNode>>((_, node) => {
+    if (node.type === "resource") void s.select(node.id);
+  }, [s.select]);
+  const onNodeDoubleClick = useCallback<NodeMouseHandler<FlowNode>>((_, node) => {
+    if (node.type === "resource" && node.data.node.kind === "PodGroup") void s.toggleGroup(node.id);
   }, [s.toggleGroup]);
-  const onNodeContextMenu = useCallback<NodeMouseHandler<ResourceFlowNode>>((e, node) => {
+  const onNodeContextMenu = useCallback<NodeMouseHandler<FlowNode>>((e, node) => {
+    if (node.type !== "resource") return;
     e.preventDefault();
     s.openActionsMenu(node.id, e.clientX, e.clientY);
   }, [s.openActionsMenu]);
-  const onNodeMouseEnter = useCallback<NodeMouseHandler<ResourceFlowNode>>((_, node) => s.setHovered(node.id), [s.setHovered]);
+  const onNodeMouseEnter = useCallback<NodeMouseHandler<FlowNode>>((_, node) => {
+    if (node.type === "resource") s.setHovered(node.id);
+  }, [s.setHovered]);
   const onNodeMouseLeave = useCallback(() => s.setHovered(null), [s.setHovered]);
   const onPaneClick = useCallback(() => { if (s.selectedId !== null) void s.select(null); }, [s.selectedId, s.select]);
 
   let overlay: string | null = null;
   if (!s.context) overlay = "Connect to a cluster to see its graph.";
-  else if (!s.namespace) overlay = "Select a namespace to see its graph.";
-  else if (!s.graphReady) overlay = `Loading ${s.namespace}…`;
-  else if (s.nodes.size === 0) overlay = "Namespace is empty.";
+  else if (!s.scope) overlay = "Select a namespace to see its graph.";
+  else if (!s.graphReady) overlay = `Loading ${scopeLabel(s.scope, s.namespaces)}…`;
+  else if (s.tooLarge) overlay = `${s.tooLarge.nodes.toLocaleString("en-US")} objects — too many for the graph. Use the tables, or pick fewer namespaces.`;
+  else if (s.nodes.size === 0) overlay = isMulti(s.scope) ? "These namespaces are empty." : "Namespace is empty.";
 
   return (
     <div className="relative h-full w-full bg-space">
@@ -122,8 +139,8 @@ function CanvasInner() {
           pannable
           zoomable
           position="bottom-right"
-          nodeColor="#3a3340"
-          nodeStrokeColor="#b997ff"
+          nodeColor={miniMapColor}
+          nodeStrokeColor={miniMapStroke}
           nodeStrokeWidth={2}
           maskColor="rgba(28,22,36,0.6)"
           style={{ background: "#2d2734", border: "1px solid rgb(229 231 235 / 0.12)", borderRadius: 20 }}

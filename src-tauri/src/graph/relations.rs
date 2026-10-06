@@ -2,9 +2,12 @@
 //! when both endpoints exist in the store.
 
 use k8s_openapi::api::core::v1::PodSpec;
-use k8s_openapi::api::networking::v1::Ingress;
+use k8s_openapi::api::networking::v1::{Ingress, NetworkPolicyPeer, NetworkPolicySpec};
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::LabelSelector;
+use std::collections::BTreeMap;
 
 use super::model::{node_id, Edge, Relation};
+use super::selector::label_selector_matches;
 use super::status::selector_matches;
 use crate::store::{Kind, Object, Store};
 
@@ -184,6 +187,118 @@ pub fn hpa_edges(store: &Store) -> Vec<Edge> {
     edges
 }
 
+/// The directions a policy restricts. Unset `policyTypes` means Kubernetes' default: Ingress
+/// always, Egress only when the policy has egress rules.
+pub fn policy_types(spec: &NetworkPolicySpec) -> Vec<String> {
+    match &spec.policy_types {
+        Some(types) => types.clone(),
+        None if spec.egress.as_ref().is_some_and(|e| !e.is_empty()) => vec!["Ingress".into(), "Egress".into()],
+        None => vec!["Ingress".into()],
+    }
+}
+
+/// NetworkPolicy -> each pod its `podSelector` picks (`applies`), and pod -> policy for each pod
+/// an ingress `from` peer admits (`allows`) while ingress is in effect. ipBlock peers have no
+/// graph edge.
+pub fn network_policy_edges(store: &Store) -> Vec<Edge> {
+    let mut edges = vec![];
+    let all_pods = LabelSelector::default();
+    for obj in store.iter_kind(Kind::NetworkPolicy) {
+        let Object::NetworkPolicy(np) = obj else { continue };
+        let Some(spec) = np.spec.as_ref() else { continue };
+        let policy = id_of(obj);
+        // A missing podSelector is the empty selector: every pod in the namespace.
+        let selector = spec.pod_selector.as_ref().unwrap_or(&all_pods);
+        for pod in store.iter_kind(Kind::Pod) {
+            if pod.namespace() == obj.namespace() && label_selector_matches(selector, pod.meta().labels.as_ref()) {
+                edges.push(Edge::new(policy.clone(), id_of(pod), Relation::Applies));
+            }
+        }
+        // Ingress rules of a policy that does not restrict ingress admit nothing.
+        let ingress = policy_types(spec).iter().any(|t| t == "Ingress");
+        for peer in spec
+            .ingress
+            .iter()
+            .flatten()
+            .filter(|_| ingress)
+            .flat_map(|r| r.from.iter().flatten())
+        {
+            if peer.pod_selector.is_none() && peer.namespace_selector.is_none() {
+                continue;
+            }
+            for pod in store.iter_kind(Kind::Pod) {
+                if peer_admits(peer, obj.namespace(), pod) {
+                    edges.push(Edge::new(id_of(pod), policy.clone(), Relation::Allows));
+                }
+            }
+        }
+    }
+    // A pod admitted by two peers of one policy is still one edge.
+    edges.sort_by(|a, b| a.id.cmp(&b.id));
+    edges.dedup_by(|a, b| a.id == b.id);
+    edges
+}
+
+/// Namespaces are not watched, so a `namespaceSelector` is evaluated against the label every
+/// namespace carries, `kubernetes.io/metadata.name`; selectors on other namespace labels match nothing.
+fn peer_admits(peer: &NetworkPolicyPeer, policy_ns: Option<&str>, pod: &Object) -> bool {
+    let in_namespace = match &peer.namespace_selector {
+        None => pod.namespace() == policy_ns,
+        Some(sel) => {
+            let ns = BTreeMap::from([(
+                "kubernetes.io/metadata.name".to_string(),
+                pod.namespace().unwrap_or_default().to_string(),
+            )]);
+            label_selector_matches(sel, Some(&ns))
+        }
+    };
+    in_namespace
+        && peer
+            .pod_selector
+            .as_ref()
+            .is_none_or(|sel| label_selector_matches(sel, pod.meta().labels.as_ref()))
+}
+
+/// RoleBinding/ClusterRoleBinding -> its roleRef (`grants`) and -> each ServiceAccount subject (`subject`).
+pub fn rbac_edges(store: &Store) -> Vec<Edge> {
+    let mut edges = vec![];
+    for binding in store.iter_kind(Kind::RoleBinding).chain(store.iter_kind(Kind::ClusterRoleBinding)) {
+        let (role_ref, subjects) = match binding {
+            Object::RoleBinding(b) => (&b.role_ref, b.subjects.as_deref().unwrap_or_default()),
+            Object::ClusterRoleBinding(b) => (&b.role_ref, b.subjects.as_deref().unwrap_or_default()),
+            _ => continue,
+        };
+        let role = match role_ref.kind.as_str() {
+            "Role" => store.find(Kind::Role, binding.namespace(), &role_ref.name),
+            "ClusterRole" => store.find(Kind::ClusterRole, None, &role_ref.name),
+            _ => None,
+        };
+        if let Some(role) = role {
+            edges.push(Edge::new(id_of(binding), id_of(role), Relation::Grants));
+        }
+        for s in subjects.iter().filter(|s| s.kind == "ServiceAccount") {
+            // A RoleBinding's ServiceAccount subject without a namespace is in the binding's own.
+            let ns = s.namespace.as_deref().or(binding.namespace());
+            if let Some(sa) = store.find(Kind::ServiceAccount, ns, &s.name) {
+                edges.push(Edge::new(id_of(binding), id_of(sa), Relation::Subject));
+            }
+        }
+    }
+    edges
+}
+
+/// Pod -> the Node in `spec.nodeName` (`runsOn`).
+pub fn node_edges(store: &Store) -> Vec<Edge> {
+    store
+        .iter_kind(Kind::Pod)
+        .filter_map(|pod| {
+            let Object::Pod(p) = pod else { return None };
+            let node = store.find(Kind::Node, None, p.spec.as_ref()?.node_name.as_deref()?)?;
+            Some(Edge::new(id_of(pod), id_of(node), Relation::RunsOn))
+        })
+        .collect()
+}
+
 pub fn all_edges(store: &Store) -> Vec<Edge> {
     let mut edges = owner_edges(store);
     edges.extend(service_edges(store));
@@ -191,6 +306,9 @@ pub fn all_edges(store: &Store) -> Vec<Edge> {
     edges.extend(pod_input_edges(store));
     edges.extend(pv_edges(store));
     edges.extend(hpa_edges(store));
+    edges.extend(network_policy_edges(store));
+    edges.extend(rbac_edges(store));
+    edges.extend(node_edges(store));
     edges
 }
 
@@ -204,6 +322,61 @@ mod tests {
         let mut v: Vec<String> = edges.iter().map(|e| e.id.clone()).collect();
         v.sort();
         v
+    }
+
+    #[test]
+    fn network_policies_apply_to_their_pods_and_admit_ingress_peers() {
+        let s = Store::from_fixture("graph-extras").unwrap();
+        assert_eq!(
+            ids(&network_policy_edges(&s)),
+            vec![
+                "NetworkPolicy/s/deny-all->Pod/s/client-1:applies",
+                "NetworkPolicy/s/deny-all->Pod/s/web-1:applies",
+                "NetworkPolicy/s/web-ingress->Pod/s/web-1:applies",
+                "Pod/s/client-1->NetworkPolicy/s/web-ingress:allows",
+                "Pod/t/other-1->NetworkPolicy/s/web-ingress:allows",
+            ]
+        );
+    }
+
+    #[test]
+    fn only_policies_with_ingress_in_effect_admit_peers() {
+        let s = Store::from_yaml_docs(crate::graph::rows::tests::POLICY_TYPES).unwrap();
+        let allows: Vec<String> = ids(&network_policy_edges(&s))
+            .into_iter()
+            .filter(|id| id.ends_with(":allows"))
+            .collect();
+        assert_eq!(allows, vec!["Pod/s/client-1->NetworkPolicy/s/implicit-egress:allows"]);
+    }
+
+    #[test]
+    fn bindings_grant_roles_to_service_accounts() {
+        let s = Store::from_fixture("graph-extras").unwrap();
+        assert_eq!(
+            ids(&rbac_edges(&s)),
+            vec![
+                "ClusterRoleBinding//system-only->ClusterRole//unused:grants",
+                "ClusterRoleBinding//web-cluster->ClusterRole//view:grants",
+                "ClusterRoleBinding//web-cluster->ServiceAccount/s/web:subject",
+                "RoleBinding/s/web-reader->Role/s/reader:grants",
+                "RoleBinding/s/web-reader->ServiceAccount/s/web:subject",
+                "RoleBinding/s/web-view->ClusterRole//view:grants",
+                "RoleBinding/s/web-view->ServiceAccount/s/web:subject",
+            ]
+        );
+    }
+
+    #[test]
+    fn pods_run_on_their_nodes() {
+        let s = Store::from_fixture("graph-extras").unwrap();
+        assert_eq!(
+            ids(&node_edges(&s)),
+            vec![
+                "Pod/s/client-1->Node//node-b:runsOn",
+                "Pod/s/web-1->Node//node-a:runsOn",
+                "Pod/t/other-1->Node//node-a:runsOn",
+            ]
+        );
     }
 
     #[test]
@@ -287,7 +460,10 @@ mod tests {
             + ingress_edges(&s).len()
             + pod_input_edges(&s).len()
             + pv_edges(&s).len()
-            + hpa_edges(&s).len();
+            + hpa_edges(&s).len()
+            + network_policy_edges(&s).len()
+            + rbac_edges(&s).len()
+            + node_edges(&s).len();
         assert_eq!(all.len(), expected);
     }
 }

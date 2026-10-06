@@ -24,7 +24,7 @@ beforeEach(() => { useAppStore.setState(initialState()); hoisted.handlers = null
 describe("wireEvents", () => {
   it("routes snapshot, delta, connection state, object events and errors into the store", async () => {
     const stop = await wireEvents();
-    useAppStore.setState({ connection: { ...initialState().connection, context: "prod", state: "connected", namespace: "p" } });
+    useAppStore.setState({ connection: { ...initialState().connection, context: "prod", state: "connected", scope: ["p"] } });
     hoisted.handlers!.graph_snapshot({ nodes: [node], edges: [] });
     expect(useAppStore.getState().nodes.size).toBe(1);
     hoisted.handlers!.graph_delta({ addedNodes: [{ ...node, id: "Pod/p/b", name: "b" }], updatedNodes: [], removedNodes: [], addedEdges: [], removedEdges: [] });
@@ -47,7 +47,7 @@ describe("wireEvents", () => {
 
   it("a disconnected state reopens the context picker and clears the graph", async () => {
     await wireEvents();
-    useAppStore.setState({ ...useAppStore.getState(), connection: { ...initialState().connection, context: "prod", state: "connected", namespace: "p" } });
+    useAppStore.setState({ ...useAppStore.getState(), connection: { ...initialState().connection, context: "prod", state: "connected", scope: ["p"] } });
     hoisted.handlers!.graph_snapshot({ nodes: [node], edges: [] });
     expect(useAppStore.getState().nodes.size).toBe(1);
     hoisted.handlers!.connection_state("disconnected");
@@ -71,7 +71,7 @@ describe("wireEvents", () => {
     // connect() tears the old session down first; the resulting "disconnected" belongs to the
     // reconnect in progress, whose outcome connect() itself will write.
     await wireEvents();
-    useAppStore.setState({ ...useAppStore.getState(), connection: { ...initialState().connection, context: "prod", state: "connected", namespace: "p", busy: true } });
+    useAppStore.setState({ ...useAppStore.getState(), connection: { ...initialState().connection, context: "prod", state: "connected", scope: ["p"], busy: true } });
     hoisted.handlers!.graph_snapshot({ nodes: [node], edges: [] });
     hoisted.handlers!.connection_state("disconnected");
     const s = useAppStore.getState();
@@ -185,7 +185,7 @@ describe("table refresh", () => {
       await wireEvents();
       useAppStore.setState({
         view: { name: "table", kind: "Pod" },
-        connection: { ...initialState().connection, context: "prod", state: "connected", namespace: "a" },
+        connection: { ...initialState().connection, context: "prod", state: "connected", scope: ["a"] },
       });
       hoisted.handlers!.graph_delta({ ...emptyDelta, addedNodes: [node] });
       hoisted.handlers!.connection_state("disconnected");
@@ -205,7 +205,7 @@ describe("table refresh", () => {
       await wireEvents();
       useAppStore.setState({
         view: { name: "table", kind: "Pod" },
-        connection: { ...initialState().connection, context: "prod", state: "connected", namespace: "a" },
+        connection: { ...initialState().connection, context: "prod", state: "connected", scope: ["a"] },
       });
       hoisted.handlers!.graph_delta({ ...emptyDelta, addedNodes: [node] });
       // selectNamespace cancels the pending debounce; the new namespace's rows are fetched only
@@ -213,7 +213,7 @@ describe("table refresh", () => {
       await useAppStore.getState().selectNamespace("b");
       await vi.advanceTimersByTimeAsync(300);
       expect(invoke).not.toHaveBeenCalledWith("list_rows", expect.anything());
-      expect(useAppStore.getState().connection.namespace).toBe("b");
+      expect(useAppStore.getState().connection.scope).toEqual(["b"]);
       hoisted.handlers!.graph_snapshot({ nodes: [{ ...node, id: "Pod/b/x", namespace: "b" }], edges: [] });
       expect(vi.mocked(invoke).mock.calls.filter(([cmd]) => cmd === "list_rows")).toHaveLength(1);
     } finally {
@@ -266,6 +266,29 @@ describe("metrics_updated", () => {
     hoisted.handlers!.metrics_updated({ state: "available" });
     await vi.runAllTimersAsync();
     expect(vi.mocked(invoke).mock.calls.filter(([c]) => c === "get_object")).toEqual([]);
+  });
+});
+
+describe("too-large snapshots", () => {
+  beforeEach(() => { vi.useFakeTimers(); cancelDetailsRefresh(); vi.mocked(invoke).mockClear(); });
+  afterEach(() => vi.useRealTimers());
+
+  it("refetch the visible table's rows and reload the open details", async () => {
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => (cmd === "get_object" ? { yaml: "kind: Pod\nb: 2", summary: [], related: [] } : null));
+    await wireEvents();
+    const refreshTable = vi.fn(async () => {});
+    const tooLarge = { nodes: 1873, kinds: [{ kind: "Pod" as const, count: 1873, worst: "ok" as const }] };
+    const data = { yaml: "kind: Pod", summary: [], related: [] };
+    useAppStore.setState({
+      connection: { ...initialState().connection, context: "prod", state: "connected", scope: ["p"] },
+      refreshTable, view: { name: "table", kind: "Pod" }, graphReady: true, tooLarge,
+      selectedId: "Pod/p/a", details: { nodeId: "Pod/p/a", data, events: [], loading: false, editor: viewEditor(data.yaml) },
+    });
+    hoisted.handlers!.graph_snapshot({ nodes: [], edges: [], tooLarge });
+    await vi.runAllTimersAsync();
+    expect(refreshTable).toHaveBeenCalledWith("Pod");
+    expect(vi.mocked(invoke).mock.calls.filter(([c]) => c === "get_object")).toEqual([["get_object", { nodeId: "Pod/p/a" }]]);
+    expect(useAppStore.getState().details?.data?.yaml).toBe("kind: Pod\nb: 2");
   });
 });
 

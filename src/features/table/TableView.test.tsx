@@ -19,7 +19,7 @@ const pods: Table = {
     { nodeId: "Pod/payments/db", status: "ok", cells: [{ text: "db", status: null }, { text: "Running", status: "ok" }, { text: "3", status: null }] },
   ],
 };
-const connected = () => ({ ...initialState().connection, context: "prod", state: "connected" as const, namespace: "payments" });
+const connected = () => ({ ...initialState().connection, context: "prod", state: "connected" as const, scope: ["payments"] });
 const bodyRows = () => within(screen.getAllByRole("rowgroup")[1]).getAllByRole("row");
 const names = () => bodyRows().map((r) => within(r).getAllByRole("cell")[0].textContent);
 
@@ -151,5 +151,21 @@ describe("TableView", () => {
     render(<TableView />);
     fireEvent.contextMenu(screen.getByText("db"), { clientX: 30, clientY: 40 });
     expect(useAppStore.getState().actionsMenu).toEqual({ nodeId: "Pod/payments/db", x: 30, y: 40 });
+  });
+
+  it("renders a leading Namespace column and the search filters on it", () => {
+    const multi: Table = {
+      kind: "Pod",
+      columns: [{ key: "namespace", label: "Namespace", numeric: false }, { key: "name", label: "Name", numeric: false }],
+      rows: [
+        { nodeId: "Pod/shop/web", status: "ok", cells: [{ text: "shop", status: null }, { text: "web", status: null }] },
+        { nodeId: "Pod/blog/web", status: "ok", cells: [{ text: "blog", status: null }, { text: "web", status: null }] },
+      ],
+    };
+    useAppStore.setState({ connection: { ...connected(), scope: ["shop", "blog"] }, tables: new Map([["Pod", multi]]), search: "blog" });
+    render(<TableView />);
+    expect(screen.getAllByRole("columnheader")[0]).toHaveTextContent("Namespace");
+    expect(bodyRows()).toHaveLength(1);
+    expect(within(bodyRows()[0]).getAllByRole("cell")[0]).toHaveTextContent("blog");
   });
 });

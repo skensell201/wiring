@@ -1,11 +1,13 @@
 //! kubectl-like tables per kind, computed from the Store.
 
+use std::collections::HashMap;
+
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
 use k8s_openapi::jiff;
 use serde::{Deserialize, Serialize};
 
 use super::model::{node_id, NodeId, Status};
-use super::status::describe_with;
+use super::status::{describe_with, PolicyPods};
 use crate::metrics::usage::PodIndex;
 use crate::store::{Kind, Object, Store};
 
@@ -55,6 +57,20 @@ fn coloured(text: impl Into<String>, status: Status) -> TableCell {
         text: text.into(),
         status: Some(status),
     }
+}
+
+/// `table` with a leading Namespace column, for a scope of several namespaces; rows sort by
+/// namespace, then name. Cluster-scoped objects show `—`.
+pub fn with_namespace_column(mut table: Table) -> Table {
+    table.columns.insert(0, col("namespace", "Namespace", false));
+    for row in &mut table.rows {
+        let ns = row.node_id.split('/').nth(1).unwrap_or_default();
+        row.cells.insert(0, plain(if ns.is_empty() { "—" } else { ns }));
+    }
+    table
+        .rows
+        .sort_by(|a, b| (&a.cells[0].text, &a.cells[1].text).cmp(&(&b.cells[0].text, &b.cells[1].text)));
+    table
 }
 
 /// kubectl-style relative age.
@@ -171,6 +187,24 @@ pub fn columns(kind: Kind) -> Vec<TableColumn> {
             age_c(),
         ],
         Kind::ServiceAccount => vec![name(), age_c()],
+        Kind::NetworkPolicy => vec![
+            name(),
+            col("podSelector", "Pod selector", false),
+            col("policyTypes", "Policy types", false),
+            age_c(),
+        ],
+        Kind::Role | Kind::ClusterRole => vec![name(), col("rules", "Rules", true), age_c()],
+        Kind::RoleBinding | Kind::ClusterRoleBinding => {
+            vec![name(), col("role", "Role", false), col("subjects", "Subjects", false), age_c()]
+        }
+        Kind::Node => vec![
+            name(),
+            col("status", "Status", false),
+            col("roles", "Roles", false),
+            col("version", "Version", false),
+            col("pods", "Pods", true),
+            age_c(),
+        ],
         Kind::PodGroup => vec![],
     }
 }
@@ -183,12 +217,24 @@ pub fn table(store: &Store, kind: Kind, now: jiff::Timestamp) -> Table {
     } else {
         PodIndex::default()
     };
+    let policy_pods = PolicyPods::new(store, store.iter_kind(kind));
+    // nodeName -> how many pods it hosts, for the Node table's pods column.
+    let mut node_pods: HashMap<&str, usize> = HashMap::new();
+    if kind == Kind::Node {
+        for obj in store.iter_kind(Kind::Pod) {
+            if let Object::Pod(p) = obj {
+                if let Some(n) = p.spec.as_ref().and_then(|s| s.node_name.as_deref()) {
+                    *node_pods.entry(n).or_default() += 1;
+                }
+            }
+        }
+    }
     let mut rows: Vec<TableRow> = store
         .iter_kind(kind)
         .map(|obj| {
-            let (status, badges) = describe_with(obj, store, &pods);
+            let (status, badges) = describe_with(obj, store, &pods, &policy_pods);
             let mut cells = vec![plain(obj.name())];
-            cells.extend(kind_cells(obj, store, &pods, &badges, status, now));
+            cells.extend(kind_cells(obj, store, &pods, &node_pods, &badges, status, now));
             TableRow {
                 node_id: node_id(kind, obj.namespace(), obj.name()),
                 status,
@@ -210,10 +256,68 @@ fn join<T: ToString>(items: Option<&Vec<T>>) -> String {
         .unwrap_or_default()
 }
 
+/// `ServiceAccount s/web, User alice`.
+pub(crate) fn subjects_text(subjects: &[k8s_openapi::api::rbac::v1::Subject]) -> String {
+    subjects
+        .iter()
+        .map(|s| match &s.namespace {
+            Some(ns) => format!("{} {ns}/{}", s.kind, s.name),
+            None => format!("{} {}", s.kind, s.name),
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// `Ready`, `NotReady` (Ready condition not True) or `Unknown` (no Ready condition).
+pub(crate) fn node_ready_text(n: &k8s_openapi::api::core::v1::Node) -> String {
+    let ready = n
+        .status
+        .as_ref()
+        .and_then(|s| s.conditions.as_ref())
+        .and_then(|cs| cs.iter().find(|c| c.type_ == "Ready"));
+    match ready {
+        Some(c) if c.status == "True" => "Ready".into(),
+        Some(_) => "NotReady".into(),
+        None => "Unknown".into(),
+    }
+}
+
+/// Whether the node is cordoned (`kubectl cordon` sets `spec.unschedulable`).
+pub(crate) fn node_cordoned(n: &k8s_openapi::api::core::v1::Node) -> bool {
+    n.spec.as_ref().and_then(|s| s.unschedulable).unwrap_or(false)
+}
+
+/// The STATUS column as kubectl prints it: `Ready`, `NotReady,SchedulingDisabled`, ...
+pub(crate) fn node_status_text(n: &k8s_openapi::api::core::v1::Node) -> String {
+    let ready = node_ready_text(n);
+    if node_cordoned(n) {
+        format!("{ready},SchedulingDisabled")
+    } else {
+        ready
+    }
+}
+
+/// Roles from `node-role.kubernetes.io/<role>` labels, `<none>` like kubectl.
+pub(crate) fn node_roles(n: &k8s_openapi::api::core::v1::Node) -> String {
+    let roles: Vec<&str> = n
+        .metadata
+        .labels
+        .iter()
+        .flatten()
+        .filter_map(|(k, _)| k.strip_prefix("node-role.kubernetes.io/"))
+        .collect();
+    if roles.is_empty() {
+        "<none>".into()
+    } else {
+        roles.join(",")
+    }
+}
+
 fn kind_cells<'a>(
     obj: &'a Object,
     store: &'a Store,
     pods: &PodIndex<'a>,
+    node_pods: &HashMap<&str, usize>,
     badges: &[String],
     status: Status,
     now: jiff::Timestamp,
@@ -408,12 +512,54 @@ fn kind_cells<'a>(
                 age_cell,
             ]
         }
+        Object::NetworkPolicy(np) => {
+            let spec = np.spec.as_ref();
+            vec![
+                // An absent podSelector behaves like an empty one: it selects every pod.
+                plain(crate::graph::selector::selector_text(
+                    spec.and_then(|s| s.pod_selector.as_ref()).unwrap_or(&Default::default()),
+                )),
+                plain(
+                    spec.map(|s| crate::graph::relations::policy_types(s).join(", "))
+                        .unwrap_or_default(),
+                ),
+                age_cell,
+            ]
+        }
+        Object::Role(r) => vec![plain(r.rules.as_ref().map_or(0, |v| v.len()).to_string()), age_cell],
+        Object::ClusterRole(r) => vec![plain(r.rules.as_ref().map_or(0, |v| v.len()).to_string()), age_cell],
+        Object::RoleBinding(b) => vec![
+            plain(format!("{}/{}", b.role_ref.kind, b.role_ref.name)),
+            plain(subjects_text(b.subjects.as_deref().unwrap_or_default())),
+            age_cell,
+        ],
+        Object::ClusterRoleBinding(b) => vec![
+            plain(format!("{}/{}", b.role_ref.kind, b.role_ref.name)),
+            plain(subjects_text(b.subjects.as_deref().unwrap_or_default())),
+            age_cell,
+        ],
+        Object::Node(n) => {
+            let pods = node_pods.get(obj.name()).copied().unwrap_or(0);
+            vec![
+                coloured(node_status_text(n), status),
+                plain(node_roles(n)),
+                plain(
+                    n.status
+                        .as_ref()
+                        .and_then(|s| s.node_info.as_ref())
+                        .map(|i| i.kubelet_version.clone())
+                        .unwrap_or_default(),
+                ),
+                plain(pods.to_string()),
+                age_cell,
+            ]
+        }
         Object::ServiceAccount(_) => vec![age_cell],
     }
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::store::{Kind, Store};
 
@@ -520,5 +666,87 @@ mod tests {
         let s = Store::default();
         assert!(table(&s, Kind::Pod, now()).rows.is_empty());
         assert!(table(&s, Kind::PodGroup, now()).rows.is_empty());
+    }
+
+    #[test]
+    fn a_namespace_column_leads_and_rows_sort_by_namespace_then_name() {
+        let yaml = "apiVersion: v1\nkind: ConfigMap\nmetadata: { name: z, namespace: a }\n---\napiVersion: v1\nkind: ConfigMap\nmetadata: { name: b, namespace: b }\n---\napiVersion: v1\nkind: ConfigMap\nmetadata: { name: a, namespace: b }\n";
+        let store = Store::from_yaml_docs(yaml).unwrap();
+        let t = with_namespace_column(table(&store, Kind::ConfigMap, jiff::Timestamp::now()));
+        assert_eq!(t.columns[0].key, "namespace");
+        assert_eq!(t.columns[1].key, "name");
+        let rows: Vec<(String, String)> = t.rows.iter().map(|r| (r.cells[0].text.clone(), r.cells[1].text.clone())).collect();
+        assert_eq!(
+            rows,
+            vec![("a".into(), "z".into()), ("b".into(), "a".into()), ("b".into(), "b".into())]
+        );
+        let pv = Store::from_yaml_docs("apiVersion: v1\nkind: PersistentVolume\nmetadata: { name: pv-1 }\n").unwrap();
+        let t = with_namespace_column(table(&pv, Kind::PersistentVolume, jiff::Timestamp::now()));
+        assert_eq!(t.rows[0].cells[0].text, "—");
+    }
+
+    pub(crate) const POLICY_TYPES: &str = "apiVersion: v1
+kind: Pod
+metadata: { name: web-1, namespace: s, labels: { app: web } }
+---
+apiVersion: v1
+kind: Pod
+metadata: { name: client-1, namespace: s, labels: { app: client } }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: implicit-egress, namespace: s }
+spec:
+  podSelector: { matchLabels: { app: web } }
+  ingress: [ { from: [ { podSelector: { matchLabels: { app: client } } } ] } ]
+  egress: [ { to: [ { podSelector: { matchLabels: { app: client } } } ] } ]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: implicit-ingress, namespace: s }
+spec:
+  podSelector: { matchLabels: { app: web } }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: egress-only, namespace: s }
+spec:
+  podSelector: { matchLabels: { app: web } }
+  policyTypes: [ Egress ]
+  ingress: [ { from: [ { podSelector: { matchLabels: { app: client } } } ] } ]
+";
+
+    #[test]
+    fn unset_policy_types_follow_kubernetes_defaults() {
+        let s = Store::from_yaml_docs(POLICY_TYPES).unwrap();
+        let t = table(&s, Kind::NetworkPolicy, now());
+        assert_eq!(cell(&t, "implicit-egress", "policyTypes").text, "Ingress, Egress");
+        assert_eq!(cell(&t, "implicit-ingress", "policyTypes").text, "Ingress");
+        assert_eq!(cell(&t, "egress-only", "policyTypes").text, "Egress");
+    }
+
+    #[test]
+    fn the_new_kinds_have_kubectl_columns() {
+        let s = Store::from_fixture("graph-extras").unwrap();
+        let nodes = table(&s, Kind::Node, now());
+        assert_eq!(cell(&nodes, "node-a", "status").text, "Ready");
+        assert_eq!(cell(&nodes, "node-a", "roles").text, "control-plane");
+        assert_eq!(cell(&nodes, "node-a", "version").text, "v1.36.1");
+        assert_eq!(cell(&nodes, "node-a", "pods").text, "2");
+        assert_eq!(cell(&nodes, "node-b", "status").text, "NotReady");
+        assert_eq!(cell(&nodes, "node-c", "roles").text, "<none>");
+        assert_eq!(cell(&nodes, "node-d", "status").text, "Ready,SchedulingDisabled");
+        let policies = table(&s, Kind::NetworkPolicy, now());
+        assert_eq!(cell(&policies, "web-ingress", "podSelector").text, "app=web");
+        assert_eq!(cell(&policies, "deny-all", "podSelector").text, "all pods");
+        assert_eq!(cell(&policies, "web-ingress", "policyTypes").text, "Ingress");
+        assert_eq!(cell(&table(&s, Kind::Role, now()), "reader", "rules").text, "2");
+        let bindings = table(&s, Kind::RoleBinding, now());
+        assert_eq!(cell(&bindings, "web-reader", "role").text, "Role/reader");
+        assert_eq!(cell(&bindings, "web-reader", "subjects").text, "ServiceAccount s/web, User alice");
+        assert_eq!(
+            cell(&table(&s, Kind::ClusterRoleBinding, now()), "web-cluster", "role").text,
+            "ClusterRole/view"
+        );
     }
 }

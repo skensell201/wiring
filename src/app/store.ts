@@ -1,14 +1,15 @@
 import { create } from "zustand";
-import { template, type CreatableKind } from "../features/editor/templates";
+import { isCreatable, template, type CreatableKind } from "../features/editor/templates";
 import { KIND_META } from "../features/graph/kindMeta";
 import { logBuffer } from "../features/logs/logBuffer";
 import { applyLogMessage, initialLogs, type LogsState } from "../features/logs/logsState";
 import { commands } from "../shared/ipc/commands";
 import type {
-  AppError, ConnectionState, ContextInfo, Graph, GraphDelta, GraphEdge, Forward, GraphNode, K8sEvent, Kind, LogMessage, NodeId, ObjectDetails,
-  Status, Table,
+  AppError, ConnectionState, ContextInfo, Graph, GraphDelta, GraphEdge, Forward, GraphNode, K8sEvent, Kind, LogMessage, NamespaceScope, NodeId, ObjectDetails,
+  Status, Table, TooLarge,
 } from "../shared/ipc/types";
 import { toAppError } from "../shared/ipc/types";
+import { firstNamespace, inScope } from "../shared/scope";
 import { settings } from "../shared/settings";
 import { cancelTableRefresh } from "./tableRefresh";
 
@@ -30,11 +31,11 @@ export interface EditorState {
 
 export interface Details { nodeId: NodeId; data: ObjectDetails | null; events: K8sEvent[]; loading: boolean; editor: EditorState }
 
-export interface CreateDialog { open: boolean; kind: CreatableKind; buffer: string; error: AppError | null; submitting: boolean }
+export interface CreateDialog { open: boolean; kind: CreatableKind; buffer: string; namespace: string; error: AppError | null; submitting: boolean }
 export interface DeleteDialog { open: boolean; nodeId: NodeId | null }
 /** "Discard your edits?" — opened by Cancel on a dirty buffer, or by a selection or namespace change
- *  while dirty (which then waits in `pendingSelect` / `pendingDeselect` / `pendingNamespace` until confirmed). */
-export interface DiscardDialog { open: boolean; pendingSelect: NodeId | null; pendingDeselect: boolean; pendingNamespace: string | null }
+ *  while dirty (which then waits in `pendingSelect` / `pendingDeselect` / `pendingScope` until confirmed). */
+export interface DiscardDialog { open: boolean; pendingSelect: NodeId | null; pendingDeselect: boolean; pendingScope: NamespaceScope | null }
 
 /** The Actions menu, open for `nodeId` at viewport position (x, y). */
 /** `flipY`: where the menu's bottom edge goes if it would overflow the viewport (the anchor's top). */
@@ -44,7 +45,7 @@ export type ActionDialog =
   | { type: "restart"; nodeId: NodeId }
   | { type: "rollback"; nodeId: NodeId; revision: number }
   | { type: "forward"; nodeId: NodeId };
-export type DetailsTab = "overview" | "yaml" | "events" | "logs" | "history";
+export type DetailsTab = "overview" | "yaml" | "events" | "logs" | "terminal" | "history";
 
 export function viewEditor(original = ""): EditorState {
   return { mode: "view", buffer: "", original, error: null, saving: false };
@@ -77,14 +78,17 @@ export interface Connection {
   context: string | null;
   serverVersion: string | null;
   namespaces: string[];
-  namespace: string | null;
+  /** false when `namespaces` is only the context namespace: no "All namespaces", and the picker takes free text. */
+  canListNamespaces: boolean;
+  /** The watched namespaces; `null` until one is chosen. */
+  scope: NamespaceScope | null;
   busy: boolean;
 }
 
 export interface GraphState {
   nodes: Map<NodeId, GraphNode>;
   edges: Map<string, GraphEdge>;
-  /** false between select_namespace and the next graph_snapshot — deltas are ignored meanwhile. */
+  /** false between select_namespaces and the next graph_snapshot — deltas are ignored meanwhile. */
   graphReady: boolean;
   selectedId: NodeId | null;
   details: Details | null;
@@ -101,6 +105,10 @@ export interface AppState extends GraphState {
   expandedGroups: Set<NodeId>;
   hiddenKinds: Set<Kind>;
   deniedKinds: Set<Kind>;
+  /** Kinds listed only in some of the namespaces (forbidden cluster-wide, or in some of them). */
+  partialKinds: Set<Kind>;
+  /** Set instead of `nodes` when the scope has too many objects for a graph. */
+  tooLarge: TooLarge | null;
   search: string;
   toasts: Toast[];
   pickerOpen: boolean;
@@ -138,6 +146,7 @@ export interface AppState extends GraphState {
   reconnect: () => Promise<void>;
   disconnect: () => Promise<void>;
   selectNamespace: (namespace: string) => Promise<void>;
+  selectScope: (scope: NamespaceScope) => Promise<void>;
   select: (id: NodeId | null) => Promise<void>;
   setHovered: (id: NodeId | null) => void;
   toggleGroup: (id: NodeId) => Promise<void>;
@@ -171,6 +180,7 @@ export interface AppState extends GraphState {
   // create
   openCreate: (kind?: CreatableKind) => void;
   setCreateKind: (kind: CreatableKind) => void;
+  setCreateNamespace: (namespace: string) => void;
   setCreateBuffer: (text: string) => void;
   submitCreate: () => Promise<void>;
   closeCreate: () => void;
@@ -214,10 +224,13 @@ let toastSeq = 0;
  *  with the next session, and a stop must orphan the channel it leaves behind. */
 let logsGen = 0;
 
+/** Kinds whose chips start off: RBAC objects and Nodes would crowd most graphs. */
+export const DEFAULT_HIDDEN_KINDS: readonly Kind[] = ["Role", "RoleBinding", "ClusterRole", "ClusterRoleBinding", "Node"];
+
 export function initialState(): Omit<AppState, keyof Actions> {
   return {
     contexts: [],
-    connection: { state: "disconnected", context: null, serverVersion: null, namespaces: [], namespace: null, busy: false },
+    connection: { state: "disconnected", context: null, serverVersion: null, namespaces: [], canListNamespaces: true, scope: null, busy: false },
     nodes: new Map(),
     edges: new Map(),
     graphReady: false,
@@ -225,8 +238,10 @@ export function initialState(): Omit<AppState, keyof Actions> {
     details: null,
     hoveredId: null,
     expandedGroups: new Set(),
-    hiddenKinds: new Set(),
+    hiddenKinds: new Set(DEFAULT_HIDDEN_KINDS),
     deniedKinds: new Set(),
+    partialKinds: new Set(),
+    tooLarge: null,
     search: "",
     toasts: [],
     pickerOpen: false,
@@ -235,9 +250,9 @@ export function initialState(): Omit<AppState, keyof Actions> {
     sidebarCollapsed: false,
     tables: new Map(),
     focusRequest: null,
-    createDialog: { open: false, kind: "Deployment", buffer: "", error: null, submitting: false },
+    createDialog: { open: false, kind: "Deployment", buffer: "", namespace: "", error: null, submitting: false },
     deleteDialog: { open: false, nodeId: null },
-    discardDialog: { open: false, pendingSelect: null, pendingDeselect: false, pendingNamespace: null },
+    discardDialog: { open: false, pendingSelect: null, pendingDeselect: false, pendingScope: null },
     logs: initialLogs(),
     actionsMenu: null,
     actionDialog: null,
@@ -268,10 +283,10 @@ function lostEditsToast(s: Pick<AppState, "details">): Omit<Toast, "id"> | null 
 
 type Actions = Pick<AppState,
   | "applySnapshot" | "applyDelta" | "setObjectEvents" | "setConnectionState" | "loadContexts" | "addKubeconfig" | "connect"
-  | "reconnect" | "disconnect" | "selectNamespace" | "select" | "setHovered" | "toggleGroup" | "toggleKind" | "setSearch" | "toast"
+  | "reconnect" | "disconnect" | "selectNamespace" | "selectScope" | "select" | "setHovered" | "toggleGroup" | "toggleKind" | "setSearch" | "toast"
   | "dismissToast" | "setPickerOpen" | "showGraph" | "showTable" | "refreshTable" | "focusInGraph" | "clearFocusRequest"
   | "toggleSidebar" | "startEdit" | "setBuffer" | "reviewEdit" | "backToEdit" | "applyEdit" | "cancelEdit" | "reloadEdit"
-  | "confirmDiscard" | "cancelDiscard" | "openCreate" | "setCreateKind" | "setCreateBuffer" | "submitCreate" | "closeCreate"
+  | "confirmDiscard" | "cancelDiscard" | "openCreate" | "setCreateKind" | "setCreateNamespace" | "setCreateBuffer" | "submitCreate" | "closeCreate"
   | "requestDelete" | "confirmDelete" | "cancelDelete" | "startLogs" | "stopLogs" | "setLogsContainer" | "toggleLogsPrevious"
   | "toggleLogsTimestamps" | "toggleDetailsMaximized" | "openActionsMenu" | "closeActionsMenu" | "openActionDialog"
   | "closeActionDialog" | "scaleObject" | "restartObject" | "rollbackObject" | "requestTab" | "consumeRequestedTab"
@@ -312,7 +327,8 @@ export function kindStats(nodes: Map<NodeId, GraphNode>): Map<Kind, { count: num
 export function applySnapshot<S extends GraphState>(s: S, g: Graph): S {
   const nodes = new Map(g.nodes.map((n) => [n.id, n]));
   const edges = new Map(g.edges.map((e) => [e.id, e]));
-  const dropped = s.selectedId !== null && s.nodes.has(s.selectedId) && !nodes.has(s.selectedId);
+  // A too-large snapshot carries no nodes at all: the selection's absence says nothing about it.
+  const dropped = !g.tooLarge && s.selectedId !== null && s.nodes.has(s.selectedId) && !nodes.has(s.selectedId);
   return dropSelection({ ...s, nodes, edges, graphReady: true }, dropped);
 }
 
@@ -353,13 +369,15 @@ export const useAppStore = create<AppState>()((set, get) => ({
   applySnapshot: (g) => {
     const before = get();
     set((s) => {
-      // Belt and braces: a snapshot of the previous namespace can still be queued behind
-      // select_namespace; the namespaced nodes tell which namespace it belongs to.
-      const namespaced = g.nodes.find((n) => n.namespace !== null);
-      if (namespaced && namespaced.namespace !== s.connection.namespace) return s;
-      return applySnapshot(s, g);
+      // Belt and braces: a snapshot of the previous selection can still be queued behind
+      // select_namespaces; nodes outside the current scope tell it apart.
+      const scope = s.connection.scope;
+      if (g.nodes.some((n) => n.namespace !== null && !inScope(scope, n.namespace))) return s;
+      return { ...applySnapshot(s, g), tooLarge: g.tooLarge ?? null };
     });
     refreshDetailsIfTouched(before, get());
+    const s = get();
+    if (s.tooLarge && s.view.name === "graph") set({ view: { name: "table", kind: s.lastTableKind ?? "Deployment" } });
   },
   applyDelta: (d) => {
     const before = get();
@@ -401,7 +419,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
         contexts: get().contexts,
         hiddenKinds: get().hiddenKinds,
         sidebarCollapsed: get().sidebarCollapsed,
-        connection: { state: "connected", context: info.context, serverVersion: info.serverVersion, namespaces: info.namespaces, namespace: null, busy: false },
+        connection: { state: "connected", context: info.context, serverVersion: info.serverVersion, namespaces: info.namespaces, canListNamespaces: info.canListNamespaces, scope: null, busy: false },
       });
       if (lost) get().toast(lost);
       return true;
@@ -415,10 +433,10 @@ export const useAppStore = create<AppState>()((set, get) => ({
   },
 
   reconnect: async () => {
-    const { context, namespace } = get().connection;
+    const { context, scope } = get().connection;
     if (!context) return;
     const ok = await get().connect(context);
-    if (ok && namespace) await get().selectNamespace(namespace);
+    if (ok && scope) await get().selectScope(scope);
   },
 
   disconnect: async () => {
@@ -432,32 +450,48 @@ export const useAppStore = create<AppState>()((set, get) => ({
     }
   },
 
-  selectNamespace: async (namespace) => {
+  selectNamespace: (namespace) => get().selectScope([namespace]),
+
+  selectScope: async (scope) => {
     const editor = get().details?.editor;
     if (editor && isDirty(editor)) {
-      set({ discardDialog: { open: true, pendingSelect: null, pendingDeselect: false, pendingNamespace: namespace } });
+      set({ discardDialog: { open: true, pendingSelect: null, pendingDeselect: false, pendingScope: scope } });
       return;
     }
     cancelTableRefresh();
     cancelDetailsRefresh();
     void get().stopLogs();
-    const { expandedGroups, connection } = get();
+    const { expandedGroups } = get();
     const expanded = [...expandedGroups];
-    // Remembered only once the switch is really happening (not while the discard dialog is up).
-    if (connection.context) void settings.setLastNamespace(connection.context, namespace);
+    // What a refused switch restores: the backend keeps the previous scope's watchers then.
+    const before = get();
+    const previous = {
+      nodes: before.nodes, edges: before.edges, graphReady: before.graphReady, tooLarge: before.tooLarge,
+      deniedKinds: before.deniedKinds, partialKinds: before.partialKinds, tables: before.tables, scope: before.connection.scope,
+    };
     set((s) => ({
-      nodes: new Map(), edges: new Map(), graphReady: false, selectedId: null, details: null, hoveredId: null,
-      deniedKinds: new Set(), tables: new Map(), focusRequest: null, connection: { ...s.connection, namespace },
+      nodes: new Map(), edges: new Map(), graphReady: false, tooLarge: null, selectedId: null, details: null, hoveredId: null,
+      deniedKinds: new Set(), partialKinds: new Set(), tables: new Map(), focusRequest: null, connection: { ...s.connection, scope },
       deleteDialog: initialState().deleteDialog, discardDialog: initialState().discardDialog, detailsMaximized: false,
       actionsMenu: null, actionDialog: null, requestedTab: null,
     }));
     try {
-      await commands.selectNamespace(namespace, expanded);
-      const denied = await commands.deniedKinds();
-      // Only if this is still the current selection — a newer one owns deniedKinds now.
-      if (get().connection.namespace === namespace) set({ deniedKinds: new Set(denied) });
+      await commands.selectNamespaces(scope, expanded);
+    } catch (e) {
+      const { scope: prevScope, ...graph } = previous;
+      if (get().connection.scope === scope) set((s) => ({ ...graph, connection: { ...s.connection, scope: prevScope } }));
+      get().toast(toAppError(e));
+      return;
+    }
+    // Remembered only once the backend accepted it (and not while the discard dialog was up).
+    const { connection } = get();
+    if (connection.context && connection.scope === scope) void settings.setLastScope(connection.context, scope);
+    try {
+      const [denied, partial] = await Promise.all([commands.deniedKinds(), commands.partialKinds()]);
+      // Only if this is still the current selection - a newer one owns these sets now.
+      if (get().connection.scope === scope) set({ deniedKinds: new Set(denied), partialKinds: new Set(partial) });
       // An open table is refetched by the graph_snapshot handler once the backend has the new
-      // namespace's objects; fetching here would race the watchers and land an empty table.
+      // objects; fetching here would race the watchers and land an empty table.
     } catch (e) {
       get().toast(toAppError(e));
     }
@@ -467,7 +501,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
     if (id === get().selectedId) return;
     const editor = get().details?.editor;
     if (editor && isDirty(editor)) {
-      set({ discardDialog: { open: true, pendingSelect: id, pendingDeselect: id === null, pendingNamespace: null } });
+      set({ discardDialog: { open: true, pendingSelect: id, pendingDeselect: id === null, pendingScope: null } });
       return;
     }
     // The switch is really happening: the logs of the node being left go with it.
@@ -519,13 +553,13 @@ export const useAppStore = create<AppState>()((set, get) => ({
   },
 
   refreshTable: async (kind) => {
-    const ns = get().connection.namespace;
+    const scope = get().connection.scope;
     const onTable = (v: View) => v.name === "table" && v.kind === kind;
     const wasOnTable = onTable(get().view);
     try {
       const table = await commands.listRows(kind);
       // The namespace moved on while this fetch was in flight — its rows are stale.
-      if (ns === null || get().connection.namespace !== ns) return;
+      if (scope === null || get().connection.scope !== scope) return;
       // The user left this table while its refetch was in flight; showing it again refetches.
       if (wasOnTable && !onTable(get().view)) return;
       set((s) => {
@@ -544,6 +578,10 @@ export const useAppStore = create<AppState>()((set, get) => ({
   },
 
   focusInGraph: async (id) => {
+    if (get().tooLarge) {
+      get().toast({ kind: "info", message: "The graph is too large to show \u2014 use the table" });
+      return;
+    }
     const target = get().nodes.get(id);
     if (!target) {
       const name = id.split("/").pop() ?? id;
@@ -612,7 +650,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
     const d = get().details;
     if (!d || d.editor.mode === "view" || d.editor.saving) return;
     if (isDirty(d.editor)) {
-      set({ discardDialog: { open: true, pendingSelect: null, pendingDeselect: false, pendingNamespace: null } });
+      set({ discardDialog: { open: true, pendingSelect: null, pendingDeselect: false, pendingScope: null } });
       return;
     }
     set({ details: { ...d, editor: viewEditor(d.editor.original) } });
@@ -642,7 +680,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
       discardDialog: initialState().discardDialog,
       ...(details ? { details: { ...details, editor: viewEditor(details.editor.original) } } : {}),
     });
-    if (discardDialog.pendingNamespace !== null) void get().selectNamespace(discardDialog.pendingNamespace);
+    if (discardDialog.pendingScope !== null) void get().selectScope(discardDialog.pendingScope);
     else if (discardDialog.pendingSelect !== null || discardDialog.pendingDeselect) void get().select(discardDialog.pendingSelect);
   },
 
@@ -653,17 +691,25 @@ export const useAppStore = create<AppState>()((set, get) => ({
   openCreate: (requested) =>
     set((s) => {
       // Creating from a kind's table most likely means "one more of these".
-      const tableKind = s.view.name === "table" && s.view.kind !== "PodGroup" ? s.view.kind : null;
+      const tableKind = s.view.name === "table" && isCreatable(s.view.kind) ? s.view.kind : null;
       const kind = requested ?? tableKind ?? "Deployment";
-      return { createDialog: { open: true, kind, buffer: template(kind, s.connection.namespace), error: null, submitting: false } };
+      const namespace = firstNamespace(s.connection.scope, s.connection.namespaces) ?? "default";
+      return { createDialog: { open: true, kind, buffer: template(kind, namespace), namespace, error: null, submitting: false } };
     }),
 
   setCreateKind: (kind) =>
     set((s) => {
       const d = s.createDialog;
       // Re-template unless the user has started typing into the previous one.
-      const untouched = d.buffer === "" || d.buffer === template(d.kind, s.connection.namespace);
-      return { createDialog: { ...d, kind, buffer: untouched ? template(kind, s.connection.namespace) : d.buffer } };
+      const untouched = d.buffer === "" || d.buffer === template(d.kind, d.namespace);
+      return { createDialog: { ...d, kind, buffer: untouched ? template(kind, d.namespace) : d.buffer } };
+    }),
+
+  setCreateNamespace: (namespace) =>
+    set((s) => {
+      const d = s.createDialog;
+      const untouched = d.buffer === "" || d.buffer === template(d.kind, d.namespace);
+      return { createDialog: { ...d, namespace, buffer: untouched ? template(d.kind, namespace) : d.buffer } };
     }),
 
   setCreateBuffer: (buffer) => set((s) => ({ createDialog: { ...s.createDialog, buffer } })),
@@ -674,7 +720,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
     set({ createDialog: { ...d, submitting: true, error: null } });
     let nodeId: NodeId;
     try {
-      nodeId = await commands.createObject(get().connection.namespace ?? "", d.buffer);
+      nodeId = await commands.createObject(d.namespace, d.buffer);
     } catch (e) {
       set((s) => ({ createDialog: { ...s.createDialog, submitting: false, error: toAppError(e) } }));
       return;

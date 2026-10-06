@@ -50,8 +50,11 @@ Wiring reads your kubeconfig from `~/.kube/config`, or from `KUBECONFIG` when it
 - Pods that belong to the same owner collapse into one group. Double-click a group to expand it.
 - Status dots and badges show what is healthy, degraded or failing.
 - Select a yellow or red object to see why. Overview starts with the reason and the Kubernetes message behind it, followed by the chain of objects that leads to the root cause (for example Deployment → Pod → `ImagePullBackOff`). The same chain is highlighted on the graph.
+- NetworkPolicies show which pods they apply to and which pods they let in. Turn on the RBAC chips to see which Roles a ServiceAccount gets through which bindings, and the Node chip to see where each pod runs. A NotReady node is the cause of the pods stuck on it.
 
-**Navigator.** The left sidebar lists every kubeconfig context and the resources of the selected namespace by category: Workloads, Config, Network, Storage and Access Control. Each kind shows a live count and the worst status among its objects. Kinds your RBAC role cannot read are struck through instead of failing. The sidebar collapses to an icon rail.
+**Navigator.** The left sidebar lists every kubeconfig context and the resources of the selected namespace by category: Workloads, Config, Network (with Network Policies), Storage, Access Control (Service Accounts, Roles and Role Bindings, Cluster Roles and Cluster Role Bindings) and Cluster (Nodes). Each kind shows a live count and the worst status among its objects. Kinds your RBAC role cannot read are struck through instead of failing. The sidebar collapses to an icon rail.
+
+**Several namespaces.** The namespace picker in the header takes one namespace (click its name), several (tick them, then **Apply**) or **All namespaces**. With more than one, the graph shows a lane per namespace, tables get a Namespace column, and the navigator counts across all of them. Up to 20 namespaces can be selected at once. Objects keep their own namespace for details, editing, logs, the terminal and actions; **+ Create** has a namespace select. A selection with more than 1,500 objects is shown as tables only. *All namespaces* needs permission to list and watch cluster-wide. A kind your role cannot list that way is watched per namespace and marked *partial*.
 
 **Tables.** Click a kind to open a `kubectl get`-style table:
 - Sort by any column, and filter with the search box.
@@ -86,6 +89,8 @@ While a rollout runs, the node shows `rolling updated/desired`. A Deployment tha
 - You can pick a container, switch to the previous run of a crashing container, and toggle server timestamps and line wrapping.
 - Search with match stepping, clear the view, or download the log to a file.
 - ANSI colours are rendered.
+
+**Terminal.** Pods and workloads (Deployment, StatefulSet, DaemonSet, Job and pod groups) get a **Terminal** tab. Pick the pod and container, then **Connect** to open a shell in it (`bash` when the image has it, otherwise `sh`). It is a full terminal, with colours, cursor keys, resizing with the panel, and copy with ⌘C / Ctrl+Shift+C. The terminal keeps Tab for the shell; press Ctrl+Shift+Tab to move focus back to the toolbar. The session ends with `exit`, **Disconnect**, or when you select something else. Images without a shell (distroless) say so.
 
 ![The Deployments table with live logs of the web Deployment, merged across its three pods](docs/images/logs.png)
 

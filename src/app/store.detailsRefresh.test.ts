@@ -7,7 +7,7 @@ vi.mock("../shared/ipc/tauri", () => ({
 }));
 vi.mock("../shared/settings", () => ({
   settings: {
-    get: vi.fn(async () => null), set: vi.fn(async () => {}), getLastNamespace: vi.fn(async () => null), setLastNamespace: vi.fn(async () => {}),
+    get: vi.fn(async () => null), set: vi.fn(async () => {}), getLastScope: vi.fn(async () => null), setLastScope: vi.fn(async () => {}),
     getSidebarCollapsed: vi.fn(async () => false), setSidebarCollapsed: vi.fn(async () => {}), getDetailsHeight: vi.fn(async () => null), setDetailsHeight: vi.fn(async () => {}),
   },
 }));
@@ -30,7 +30,7 @@ function setup(mode: "view" | "edit" = "view") {
   const nodes = new Map([node(WEB, "Deployment"), node(OTHER, "Service")].map((x) => [x.id, x]));
   const old = edge(WEB, "PodGroup/p/g");
   useAppStore.setState({
-    ...initialState(), graphReady: true, connection: { ...initialState().connection, namespace: "p" }, nodes, edges: new Map([[old.id, old]]),
+    ...initialState(), graphReady: true, connection: { ...initialState().connection, scope: ["p"] }, nodes, edges: new Map([[old.id, old]]),
     selectedId: WEB,
     details: { nodeId: WEB, data: { yaml: "old", summary: [], related: [] }, events: [], loading: false,
       editor: mode === "view" ? viewEditor("old") : { ...viewEditor("old"), mode: "edit", buffer: "mine" } },

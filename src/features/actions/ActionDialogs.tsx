@@ -18,12 +18,14 @@ export function ActionDialogs() {
 }
 
 function ScaleDialog({ nodeId }: { nodeId: NodeId }) {
-  const { nodes, edges, scaleObject, close, busy } = useAppStore(useShallow((s) => ({
-    nodes: s.nodes, edges: s.edges, scaleObject: s.scaleObject, close: s.closeActionDialog, busy: s.actionBusy,
+  const { nodes, edges, tooLarge, scaleObject, close, busy } = useAppStore(useShallow((s) => ({
+    nodes: s.nodes, edges: s.edges, tooLarge: s.tooLarge !== null, scaleObject: s.scaleObject, close: s.closeActionDialog, busy: s.actionBusy,
   })));
+  const known = nodes.has(nodeId);
   const hpa = useMemo(() => hpaFor(nodeId, edges.values(), nodes), [nodeId, edges, nodes]);
-  // Seeded once: later graph updates must not overwrite what the user is typing.
-  const [value, setValue] = useState(() => String(desiredReplicas(nodes.get(nodeId))));
+  // Seeded once: later graph updates must not overwrite what the user is typing. Without the node
+  // (the graph is too large, or it is not there) the current count is unknown: no guess is seeded.
+  const [value, setValue] = useState(() => (known ? String(desiredReplicas(nodes.get(nodeId))) : ""));
   const titleId = useId();
   const inputRef = useRef<HTMLInputElement>(null);
   useEffect(() => { inputRef.current?.select(); }, []);
@@ -37,6 +39,11 @@ function ScaleDialog({ nodeId }: { nodeId: NodeId }) {
       <form role="dialog" aria-modal="true" aria-labelledby={titleId} className="w-[440px] rounded-card border border-border bg-elevated p-8"
         onSubmit={(e) => { e.preventDefault(); if (valid && !busy) void scaleObject(nodeId, n); }}>
         <h2 id={titleId} className="mb-4 text-2xl font-semibold leading-[1.33] text-text-hi">Scale {describeId(nodeId)}</h2>
+        {!known && (
+          <p role="note" className="mb-4 rounded-xl border border-border px-3 py-2 text-sm text-text-dim">
+            Current replicas and HPA unknown{tooLarge ? " while the graph is too large" : ""}.
+          </p>
+        )}
         {hpa && (
           <p role="note" className="mb-4 rounded-xl border border-status-warn/40 bg-status-warn/10 px-3 py-2 text-sm text-status-warn">
             Managed by HPA <code className="font-mono">{hpa.name}</code>{hpa.min !== null ? ` (min ${hpa.min}, max ${hpa.max})` : ""} — it will override this value.
@@ -45,7 +52,7 @@ function ScaleDialog({ nodeId }: { nodeId: NodeId }) {
         <div className="mb-6 flex items-center gap-2 text-sm text-text-dim">
           <span className="mr-2">Replicas</span>
           <Button aria-label="Decrease replicas" onClick={() => step(-1)}>−</Button>
-          <input ref={inputRef} type="number" aria-label="Replicas" min={0} max={MAX_REPLICAS} step={1} value={value}
+          <input ref={inputRef} type="number" aria-label="Replicas" min={0} max={MAX_REPLICAS} step={1} value={value} required
             onChange={(e) => setValue(e.target.value)}
             className="w-24 rounded-xl border border-border-strong bg-transparent px-3 py-1.5 text-text-hi tabular-nums outline-none focus-visible:ring-1 focus-visible:ring-accent" />
           <Button aria-label="Increase replicas" onClick={() => step(1)}>+</Button>

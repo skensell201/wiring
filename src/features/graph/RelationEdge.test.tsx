@@ -34,6 +34,19 @@ describe("RelationEdge", () => {
     expect(stroke(true)).toBe("var(--color-accent)");
   });
 
+  it.each([["owns", ""], ["runsOn", "2 4"], ["allows", "8 3 2 3"], ["applies", "6 4"], ["binds", "6 4"]] as const)(
+    "%s edges are dashed as %j",
+    (relation, dash) => {
+      const e: GraphEdge = { ...edge, relation };
+      const { container } = render(
+        <svg>
+          <RelationEdge {...props} data={{ edge: e, highlighted: false, dimmed: false }} />
+        </svg>,
+      );
+      expect((container.querySelector("path") as SVGPathElement).style.strokeDasharray).toBe(dash);
+    },
+  );
+
   it("draws a problem path edge in the status colour, never dimmed", () => {
     const { container } = render(
       <svg>

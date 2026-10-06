@@ -4,15 +4,18 @@ import { initialState, useAppStore } from "../../app/store";
 import { CreateDialog } from "./CreateDialog";
 import { template } from "./templates";
 
-vi.mock("../../shared/ipc/tauri", () => ({ invoke: vi.fn(async () => null), listen: vi.fn(async () => () => {}), Channel: class { onmessage: (m: unknown) => void = () => {}; } }));
+// create_object answers with the new object's id, as the backend does; everything else with null.
+vi.mock("../../shared/ipc/tauri", () => ({ invoke: vi.fn(async (cmd: string) => (cmd === "create_object" ? "ConfigMap/shop/created" : null)), listen: vi.fn(async () => () => {}), Channel: class { onmessage: (m: unknown) => void = () => {}; } }));
 vi.mock("./LazyYamlEditor", () => ({
   LazyYamlEditor: ({ value, onChange, label }: { value: string; onChange: (t: string) => void; label: string }) => (
     <textarea aria-label={label} value={value} onChange={(e) => onChange(e.target.value)} />
   ),
 }));
 
+const realSubmitCreate = useAppStore.getState().submitCreate;
+
 beforeEach(() => {
-  useAppStore.setState({ ...initialState(), connection: { ...initialState().connection, context: "prod", namespace: "shop" } });
+  useAppStore.setState({ ...initialState(), submitCreate: realSubmitCreate, connection: { ...initialState().connection, context: "prod", scope: ["shop"] } });
 });
 
 describe("CreateDialog", () => {
@@ -38,7 +41,7 @@ describe("CreateDialog", () => {
     const options = Array.from((screen.getByLabelText("Kind") as HTMLSelectElement).options).map((o) => o.value);
     expect(options).toContain("PersistentVolume");
     expect(options).not.toContain("PodGroup");
-    expect(options).toHaveLength(15);
+    expect(options).toHaveLength(18);
   });
 
   it("typing edits the buffer; Create submits; Cancel closes", () => {
@@ -64,5 +67,29 @@ describe("CreateDialog", () => {
     useAppStore.setState((s) => ({ createDialog: { ...s.createDialog, error: null, submitting: true } }));
     render(<CreateDialog />);
     expect(screen.getByRole("button", { name: /Creating/ })).toBeDisabled();
+  });
+
+  it("offers a Namespace select defaulting to the first selected namespace and re-templates on change", async () => {
+    const { invoke } = await import("../../shared/ipc/tauri");
+    useAppStore.setState({ connection: { ...initialState().connection, context: "prod", namespaces: ["a", "b"], scope: ["b", "a"] } });
+    useAppStore.getState().openCreate("ConfigMap");
+    render(<CreateDialog />);
+    const select = screen.getByLabelText("Namespace") as HTMLSelectElement;
+    expect(select.tagName).toBe("SELECT");
+    expect(select.value).toBe("b");
+    expect((screen.getByLabelText("Manifest") as HTMLTextAreaElement).value).toContain("namespace: b");
+    fireEvent.change(select, { target: { value: "a" } });
+    expect((screen.getByLabelText("Manifest") as HTMLTextAreaElement).value).toContain("namespace: a");
+    fireEvent.click(screen.getByRole("button", { name: "Create" }));
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith("create_object", expect.objectContaining({ namespace: "a" })));
+  });
+
+  it("uses a text input when the namespaces are unknown, and hides the field for PersistentVolume", () => {
+    useAppStore.setState({ connection: { ...initialState().connection, context: "prod", namespaces: [], scope: ["x"] } });
+    useAppStore.getState().openCreate("ConfigMap");
+    render(<CreateDialog />);
+    expect(screen.getByLabelText("Namespace").tagName).toBe("INPUT");
+    fireEvent.change(screen.getByLabelText("Kind"), { target: { value: "PersistentVolume" } });
+    expect(screen.queryByLabelText("Namespace")).toBeNull();
   });
 });

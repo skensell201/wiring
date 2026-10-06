@@ -1,5 +1,5 @@
 import { Channel, invoke } from "./tauri";
-import type { ConnectInfo, ContextInfo, Forward, Kind, LogMessage, LogRequest, NodeId, ObjectDetails, PortOption, Revision, Table, UpdateCheck } from "./types";
+import type { ConnectInfo, ContextInfo, ExecMessage, ExecPod, ExecRequest, Forward, Kind, LogMessage, LogRequest, NamespaceScope, NodeId, ObjectDetails, PortOption, Revision, Table, UpdateCheck } from "./types";
 import { toAppError } from "./types";
 
 async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
@@ -15,7 +15,9 @@ export const commands = {
   addKubeconfig: (path: string) => call<ContextInfo[]>("add_kubeconfig", { path }),
   connect: (context: string) => call<ConnectInfo>("connect", { context }),
   disconnect: () => call<null>("disconnect"),
-  selectNamespace: (namespace: string, expandedGroups: NodeId[]) => call<null>("select_namespace", { namespace, expandedGroups }),
+  selectNamespaces: (scope: NamespaceScope, expandedGroups: NodeId[]) =>
+    call<null>("select_namespaces", { namespaces: scope === "all" ? null : scope, expandedGroups }),
+  partialKinds: () => call<Kind[]>("partial_kinds"),
   setExpandedGroups: (expandedGroups: NodeId[]) => call<null>("set_expanded_groups", { expandedGroups }),
   getObject: (nodeId: NodeId) => call<ObjectDetails>("get_object", { nodeId }),
   watchEvents: (nodeId: NodeId | null) => call<null>("watch_events", { nodeId }),
@@ -35,6 +37,17 @@ export const commands = {
     return call<number>("start_logs", { ...req, onMessage: channel });
   },
   stopLogs: (sessionId: number) => call<null>("stop_logs", { sessionId }),
+  execPods: (nodeId: NodeId) => call<ExecPod[]>("exec_pods", { nodeId }),
+  /** Returns at once; output, the end and connect errors arrive on `onMessage`. */
+  startExec: (req: ExecRequest, onMessage: (m: ExecMessage) => void) => {
+    const channel = new Channel<ExecMessage>();
+    channel.onmessage = onMessage;
+    return call<number>("start_exec", { ...req, onMessage: channel });
+  },
+  /** `data` is base64. */
+  execInput: (sessionId: number, data: string) => call<null>("exec_input", { sessionId, data }),
+  execResize: (sessionId: number, cols: number, rows: number) => call<null>("exec_resize", { sessionId, cols, rows }),
+  stopExec: (sessionId: number) => call<null>("stop_exec", { sessionId }),
   forwardPorts: (nodeId: NodeId) => call<PortOption[]>("forward_ports", { nodeId }),
   checkUpdate: () => call<UpdateCheck>("check_update"),
   /** Resolves only on failure: success relaunches the app. */

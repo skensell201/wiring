@@ -73,7 +73,7 @@ const DNS_SUBDOMAIN_MAX: usize = 253;
 /// alphanumerics, `-` and `.`, at most 253 characters, starting and ending alphanumeric.
 /// Catching it here gives a clearer message than the server's and never builds a URL from a
 /// name containing `/`.
-fn validate_dns_subdomain(field: &str, value: &str) -> AppResult<()> {
+pub(crate) fn validate_dns_subdomain(field: &str, value: &str) -> AppResult<()> {
     let alnum = |c: char| c.is_ascii_lowercase() || c.is_ascii_digit();
     let ok = value.len() <= DNS_SUBDOMAIN_MAX
         && value.chars().all(|c| alnum(c) || c == '-' || c == '.')
@@ -85,6 +85,26 @@ fn validate_dns_subdomain(field: &str, value: &str) -> AppResult<()> {
         Err(invalid(format!(
             "{field} `{value}` is not a valid DNS subdomain (lowercase letters, digits, `-` and `.`, \
              at most {DNS_SUBDOMAIN_MAX} characters, starting and ending with a letter or digit)"
+        )))
+    }
+}
+
+const DNS_LABEL_MAX: usize = 63;
+
+/// RFC 1123 label, as the API server requires for namespace names: lowercase alphanumerics and
+/// `-` (no `.`), at most 63 characters, starting and ending alphanumeric.
+pub(crate) fn validate_dns_label(field: &str, value: &str) -> AppResult<()> {
+    let alnum = |c: char| c.is_ascii_lowercase() || c.is_ascii_digit();
+    let ok = value.len() <= DNS_LABEL_MAX
+        && value.chars().all(|c| alnum(c) || c == '-')
+        && value.chars().next().is_some_and(alnum)
+        && value.chars().last().is_some_and(alnum);
+    if ok {
+        Ok(())
+    } else {
+        Err(invalid(format!(
+            "{field} `{value}` is not a valid DNS label (lowercase letters, digits and `-`, \
+             at most {DNS_LABEL_MAX} characters, starting and ending with a letter or digit)"
         )))
     }
 }
@@ -183,9 +203,9 @@ mod tests {
 
     #[test]
     fn rejects_unwatched_kind() {
-        let err = parse("apiVersion: v1\nkind: Node\nmetadata:\n  name: n1\n").unwrap_err();
+        let err = parse("apiVersion: v1\nkind: Namespace\nmetadata:\n  name: n1\n").unwrap_err();
         assert_eq!(err.kind, ErrorKind::Invalid);
-        assert_eq!(err.message, "kind Node is not supported");
+        assert_eq!(err.message, "kind Namespace is not supported");
     }
 
     #[test]

@@ -8,20 +8,26 @@ use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
 
+use base64::engine::general_purpose::STANDARD;
+use base64::Engine;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc::{self, UnboundedReceiver};
 use wiring_lib::error::ErrorKind;
+use wiring_lib::exec::session::ExecRequest;
+use wiring_lib::exec::{ExecMessage, ExecPod};
 use wiring_lib::forward::resolve::suggest_local_port;
-use wiring_lib::graph::{Graph, GraphDelta, Problem, Relation};
+use wiring_lib::graph::{Graph, GraphDelta, Problem, Relation, Status};
 use wiring_lib::kubeconfig;
 use wiring_lib::logs::session::LogRequest;
 use wiring_lib::logs::LogMessage;
 use wiring_lib::session::emitter::{ChannelEmitter, ConnectionState, OutEvent};
 use wiring_lib::session::rollout::Revision;
+use wiring_lib::session::scope::NamespaceScope;
 use wiring_lib::session::Session;
 use wiring_lib::store::Kind;
 
 const NAMESPACE: &str = "wiring-smoke";
+const NAMESPACE_B: &str = "wiring-smoke-b";
 
 fn kubectl(context: &str, args: &[&str]) {
     let status = Command::new("kubectl")
@@ -133,12 +139,23 @@ fn metrics_api_served(context: &str) -> bool {
         .is_ok_and(|o| o.status.success())
 }
 
+/// What the Metrics API itself says about the namespace's pods (for a timeout message).
+fn raw_pod_metrics(context: &str) -> String {
+    let path = format!("/apis/metrics.k8s.io/v1beta1/namespaces/{NAMESPACE}/pods");
+    match Command::new("kubectl").args(["--context", context, "get", "--raw", &path]).output() {
+        Ok(o) => format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr)),
+        Err(e) => format!("kubectl failed: {e}"),
+    }
+}
+
 /// With metrics-server: the talker pod gets CPU/Memory cells and Overview usage rows. Without it:
-/// the cells stay `—` and Overview says the Metrics API is missing.
+/// the cells stay `—` and Overview says the Metrics API is missing. Runs last, so the wait for
+/// the first sample overlaps the other phases.
 async fn exercise_metrics(session: &Session, context: &str) {
     let served = metrics_api_served(context);
-    // metrics-server needs a scrape or two (15 s each) before a new pod shows up.
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(150);
+    // metrics-server needs a scrape or two (15 s each) before a new pod shows up; on a busy
+    // docker-desktop node it can take a few minutes.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(240);
     loop {
         let table = session.list_rows(Kind::Pod);
         let cpu = table
@@ -174,9 +191,10 @@ async fn exercise_metrics(session: &Session, context: &str) {
         }
         assert!(
             tokio::time::Instant::now() < deadline,
-            "metrics never showed up (served: {served}); last cells {:?}, summary {:?}",
+            "metrics never showed up (served: {served}); last cells {:?}, summary {:?}; the Metrics API says: {}",
             talker.cells,
-            details.summary
+            details.summary,
+            raw_pod_metrics(context)
         );
         tokio::time::sleep(Duration::from_secs(3)).await;
     }
@@ -429,6 +447,128 @@ async fn exercise_forward(session: &mut Session, context: &str) {
     }
 }
 
+/// The running pods of `node_id` once the store has them.
+async fn exec_pods_until_running(session: &Session, node_id: &str) -> Vec<ExecPod> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
+    loop {
+        if let Ok(pods) = session.exec_pods(node_id) {
+            if !pods.is_empty() {
+                return pods;
+            }
+        }
+        assert!(tokio::time::Instant::now() < deadline, "{node_id} never had a running pod");
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+}
+
+async fn exercise_exec(session: &mut Session, context: &str) {
+    kubectl(
+        context,
+        &["-n", NAMESPACE, "rollout", "status", "deployment/talker", "--timeout=180s"],
+    );
+    let talker = format!("Deployment/{NAMESPACE}/talker");
+    let pods = exec_pods_until_running(session, &talker).await;
+    assert_eq!(pods[0].containers, vec!["talker".to_string()]);
+
+    let (tx, mut rx) = mpsc::unbounded_channel::<ExecMessage>();
+    let req = ExecRequest {
+        node_id: talker.clone(),
+        pod: pods[0].name.clone(),
+        container: "talker".into(),
+        cols: 120,
+        rows: 30,
+    };
+    let id = session.start_exec(req, Arc::new(tx)).unwrap();
+    // Queued until the shell is up. The TTY echoes the command line, which contains
+    // `wiring-$((6*7))`, so only the evaluated `wiring-42` proves the shell ran it.
+    session.exec_input(id, b"echo wiring-$((6*7))\n".to_vec());
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    let mut out = String::new();
+    while !out.contains("wiring-42") {
+        match tokio::time::timeout_at(deadline, rx.recv())
+            .await
+            .expect("exec output in time")
+            .expect("channel open")
+        {
+            ExecMessage::Output { data, .. } => out.push_str(&String::from_utf8_lossy(&STANDARD.decode(data).unwrap())),
+            other => panic!("unexpected {other:?}; output so far: {out}"),
+        }
+    }
+    // A large paste: the TTY echoes every byte back while stdin is still being written, which
+    // stalled a serial pump on kube's small pipes. 32 KiB in 64-byte lines (under the line limit).
+    session.exec_input(id, b"cat >/dev/null\n".to_vec());
+    let line = format!("{}\n", "p".repeat(63));
+    for _ in 0..8 {
+        session.exec_input(id, line.repeat(64).into_bytes());
+    }
+    session.exec_input(id, b"\x04echo pasted-$((40+2))\n".to_vec());
+    while !out.contains("pasted-42") {
+        match tokio::time::timeout_at(deadline, rx.recv())
+            .await
+            .expect("the shell answered after the paste in time")
+            .expect("channel open")
+        {
+            ExecMessage::Output { data, .. } => out.push_str(&String::from_utf8_lossy(&STANDARD.decode(data).unwrap())),
+            other => panic!("unexpected {other:?} after the paste"),
+        }
+    }
+    session.exec_input(id, b"exit 3\n".to_vec());
+    let code = loop {
+        match tokio::time::timeout_at(deadline, rx.recv())
+            .await
+            .expect("exec end in time")
+            .expect("channel open")
+        {
+            ExecMessage::Output { .. } => continue,
+            ExecMessage::Ended { code, .. } => break code,
+            ExecMessage::Error { message, .. } => panic!("exec error: {message}"),
+        }
+    };
+    assert_eq!(code, Some(3));
+    session.stop_exec(id).await;
+
+    // `db` runs the pause image, which has no shell.
+    let db = format!("StatefulSet/{NAMESPACE}/db");
+    let pods = exec_pods_until_running(session, &db).await;
+    let (tx, mut rx) = mpsc::unbounded_channel::<ExecMessage>();
+    let req = ExecRequest {
+        node_id: db,
+        pod: pods[0].name.clone(),
+        container: "db".into(),
+        cols: 80,
+        rows: 24,
+    };
+    let id = session.start_exec(req, Arc::new(tx)).unwrap();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    let message = loop {
+        match tokio::time::timeout_at(deadline, rx.recv())
+            .await
+            .expect("no-shell outcome in time")
+            .expect("channel open")
+        {
+            ExecMessage::Output { .. } => continue,
+            ExecMessage::Ended { message, code, .. } => break format!("{message:?} (code {code:?})"),
+            ExecMessage::Error { message, .. } => break message,
+        }
+    };
+    println!("no-shell outcome: {message}");
+    assert!(message.contains("no shell"), "expected the no-shell message, got {message}");
+    session.stop_exec(id).await;
+
+    // A pod outside the workload is refused before any connection.
+    let req = ExecRequest {
+        node_id: talker,
+        pod: "not-a-talker".into(),
+        container: "talker".into(),
+        cols: 80,
+        rows: 24,
+    };
+    let err = session
+        .start_exec(req, Arc::new(mpsc::unbounded_channel::<ExecMessage>().0))
+        .unwrap_err();
+    assert_eq!(err.kind, ErrorKind::Invalid, "{err:?}");
+}
+
 /// Stream the talker's logs: a `started`, then lines containing "tick"; stopping ends the flow.
 async fn exercise_logs(session: &mut Session, context: &str) {
     kubectl(
@@ -492,14 +632,76 @@ async fn exercise_logs(session: &mut Session, context: &str) {
     assert_eq!(err.kind, ErrorKind::Invalid, "{err:?}");
 }
 
+/// Two namespaces in one graph and one table, then all namespaces.
+async fn exercise_scopes(session: &mut Session, rx: &mut UnboundedReceiver<OutEvent>, graph: &mut Graph) {
+    let both = NamespaceScope::from_arg(Some(vec![NAMESPACE.into(), NAMESPACE_B.into()])).unwrap();
+    session.select_scope(both, HashSet::new()).await.unwrap();
+    *graph = Graph::default();
+    let b_cfg = format!("ConfigMap/{NAMESPACE_B}/b-cfg");
+    let web = format!("Deployment/{NAMESPACE}/web");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    let ok = graph_until(rx, graph, deadline, |g| has_node(g, &b_cfg) && has_node(g, &web)).await;
+    assert!(
+        ok,
+        "both namespaces in one graph: {:?}",
+        graph.nodes.iter().map(|n| &n.id).collect::<Vec<_>>()
+    );
+    let table = session.list_rows(Kind::ConfigMap);
+    assert_eq!(table.columns[0].key, "namespace", "{:?}", table.columns);
+    assert!(table.rows.iter().any(|r| r.cells[0].text == NAMESPACE_B), "{:?}", table.rows);
+
+    session.select_scope(NamespaceScope::All, HashSet::new()).await.unwrap();
+    *graph = Graph::default();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
+    let ok = graph_until(rx, graph, deadline, |g| {
+        g.too_large.is_some() || g.nodes.iter().any(|n| n.namespace.as_deref() == Some("kube-system"))
+    })
+    .await;
+    assert!(ok, "kube-system objects with all namespaces: {} nodes", graph.nodes.len());
+    eprintln!(
+        "all namespaces: {} nodes, tooLarge {:?}",
+        graph.nodes.len(),
+        graph.too_large.as_ref().map(|t| t.nodes)
+    );
+}
+
+/// Prints how long each phase took (and the total), to spot the slow ones in CI logs.
+struct Phases {
+    begin: std::time::Instant,
+    last: std::time::Instant,
+}
+
+impl Phases {
+    fn start() -> Self {
+        let now = std::time::Instant::now();
+        Self { begin: now, last: now }
+    }
+
+    fn done(&mut self, name: &str) {
+        let now = std::time::Instant::now();
+        eprintln!(
+            "phase {name}: {:.1}s (total {:.1}s)",
+            (now - self.last).as_secs_f64(),
+            (now - self.begin).as_secs_f64()
+        );
+        self.last = now;
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
 #[ignore]
 async fn graph_snapshot_reflects_applied_fixture() {
     let context = std::env::var("WIRING_SMOKE_CONTEXT").expect("set WIRING_SMOKE_CONTEXT");
     let fixture = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/smoke.yaml");
+    let mut phases = Phases::start();
     // Idempotent re-runs: a namespace left over from an aborted run is still terminating.
     kubectl(&context, &["delete", "namespace", NAMESPACE, "--ignore-not-found", "--wait=true"]);
+    kubectl(&context, &["delete", "namespace", NAMESPACE_B, "--ignore-not-found", "--wait=true"]);
     kubectl(&context, &["apply", "-f", fixture]);
+    kubectl(
+        &context,
+        &["apply", "-f", concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/smoke-b.yaml")],
+    );
     kubectl(
         &context,
         &["-n", NAMESPACE, "rollout", "status", "deployment/web", "--timeout=180s"],
@@ -508,18 +710,27 @@ async fn graph_snapshot_reflects_applied_fixture() {
         &context,
         &["-n", NAMESPACE, "rollout", "status", "statefulset/db", "--timeout=180s"],
     );
+    // The metrics, logs and exec phases all use the talker pod.
+    kubectl(
+        &context,
+        &["-n", NAMESPACE, "rollout", "status", "deployment/talker", "--timeout=180s"],
+    );
+    phases.done("setup");
 
     let merged = kubeconfig::load_merged(&kubeconfig::default_paths()).unwrap();
     let (emitter, mut rx) = ChannelEmitter::new();
     let (mut session, info) = Session::connect(merged, &context, Arc::new(emitter)).await.unwrap();
     assert!(info.namespaces.contains(&NAMESPACE.to_string()));
-    session.select_namespace(NAMESPACE, HashSet::new()).await.unwrap();
+    session
+        .select_scope(NamespaceScope::single(NAMESPACE).unwrap(), HashSet::new())
+        .await
+        .unwrap();
 
     // The reducer announces `connected` first; a `disconnected` here would mean a torn-down
     // session leaked its final state into the new one.
     let first = tokio::time::timeout(Duration::from_secs(10), rx.recv())
         .await
-        .expect("an event after select_namespace")
+        .expect("an event after select_scope")
         .expect("emitter open");
     assert_ne!(first, OutEvent::ConnectionState(ConnectionState::Disconnected));
     assert_eq!(first, OutEvent::ConnectionState(ConnectionState::Connected));
@@ -536,8 +747,24 @@ async fn graph_snapshot_reflects_applied_fixture() {
     })
     .await;
     assert!(ok, "the broken image never explained its Deployment; last graph: {graph:#?}");
+    phases.done("graph");
 
-    exercise_metrics(&session, &context).await;
+    // Policies, RBAC and the node this runs on are wired up.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    let ok = graph_until(&mut rx, &mut graph, deadline, |g| {
+        let edge = |rel: &str, src: &str| g.edges.iter().any(|e| e.relation.as_str() == rel && e.source.starts_with(src));
+        edge("applies", "NetworkPolicy/wiring-smoke/web-from-talker")
+            && edge("allows", "Pod/wiring-smoke/talker")
+            && edge("grants", "RoleBinding/wiring-smoke/default-reads-pods")
+            && edge("subject", "RoleBinding/wiring-smoke/default-reads-pods")
+            && g.edges
+                .iter()
+                .any(|e| e.relation.as_str() == "runsOn" && e.target.starts_with("Node//"))
+            && g.nodes.iter().any(|n| n.kind == Kind::Node && n.status == Status::Ok)
+    })
+    .await;
+    assert!(ok, "policy / RBAC / node edges never appeared; last graph: {graph:#?}");
+    phases.done("graph extras");
 
     // Details for the deployment must render YAML + summary.
     let details = session.get_object("Deployment/wiring-smoke/web").unwrap();
@@ -549,12 +776,24 @@ async fn graph_snapshot_reflects_applied_fixture() {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
     let ok = graph_until(&mut rx, &mut graph, deadline, |g| web_pod_count(g) == 1).await;
     assert!(ok, "scale-down never reached the graph; last graph: {graph:#?}");
+    phases.done("details + scale-down");
 
     exercise_writes(&session, &mut rx, &mut graph, &context).await;
+    phases.done("writes");
     exercise_rollout(&session, &mut rx, &mut graph, &context).await;
+    phases.done("rollout");
     exercise_forward(&mut session, &context).await;
+    phases.done("forward");
     exercise_logs(&mut session, &context).await;
+    phases.done("logs");
+    exercise_exec(&mut session, &context).await;
+    phases.done("exec");
+    exercise_metrics(&session, &context).await;
+    phases.done("metrics");
+    exercise_scopes(&mut session, &mut rx, &mut graph).await;
+    phases.done("scopes");
 
     session.shutdown().await;
     kubectl(&context, &["delete", "namespace", NAMESPACE, "--wait=false"]);
+    kubectl(&context, &["delete", "namespace", NAMESPACE_B, "--wait=false"]);
 }

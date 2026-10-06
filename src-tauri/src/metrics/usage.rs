@@ -69,6 +69,12 @@ fn collect_owners<'a>(store: &'a Store, obj: &'a Object, depth: usize, out: &mut
     }
 }
 
+/// `pod`'s entry in the sample, looked up by [`pod_key`](super::pod_key).
+fn sample_of<'s>(store: &'s Store, pod: &Pod) -> Option<&'s PodUsage> {
+    let name = pod.metadata.name.as_deref()?;
+    store.metrics.pods.get(&super::pod_key(pod.metadata.namespace.as_deref(), name))
+}
+
 /// The summed usage of `obj`'s pods that have a sample; `None` when none has one.
 pub fn usage<'a>(store: &'a Store, index: &PodIndex<'a>, obj: &'a Object) -> Option<PodUsage> {
     if store.metrics.state != MetricsState::Available || !has_usage(obj.kind()) {
@@ -77,7 +83,7 @@ pub fn usage<'a>(store: &'a Store, index: &PodIndex<'a>, obj: &'a Object) -> Opt
     index
         .pods_of(obj)
         .into_iter()
-        .filter_map(|p| p.metadata.name.as_deref().and_then(|n| store.metrics.pods.get(n)))
+        .filter_map(|p| sample_of(store, p))
         .copied()
         .reduce(|a, b| a + b)
 }
@@ -111,7 +117,7 @@ pub fn resources<'a>(store: &'a Store, index: &PodIndex<'a>, obj: &'a Object) ->
     let containers: Vec<&Container> = index
         .pods_of(obj)
         .into_iter()
-        .filter(|p| p.metadata.name.as_deref().is_some_and(|n| store.metrics.pods.contains_key(n)))
+        .filter(|p| sample_of(store, p).is_some())
         .filter_map(|p| p.spec.as_ref())
         .flat_map(|s| {
             // Native sidecars (init containers that keep running) are in the pod's usage too.
@@ -239,7 +245,7 @@ pub(crate) mod tests {
                 ("free", usage(40, 20)),
             ]
             .into_iter()
-            .map(|(n, u)| (n.to_string(), u))
+            .map(|(n, u)| (format!("m/{n}"), u))
             .collect(),
             ..Default::default()
         };
@@ -394,7 +400,7 @@ pub(crate) mod tests {
         s.metrics = MetricsSample {
             state: MetricsState::Available,
             pods: [(
-                "web-0".to_string(),
+                "m/web-0".to_string(),
                 PodUsage {
                     cpu_millis: 100,
                     memory_bytes: 90 * MI,
@@ -463,12 +469,39 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn pods_of_the_same_name_in_two_namespaces_have_their_own_usage() {
+        let pod = |ns: &str| {
+            format!("apiVersion: v1\nkind: Pod\nmetadata: {{ name: web, namespace: {ns} }}\nspec:\n  containers: [ {{ name: c, image: x, resources: {{ limits: {{ cpu: 100m, memory: 100Mi }} }} }} ]\n")
+        };
+        let mut s = Store::from_yaml_docs(&format!("{}---\n{}", pod("a"), pod("b"))).unwrap();
+        let usage_of = |cpu_millis| PodUsage {
+            cpu_millis,
+            memory_bytes: MI,
+        };
+        s.metrics = MetricsSample {
+            state: MetricsState::Available,
+            pods: [("a/web".to_string(), usage_of(10)), ("b/web".to_string(), usage_of(90))]
+                .into_iter()
+                .collect(),
+            ..Default::default()
+        };
+        let index = PodIndex::new(&s);
+        let a = s.find(Kind::Pod, Some("a"), "web").unwrap();
+        let b = s.find(Kind::Pod, Some("b"), "web").unwrap();
+        assert_eq!(usage(&s, &index, a), Some(usage_of(10)));
+        assert_eq!(usage(&s, &index, b), Some(usage_of(90)));
+        assert_eq!(resources(&s, &index, b).cpu_limit, Some(100));
+        assert_eq!(usage_badge(&s, &index, a), None);
+        assert_eq!(usage_badge(&s, &index, b), Some("cpu 90%".into()));
+    }
+
+    #[test]
     fn native_sidecars_count_but_ordinary_init_containers_do_not() {
         let yaml = "apiVersion: v1\nkind: Pod\nmetadata: { name: p, namespace: m }\nspec:\n  initContainers:\n    - { name: setup, image: x, resources: { requests: { cpu: 1, memory: 1Gi }, limits: { cpu: 1, memory: 1Gi } } }\n    - { name: side, restartPolicy: Always, image: x, resources: { requests: { cpu: 50m, memory: 10Mi }, limits: { cpu: 100m, memory: 20Mi } } }\n  containers: [ { name: c, image: x, resources: { requests: { cpu: 100m, memory: 50Mi }, limits: { cpu: 200m, memory: 100Mi } } } ]\n";
         let mut s = Store::from_yaml_docs(yaml).unwrap();
         s.metrics = MetricsSample {
             state: MetricsState::Available,
-            pods: [("p".to_string(), PodUsage::default())].into_iter().collect(),
+            pods: [("m/p".to_string(), PodUsage::default())].into_iter().collect(),
             ..Default::default()
         };
         assert_eq!(

@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { kindStats, useAppStore } from "../../app/store";
+import { scopeLabel } from "../../shared/scope";
 import type { Kind } from "../../shared/ipc/types";
 import { KIND_PLURAL, sectionOf } from "../navigator/kindTree";
 import { KindChips } from "./KindChips";
@@ -8,27 +9,32 @@ import { KindChips } from "./KindChips";
 /** Title of the centre pane (the category above it for a table, the kind filter under it for the
  *  graph) plus the Graph | Table switch. */
 export function ViewHeader() {
-  const { view, nodes, table, namespace, lastTableKind, hiddenKinds, deniedKinds, showGraph, showTable, toggleKind } = useAppStore(
+  const { view, nodes, tooLarge, table, scope, namespaces, lastTableKind, hiddenKinds, deniedKinds, showGraph, showTable, toggleKind } = useAppStore(
     useShallow((s) => ({
-      view: s.view, nodes: s.nodes, table: s.view.name === "table" ? s.tables.get(s.view.kind) : undefined, namespace: s.connection.namespace,
+      view: s.view, nodes: s.nodes, tooLarge: s.tooLarge, table: s.view.name === "table" ? s.tables.get(s.view.kind) : undefined, scope: s.connection.scope, namespaces: s.connection.namespaces,
       lastTableKind: s.lastTableKind, hiddenKinds: s.hiddenKinds, deniedKinds: s.deniedKinds,
       showGraph: s.showGraph, showTable: s.showTable, toggleKind: s.toggleKind,
     })),
   );
-  const stats = useMemo(() => kindStats(nodes), [nodes]);
+  const stats = useMemo(
+    () => (tooLarge ? new Map(tooLarge.kinds.map((k) => [k.kind, { count: k.count, worst: k.worst }])) : kindStats(nodes)),
+    [nodes, tooLarge],
+  );
   const present = useMemo(() => new Set<Kind>([...nodes.values()].map((n) => n.kind)), [nodes]);
 
   let title: string, eyebrow: string | null = null, count: number;
   if (view.name === "graph") {
     title = "Overview";
     count = 0;
-    for (const s of stats.values()) count += s.count;
+    if (tooLarge) count = tooLarge.nodes;
+    else for (const s of stats.values()) count += s.count;
   } else {
     title = KIND_PLURAL[view.kind];
     eyebrow = sectionOf(view.kind)?.label ?? null;
     count = table ? table.rows.length : stats.get(view.kind)?.count ?? 0;
   }
-  const caption = `${namespace ? `${namespace} · ` : ""}${count} ${count === 1 ? "object" : "objects"}`;
+  const label = scopeLabel(scope, namespaces);
+  const caption = `${label ? `${label} · ` : ""}${count} ${count === 1 ? "object" : "objects"}`;
   const tableKind = view.name === "table" ? view.kind : lastTableKind;
 
   return (

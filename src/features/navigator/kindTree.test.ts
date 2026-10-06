@@ -14,6 +14,13 @@ describe("kindTree", () => {
     expect(sectionOf("PodGroup")).toBeUndefined();
   });
 
+  it("sorts policies, RBAC objects and Nodes into their sections", () => {
+    expect(sectionOf("NetworkPolicy")?.id).toBe("network");
+    expect(sectionOf("ClusterRoleBinding")?.id).toBe("access");
+    expect(sectionOf("Node")?.id).toBe("cluster");
+    expect(SECTIONS.at(-1)?.label).toBe("Cluster");
+  });
+
   it("has a plural label for every kind", () => {
     for (const k of KINDS) expect(KIND_PLURAL[k]).toBeTruthy();
   });

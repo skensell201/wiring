@@ -1,0 +1,1 @@
+{"nodes":[],"edges":[],"tooLarge":{"nodes":1873,"kinds":[{"kind":"Deployment","count":120,"worst":"warn"},{"kind":"Pod","count":1500,"worst":"err"}]}}

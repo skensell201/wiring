@@ -7,8 +7,9 @@ use futures::stream::{self, StreamExt};
 use k8s_openapi::api::apps::v1::{DaemonSet, Deployment, ReplicaSet, StatefulSet};
 use k8s_openapi::api::autoscaling::v2::HorizontalPodAutoscaler;
 use k8s_openapi::api::batch::v1::{CronJob, Job};
-use k8s_openapi::api::core::v1::{ConfigMap, PersistentVolume, PersistentVolumeClaim, Pod, Secret, Service, ServiceAccount};
-use k8s_openapi::api::networking::v1::Ingress;
+use k8s_openapi::api::core::v1::{ConfigMap, Node, PersistentVolume, PersistentVolumeClaim, Pod, Secret, Service, ServiceAccount};
+use k8s_openapi::api::networking::v1::{Ingress, NetworkPolicy};
+use k8s_openapi::api::rbac::v1::{ClusterRole, ClusterRoleBinding, Role, RoleBinding};
 use kube::api::{Api, DeleteParams, PostParams};
 use kube::core::{ApiResource, DynamicObject, Request, Resource};
 use serde_json::Value;
@@ -46,6 +47,12 @@ fn api_resource(kind: Kind) -> Option<ApiResource> {
         Kind::PersistentVolume => erase!(PersistentVolume),
         Kind::ServiceAccount => erase!(ServiceAccount),
         Kind::HorizontalPodAutoscaler => erase!(HorizontalPodAutoscaler),
+        Kind::NetworkPolicy => erase!(NetworkPolicy),
+        Kind::Role => erase!(Role),
+        Kind::RoleBinding => erase!(RoleBinding),
+        Kind::ClusterRole => erase!(ClusterRole),
+        Kind::ClusterRoleBinding => erase!(ClusterRoleBinding),
+        Kind::Node => erase!(Node),
         Kind::PodGroup => None,
     }
 }

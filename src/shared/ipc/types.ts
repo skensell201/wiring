@@ -5,6 +5,7 @@
 export const KINDS = [
   "Deployment", "StatefulSet", "DaemonSet", "ReplicaSet", "Job", "CronJob", "Pod", "Service", "Ingress",
   "ConfigMap", "Secret", "PersistentVolumeClaim", "PersistentVolume", "ServiceAccount", "HorizontalPodAutoscaler",
+  "NetworkPolicy", "Role", "RoleBinding", "ClusterRole", "ClusterRoleBinding", "Node",
   "PodGroup",
 ] as const;
 export type Kind = (typeof KINDS)[number];
@@ -12,7 +13,7 @@ export type Kind = (typeof KINDS)[number];
 export const STATUSES = ["ok", "warn", "err", "unknown"] as const;
 export type Status = (typeof STATUSES)[number];
 
-export const RELATIONS = ["owns", "selects", "routes", "mounts", "envFrom", "claims", "binds", "usesSA", "scales"] as const;
+export const RELATIONS = ["owns", "selects", "routes", "mounts", "envFrom", "claims", "binds", "usesSA", "scales", "applies", "allows", "grants", "subject", "runsOn"] as const;
 export type Relation = (typeof RELATIONS)[number];
 
 export const ERROR_KINDS = ["auth", "network", "forbidden", "notFound", "conflict", "invalid", "internal"] as const;
@@ -42,7 +43,14 @@ export interface GraphNode {
 
 export interface GraphEdge { id: string; source: NodeId; target: NodeId; relation: Relation }
 
-export interface Graph { nodes: GraphNode[]; edges: GraphEdge[] }
+/** Which namespaces the session watches: all of them, or a non-empty list. */
+export type NamespaceScope = "all" | string[];
+
+export interface KindStat { kind: Kind; count: number; worst: Status }
+/** Sent instead of the nodes of a graph with more than 1 500 nodes. */
+export interface TooLarge { nodes: number; kinds: KindStat[] }
+
+export interface Graph { nodes: GraphNode[]; edges: GraphEdge[]; tooLarge?: TooLarge }
 
 export interface GraphDelta {
   addedNodes: GraphNode[];
@@ -53,7 +61,8 @@ export interface GraphDelta {
 }
 
 export interface ContextInfo { name: string; cluster: string; user: string; namespace: string | null; sourceFile: string }
-export interface ConnectInfo { context: string; serverVersion: string; namespaces: string[] }
+/** `canListNamespaces` is false when `namespaces` is only the context namespace (listing was forbidden): no "All namespaces" then. */
+export interface ConnectInfo { context: string; serverVersion: string; namespaces: string[]; canListNamespaces: boolean }
 export interface ObjectDetails { yaml: string; summary: [string, string][]; related: NodeId[] }
 export interface K8sEvent {
   name: string; type: string; reason: string; message: string; count: number;
@@ -74,6 +83,13 @@ export type LogMessage =
   | { type: "ended"; sessionId: number; pod: string; container: string }
   | { type: "error"; sessionId: number; pod: string; container: string; message: string }
   | { type: "truncated"; sessionId: number; limit: number };
+
+export interface ExecPod { name: string; containers: string[] }
+export type ExecMessage =
+  | { type: "output"; sessionId: number; data: string }
+  | { type: "ended"; sessionId: number; code: number | null; message: string | null }
+  | { type: "error"; sessionId: number; message: string };
+export interface ExecRequest { nodeId: NodeId; pod: string; container: string; cols: number; rows: number }
 
 export interface LogRequest { nodeId: NodeId; container: string | null; previous: boolean; timestamps: boolean }
 
@@ -136,8 +152,14 @@ export function isGraphNode(v: unknown): v is GraphNode {
 export function isGraphEdge(v: unknown): v is GraphEdge {
   return isObj(v) && isStr(v.id) && isStr(v.source) && isStr(v.target) && oneOf(RELATIONS, v.relation);
 }
+function isKindStat(v: unknown): v is KindStat {
+  return isObj(v) && oneOf(KINDS, v.kind) && typeof v.count === "number" && oneOf(STATUSES, v.worst);
+}
+export function isTooLarge(v: unknown): v is TooLarge {
+  return isObj(v) && typeof v.nodes === "number" && arrayOf(v.kinds, isKindStat);
+}
 export function isGraph(v: unknown): v is Graph {
-  return isObj(v) && arrayOf(v.nodes, isGraphNode) && arrayOf(v.edges, isGraphEdge);
+  return isObj(v) && arrayOf(v.nodes, isGraphNode) && arrayOf(v.edges, isGraphEdge) && (v.tooLarge === undefined || isTooLarge(v.tooLarge));
 }
 export function isGraphDelta(v: unknown): v is GraphDelta {
   return isObj(v) && arrayOf(v.addedNodes, isGraphNode) && arrayOf(v.updatedNodes, isGraphNode)
@@ -147,7 +169,7 @@ export function isContextInfo(v: unknown): v is ContextInfo {
   return isObj(v) && isStr(v.name) && isStr(v.cluster) && isStr(v.user) && isStrOrNull(v.namespace) && isStr(v.sourceFile);
 }
 export function isConnectInfo(v: unknown): v is ConnectInfo {
-  return isObj(v) && isStr(v.context) && isStr(v.serverVersion) && arrayOf(v.namespaces, isStr);
+  return isObj(v) && isStr(v.context) && isStr(v.serverVersion) && arrayOf(v.namespaces, isStr) && typeof v.canListNamespaces === "boolean";
 }
 export function isObjectDetails(v: unknown): v is ObjectDetails {
   return isObj(v) && isStr(v.yaml) && Array.isArray(v.summary)
@@ -183,6 +205,16 @@ export function isLogMessage(v: unknown): v is LogMessage {
     case "started": case "ended": return isStr(v.pod) && isStr(v.container);
     case "error": return isStr(v.pod) && isStr(v.container) && isStr(v.message);
     case "truncated": return typeof v.limit === "number";
+    default: return false;
+  }
+}
+export function isExecPod(v: unknown): v is ExecPod { return isObj(v) && isStr(v.name) && arrayOf(v.containers, isStr); }
+export function isExecMessage(v: unknown): v is ExecMessage {
+  if (!isObj(v) || typeof v.sessionId !== "number") return false;
+  switch (v.type) {
+    case "output": return isStr(v.data);
+    case "ended": return (v.code === null || typeof v.code === "number") && isStrOrNull(v.message);
+    case "error": return isStr(v.message);
     default: return false;
   }
 }

@@ -5,7 +5,8 @@ use std::path::PathBuf;
 
 use serde::Serialize;
 use wiring_lib::error::{AppError, ErrorKind};
-use wiring_lib::graph::{Edge, Graph, GraphDelta, GroupInfo, Node, Problem, Relation, Status};
+use wiring_lib::exec::{ExecMessage, ExecPod};
+use wiring_lib::graph::{Edge, Graph, GraphDelta, GroupInfo, KindStat, Node, Problem, Relation, Status, TooLarge};
 use wiring_lib::kubeconfig::ContextInfo;
 use wiring_lib::logs::{LogLine, LogMessage};
 use wiring_lib::session::emitter::{ConnectionState, K8sEvent, ObjectEvents};
@@ -60,6 +61,33 @@ fn connect_info() {
             context: "prod-eu".into(),
             server_version: "v1.33.2".into(),
             namespaces: vec!["default".into(), "kube-system".into(), "payments".into()],
+            can_list_namespaces: true,
+        },
+    );
+}
+
+#[test]
+fn graph_too_large() {
+    assert_matches(
+        "graph_too_large",
+        &Graph {
+            nodes: vec![],
+            edges: vec![],
+            too_large: Some(TooLarge {
+                nodes: 1873,
+                kinds: vec![
+                    KindStat {
+                        kind: Kind::Deployment,
+                        count: 120,
+                        worst: Status::Warn,
+                    },
+                    KindStat {
+                        kind: Kind::Pod,
+                        count: 1500,
+                        worst: Status::Err,
+                    },
+                ],
+            }),
         },
     );
 }
@@ -102,8 +130,36 @@ fn graph() {
             "PodGroup/payments/Deployment/web",
             Relation::Owns,
         )],
+        too_large: None,
     };
     assert_matches("graph", &g);
+}
+
+#[test]
+fn graph_extras() {
+    let n = |id: &str, kind: Kind, ns: Option<&str>, name: &str, badges: &[&str]| Node {
+        namespace: ns.map(String::from),
+        ..node(id, kind, name, Status::Ok, badges, None)
+    };
+    let g = Graph {
+        nodes: vec![
+            n("NetworkPolicy/s/web-ingress", Kind::NetworkPolicy, Some("s"), "web-ingress", &[]),
+            n("Pod/s/web-1", Kind::Pod, Some("s"), "web-1", &["Running", "policy"]),
+            n("Node//node-a", Kind::Node, None, "node-a", &["Ready", "v1.36.1"]),
+            n("RoleBinding/s/web-reader", Kind::RoleBinding, Some("s"), "web-reader", &[]),
+            n("Role/s/reader", Kind::Role, Some("s"), "reader", &[]),
+            n("ServiceAccount/s/web", Kind::ServiceAccount, Some("s"), "web", &[]),
+        ],
+        edges: vec![
+            Edge::new("NetworkPolicy/s/web-ingress", "Pod/s/web-1", Relation::Applies),
+            Edge::new("Pod/s/web-1", "NetworkPolicy/s/web-ingress", Relation::Allows),
+            Edge::new("RoleBinding/s/web-reader", "Role/s/reader", Relation::Grants),
+            Edge::new("RoleBinding/s/web-reader", "ServiceAccount/s/web", Relation::Subject),
+            Edge::new("Pod/s/web-1", "Node//node-a", Relation::RunsOn),
+        ],
+        too_large: None,
+    };
+    assert_matches("graph_extras", &g);
 }
 
 #[test]
@@ -310,6 +366,24 @@ fn update_check_and_progress() {
         &UpdateProgress {
             downloaded: 4194304,
             total: Some(47185920),
+        },
+    );
+}
+
+#[test]
+fn exec_message_and_pod() {
+    assert_matches(
+        "exec_message",
+        &ExecMessage::Output {
+            session_id: 2,
+            data: "aGkK".into(),
+        },
+    );
+    assert_matches(
+        "exec_pod",
+        &ExecPod {
+            name: "web-7f9c-a".into(),
+            containers: vec!["app".into(), "sidecar".into()],
         },
     );
 }
