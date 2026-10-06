@@ -65,6 +65,7 @@ pub fn build(store: &Store, opts: &BuildOptions) -> Graph {
 
     retain_bound_persistent_volumes(&mut nodes, &edges);
     retain_connected_cluster_objects(&mut nodes, &mut edges);
+    retain_custom_owners_with_children(&mut nodes, &mut edges);
 
     hide_single_replicasets(&mut nodes, &mut edges);
     collapse_pod_groups(&mut nodes, &mut edges, opts);
@@ -101,6 +102,8 @@ fn custom_owners(store: &Store, nodes: &HashMap<NodeId, Node>) -> (Vec<Node>, Ve
                 continue;
             }
             let (group, version) = split_api_version(&r.api_version);
+            // The owner takes the child's namespace; for a cluster-scoped CR kind it is ignored when
+            // details are fetched (`custom::ops::target_namespace`).
             let id = custom_node_id(group, version, &r.kind, obj.namespace(), &r.name);
             if CustomId::parse(&id).is_err() {
                 continue;
@@ -228,6 +231,14 @@ fn retain_connected_cluster_objects(nodes: &mut HashMap<NodeId, Node>, edges: &m
         _ => true,
     });
     edges.retain(|e| nodes.contains_key(&e.source) && nodes.contains_key(&e.target));
+}
+
+/// Drops edges to nodes removed by the passes above (a custom owner's edge can point at a dropped
+/// PV or cluster object), then custom owners left with no child on the graph.
+fn retain_custom_owners_with_children(nodes: &mut HashMap<NodeId, Node>, edges: &mut Vec<Edge>) {
+    edges.retain(|e| nodes.contains_key(&e.source) && nodes.contains_key(&e.target));
+    let owners: HashSet<&NodeId> = edges.iter().map(|e| &e.source).collect();
+    nodes.retain(|id, n| n.kind != Kind::Custom || owners.contains(id));
 }
 
 /// A Deployment with exactly one ReplicaSet child: drop the RS node, re-point RS->X edges to the Deployment.
@@ -1164,5 +1175,68 @@ status: {{ replicas: 2, readyReplicas: {ready} }}
                 .count(),
             4
         );
+    }
+
+    fn owned_pv(name: &str) -> crate::store::Object {
+        obj(serde_json::json!({
+            "apiVersion": "v1", "kind": "PersistentVolume",
+            "metadata": { "name": name, "ownerReferences": [
+                { "apiVersion": "example.io/v1", "kind": "Volume", "name": "vol", "uid": "u" }
+            ] }
+        }))
+    }
+
+    #[test]
+    fn a_custom_owner_of_only_a_dropped_cluster_object_leaves_no_node() {
+        let mut s = Store::default();
+        s.upsert(owned_pv("pv-unbound"));
+        let g = build(&s, &BuildOptions::default());
+        assert!(g.nodes.iter().all(|n| n.kind != Kind::Custom), "{:?}", g.nodes);
+        assert!(g.nodes.is_empty(), "{:?}", g.nodes);
+    }
+
+    #[test]
+    fn a_custom_owner_keeps_only_the_edges_to_objects_on_the_graph() {
+        let mut s = Store::default();
+        s.upsert(owned_pv("pv-unbound"));
+        s.upsert(owned_secret("vol-secret", "Volume", "example.io/v1", "vol"));
+        let g = build(&s, &BuildOptions::default());
+        let owns: Vec<(&str, &str)> = g
+            .edges
+            .iter()
+            .filter(|e| e.source.starts_with("Custom/"))
+            .map(|e| (e.source.as_str(), e.target.as_str()))
+            .collect();
+        assert_eq!(owns, vec![("Custom/example.io/v1/Volume/s/vol", "Secret/s/vol-secret")]);
+        assert_eq!(g.nodes.iter().filter(|n| n.kind == Kind::Custom).count(), 1);
+    }
+
+    #[test]
+    fn a_replicaset_owned_by_a_custom_rollout_is_not_hidden() {
+        let mut s = Store::default();
+        s.upsert(obj(serde_json::json!({
+            "apiVersion": "apps/v1", "kind": "ReplicaSet",
+            "metadata": { "name": "web-abc", "namespace": "s", "uid": "rs-uid", "ownerReferences": [
+                { "apiVersion": "argoproj.io/v1alpha1", "kind": "Rollout", "name": "web", "uid": "ro" }
+            ] },
+            "spec": { "replicas": 1, "selector": { "matchLabels": { "a": "b" } }, "template": { "spec": { "containers": [{ "name": "c", "image": "i" }] } } },
+            "status": { "replicas": 1 }
+        })));
+        s.upsert(obj(serde_json::json!({
+            "apiVersion": "v1", "kind": "Pod",
+            "metadata": { "name": "web-abc-1", "namespace": "s", "ownerReferences": [
+                { "apiVersion": "apps/v1", "kind": "ReplicaSet", "name": "web-abc", "uid": "rs-uid" }
+            ] },
+            "spec": { "containers": [{ "name": "c", "image": "i" }] }
+        })));
+        let g = build(&s, &BuildOptions::default());
+        assert!(g.nodes.iter().any(|n| n.id == "ReplicaSet/s/web-abc"));
+        let has = |a: &str, b: &str| {
+            g.edges
+                .iter()
+                .any(|e| e.source == a && e.target == b && e.relation == Relation::Owns)
+        };
+        assert!(has("Custom/argoproj.io/v1alpha1/Rollout/s/web", "ReplicaSet/s/web-abc"));
+        assert!(has("ReplicaSet/s/web-abc", "Pod/s/web-abc-1"));
     }
 }
