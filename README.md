@@ -201,7 +201,7 @@ Pods and workloads (Deployment, StatefulSet, DaemonSet, Job, CronJob and pod gro
 - Search with match stepping, clear the view, or download the log to a file.
 - ANSI colours are rendered.
 
-![The Deployments table with live logs of the web Deployment, merged across its three pods](docs/images/logs.png)
+![The Deployments table with live logs of the web Deployment, merged across its pods](docs/images/logs.png)
 
 <!-- #endregion logs -->
 
