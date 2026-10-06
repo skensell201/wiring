@@ -38,7 +38,6 @@ use crate::store::{Kind, Store};
 use emitter::{ClosableEmitter, Emitter, K8sEvent, ObjectEvents, OutEvent};
 use reducer::{spawn_reducer, ReducerConfig, ReducerMsg};
 use shared::Shared;
-use watch::spawn_all;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -202,7 +201,7 @@ impl Session {
 
         let plan = scope::watch_plan(&scope::NamespaceScope::single(namespace));
         let config = ReducerConfig {
-            streams: plan,
+            streams: plan.clone(),
             ..Default::default()
         };
         let (reducer_tx, reducer_task) = spawn_reducer(config, self.shared.clone(), Arc::new(self.ns_emitter.clone()));
@@ -216,7 +215,7 @@ impl Session {
                 }
             }
         });
-        self.tasks = spawn_all(&self.client, namespace, &store_tx);
+        self.tasks = watch::spawn_plan(&self.client, &plan, &[], &store_tx);
         self.tasks.push(metrics::spawn(
             self.client.clone(),
             namespace,

@@ -215,41 +215,97 @@ pub fn spawn_watch<K: IntoObject>(api: Api<K>, stream_id: StreamId, tx: mpsc::Se
     spawn_supervised(stream_id, fut, tx)
 }
 
-/// Start all 15 watchers for a namespace.
-pub fn spawn_all(client: &Client, namespace: &str, tx: &mpsc::Sender<StoreEvent>) -> Vec<JoinHandle<()>> {
+/// A cluster-wide watch over `all`; if RBAC forbids it, one watch per namespace in `namespaces`
+/// (opened with `open`) instead, announced with `FellBack` so the reducer waits for them. The
+/// per-namespace watches run inside this future, so dropping it (aborting its task) stops them too.
+///
+/// Generic over the streams so it is unit-tested without a cluster.
+async fn watch_or_fall_back<K, S, F>(all: S, namespaces: Vec<String>, open: F, tx: mpsc::Sender<StoreEvent>)
+where
+    K: IntoObject,
+    S: Stream<Item = Result<Event<K>, watcher::Error>> + Unpin,
+    F: Fn(&str) -> S,
+{
+    if translate(StreamId::cluster(K::KIND), all, tx.clone(), true).await != End::Forbidden {
+        return;
+    }
+    tracing::info!(kind = ?K::KIND, namespaces = namespaces.len(), "cluster-wide watch forbidden, falling back per namespace");
+    let fell_back = StoreEvent::FellBack {
+        kind: K::KIND,
+        namespaces: namespaces.clone(),
+    };
+    if tx.send(fell_back).await.is_err() {
+        return; // reducer gone
+    }
+    let per_namespace = namespaces
+        .iter()
+        .map(|ns| translate(StreamId::namespaced(K::KIND, ns), open(ns), tx.clone(), false));
+    futures::future::join_all(per_namespace).await;
+}
+
+/// One namespaced kind's stream: its namespace, or cluster-wide with the fallback above.
+fn spawn_namespaced<K>(client: &Client, stream: &StreamId, namespaces: &[String], tx: &mpsc::Sender<StoreEvent>) -> JoinHandle<()>
+where
+    K: IntoObject + Resource<Scope = k8s_openapi::NamespaceResourceScope>,
+{
+    if let Some(ns) = &stream.namespace {
+        return spawn_watch(Api::<K>::namespaced(client.clone(), ns), stream.clone(), tx.clone());
+    }
+    let all = watcher(Api::<K>::all(client.clone()), watcher::Config::default())
+        .default_backoff()
+        .boxed();
+    let client = client.clone();
+    let open = move |ns: &str| {
+        watcher(Api::<K>::namespaced(client.clone(), ns), watcher::Config::default())
+            .default_backoff()
+            .boxed()
+    };
+    spawn_supervised(
+        stream.clone(),
+        watch_or_fall_back::<K, _, _>(all, namespaces.to_vec(), open, tx.clone()),
+        tx.clone(),
+    )
+}
+
+/// Whether `spawn_stream` has a watcher for `kind`.
+fn is_spawnable(kind: Kind) -> bool {
+    kind != Kind::PodGroup
+}
+
+fn spawn_stream(client: &Client, stream: &StreamId, namespaces: &[String], tx: &mpsc::Sender<StoreEvent>) -> JoinHandle<()> {
     use k8s_openapi::api::{
         apps::v1 as apps, autoscaling::v2 as autoscaling, batch::v1 as batch, core::v1 as core, networking::v1 as networking,
     };
-    macro_rules! ns {
-        ($ty:ty) => {
-            spawn_watch(
-                Api::<$ty>::namespaced(client.clone(), namespace),
-                StreamId::namespaced(<$ty as IntoObject>::KIND, namespace),
-                tx.clone(),
-            )
-        };
+    match stream.kind {
+        Kind::Deployment => spawn_namespaced::<apps::Deployment>(client, stream, namespaces, tx),
+        Kind::StatefulSet => spawn_namespaced::<apps::StatefulSet>(client, stream, namespaces, tx),
+        Kind::DaemonSet => spawn_namespaced::<apps::DaemonSet>(client, stream, namespaces, tx),
+        Kind::ReplicaSet => spawn_namespaced::<apps::ReplicaSet>(client, stream, namespaces, tx),
+        Kind::Job => spawn_namespaced::<batch::Job>(client, stream, namespaces, tx),
+        Kind::CronJob => spawn_namespaced::<batch::CronJob>(client, stream, namespaces, tx),
+        Kind::Pod => spawn_namespaced::<core::Pod>(client, stream, namespaces, tx),
+        Kind::Service => spawn_namespaced::<core::Service>(client, stream, namespaces, tx),
+        Kind::Ingress => spawn_namespaced::<networking::Ingress>(client, stream, namespaces, tx),
+        Kind::ConfigMap => spawn_namespaced::<core::ConfigMap>(client, stream, namespaces, tx),
+        Kind::Secret => spawn_namespaced::<core::Secret>(client, stream, namespaces, tx),
+        Kind::PersistentVolumeClaim => spawn_namespaced::<core::PersistentVolumeClaim>(client, stream, namespaces, tx),
+        Kind::ServiceAccount => spawn_namespaced::<core::ServiceAccount>(client, stream, namespaces, tx),
+        Kind::HorizontalPodAutoscaler => spawn_namespaced::<autoscaling::HorizontalPodAutoscaler>(client, stream, namespaces, tx),
+        Kind::PersistentVolume => spawn_watch(Api::<core::PersistentVolume>::all(client.clone()), stream.clone(), tx.clone()),
+        // Never planned (see `watch_plan`); a finished task keeps the caller's bookkeeping simple.
+        Kind::PodGroup => tokio::spawn(async {}),
     }
-    vec![
-        ns!(apps::Deployment),
-        ns!(apps::StatefulSet),
-        ns!(apps::DaemonSet),
-        ns!(apps::ReplicaSet),
-        ns!(batch::Job),
-        ns!(batch::CronJob),
-        ns!(core::Pod),
-        ns!(core::Service),
-        ns!(networking::Ingress),
-        ns!(core::ConfigMap),
-        ns!(core::Secret),
-        ns!(core::PersistentVolumeClaim),
-        spawn_watch(
-            Api::<core::PersistentVolume>::all(client.clone()),
-            StreamId::cluster(Kind::PersistentVolume),
-            tx.clone(),
-        ),
-        ns!(core::ServiceAccount),
-        ns!(autoscaling::HorizontalPodAutoscaler),
-    ]
+}
+
+/// Start a watcher for every stream of `plan`. `namespaces` are the namespaces the user can list:
+/// a forbidden cluster-wide stream falls back to them.
+pub fn spawn_plan(client: &Client, plan: &[StreamId], namespaces: &[String], tx: &mpsc::Sender<StoreEvent>) -> Vec<JoinHandle<()>> {
+    plan.iter()
+        .map(|s| {
+            debug_assert!(is_spawnable(s.kind), "{:?} is not watchable", s.kind);
+            spawn_stream(client, s, namespaces, tx)
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -467,6 +523,86 @@ mod tests {
         assert!(matches!(rx.recv().await, Some(StoreEvent::InitDone(_))));
         assert!(matches!(rx.recv().await, Some(StoreEvent::Failed { fatal: true, .. })));
         assert!(rx.recv().await.is_none());
+    }
+
+    #[test]
+    fn every_planned_stream_can_be_spawned() {
+        // spawn_stream must handle every watched kind (it would hit the `PodGroup` fallback otherwise).
+        for kind in Kind::WATCHED {
+            assert!(super::is_spawnable(kind), "{kind:?}");
+        }
+        assert!(!super::is_spawnable(Kind::PodGroup));
+    }
+
+    fn pod_in(ns: &str, name: &str) -> Pod {
+        let mut p = pod(name);
+        p.metadata.namespace = Some(ns.into());
+        p
+    }
+
+    type Events = futures::stream::Iter<std::vec::IntoIter<Result<Event<Pod>, watcher::Error>>>;
+
+    fn events(evs: Vec<Result<Event<Pod>, watcher::Error>>) -> Events {
+        futures::stream::iter(evs)
+    }
+
+    async fn drain(mut rx: mpsc::Receiver<StoreEvent>) -> Vec<StoreEvent> {
+        let mut out = Vec::new();
+        while let Some(ev) = rx.recv().await {
+            out.push(ev);
+        }
+        out
+    }
+
+    #[tokio::test]
+    async fn a_forbidden_cluster_watch_falls_back_to_one_watch_per_namespace() {
+        let all = events(vec![
+            Ok(Event::Init),
+            Ok(Event::InitApply(pod_in("a", "x"))),
+            Err(watcher::Error::InitialListFailed(api_error(403))),
+        ]);
+        let (tx, rx) = mpsc::channel(32);
+        watch_or_fall_back::<Pod, _, _>(
+            all,
+            vec!["a".into(), "b".into()],
+            |ns| events(vec![Ok(Event::Init), Ok(Event::InitApply(pod_in(ns, "p"))), Ok(Event::InitDone)]),
+            tx,
+        )
+        .await;
+        let got = drain(rx).await;
+        assert!(
+            matches!(&got[0], StoreEvent::Restarted(s) if *s == StreamId::cluster(Kind::Pod)),
+            "{got:?}"
+        );
+        assert!(matches!(&got[1], StoreEvent::Applied(o) if o.name() == "x"));
+        assert!(
+            matches!(&got[2], StoreEvent::FellBack { kind: Kind::Pod, namespaces } if namespaces == &["a", "b"]),
+            "the 403 is replaced by FellBack: {got:?}"
+        );
+        assert!(!got.iter().any(|e| matches!(e, StoreEvent::Failed { .. })), "{got:?}");
+        for ns in ["a", "b"] {
+            let id = StreamId::namespaced(Kind::Pod, ns);
+            assert!(
+                got.iter().any(|e| matches!(e, StoreEvent::InitDone(s) if *s == id)),
+                "{ns}: {got:?}"
+            );
+            assert!(got.iter().any(|e| matches!(e, StoreEvent::Applied(o) if o.namespace() == Some(ns))));
+        }
+        assert_eq!(got.len(), 3 + 2 * 3);
+    }
+
+    #[tokio::test]
+    async fn an_allowed_cluster_watch_never_falls_back() {
+        let all = events(vec![
+            Ok(Event::Init),
+            Ok(Event::InitDone),
+            Err(watcher::Error::InitialListFailed(api_error(401))),
+        ]);
+        let (tx, rx) = mpsc::channel(32);
+        watch_or_fall_back::<Pod, _, _>(all, vec!["a".into()], |_| panic!("no per-namespace watch"), tx).await;
+        let got = drain(rx).await;
+        assert_eq!(got.len(), 3, "{got:?}");
+        assert!(matches!(&got[2], StoreEvent::Failed { fatal: true, stream, .. } if stream.namespace.is_none()));
     }
 
     #[test]

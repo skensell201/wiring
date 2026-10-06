@@ -184,10 +184,11 @@ fn apply(
 ) -> bool {
     let pod_related = matches!(&ev, StoreEvent::Applied(o) if o.kind() == Kind::Pod)
         || matches!(&ev, StoreEvent::Deleted(k) if k.kind == Kind::Pod)
-        || matches!(&ev, StoreEvent::InitDone(s) if s.kind == Kind::Pod);
+        || matches!(&ev, StoreEvent::InitDone(s) if s.kind == Kind::Pod)
+        || matches!(&ev, StoreEvent::FellBack { kind: Kind::Pod, .. });
     let changed = apply_to_store(shared, ev, streams, stale, errored_since, emitter);
-    // `InitDone(Pod)` is `changed` only when the re-list swept something, which is exactly
-    // when the pod set differs — so `changed` is the right gate for every pod event.
+    // `InitDone(Pod)` (and `FellBack` of Pods) is `changed` only when it swept something, which
+    // is exactly when the pod set differs — so `changed` is the right gate for every pod event.
     if pod_related && changed {
         shared.notify_pods_changed();
     }
@@ -249,10 +250,28 @@ fn apply_to_store(
         }
         StoreEvent::Failed { stream, error, fatal } => {
             if fatal {
-                errored_since.remove(&stream);
-                stale.remove(&stream);
+                // A dead stream's last-known objects stay in the store (as they always have with
+                // one namespace): the kind is marked denied or partial, nothing is swept.
                 let kind = stream.kind;
-                streams.insert(stream, StreamState::Dead);
+                // A cluster-wide stream that already fell back is no longer tracked: its
+                // per-namespace replacements ran inside its task (see `watch_or_fall_back`) and
+                // died with it.
+                let fell_back = stream.namespace.is_none() && !streams.contains_key(&stream);
+                let dead: Vec<StreamId> = if fell_back {
+                    streams
+                        .keys()
+                        .filter(|s| s.kind == kind && s.namespace.is_some())
+                        .cloned()
+                        .collect()
+                } else {
+                    vec![]
+                };
+                let dead = if dead.is_empty() { vec![stream] } else { dead };
+                for s in dead {
+                    errored_since.remove(&s);
+                    stale.remove(&s);
+                    streams.insert(s, StreamState::Dead);
+                }
                 mark_kind(shared, streams, kind);
                 emit_kind_error(emitter, kind, &error);
             } else if !errored_since.contains_key(&stream) {
@@ -273,8 +292,24 @@ fn apply_to_store(
             streams.remove(&cluster);
             stale.remove(&cluster);
             errored_since.remove(&cluster);
-            for ns in &namespaces {
-                streams.insert(StreamId::namespaced(kind, ns), StreamState::Pending);
+            let replacements: Vec<StreamId> = namespaces.iter().map(|ns| StreamId::namespaced(kind, ns)).collect();
+            // What the cluster-wide stream listed in namespaces no replacement covers would
+            // otherwise linger forever. Objects in covered namespaces stay: each replacement's
+            // first list (`Restarted` .. `InitDone`) confirms or sweeps them.
+            let swept = {
+                let mut store = shared.store();
+                let orphans: Vec<ObjectKey> = store
+                    .iter_kind(kind)
+                    .filter(|o| !replacements.iter().any(|s| s.covers(o.namespace())))
+                    .map(|o| o.key())
+                    .collect();
+                for key in &orphans {
+                    store.remove(key);
+                }
+                !orphans.is_empty()
+            };
+            for s in replacements {
+                streams.insert(s, StreamState::Pending);
             }
             if namespaces.is_empty() {
                 shared.partial_kinds().remove(&kind);
@@ -282,7 +317,7 @@ fn apply_to_store(
             } else {
                 shared.partial_kinds().insert(kind);
             }
-            false
+            swept
         }
     }
 }
@@ -790,6 +825,95 @@ mod tests {
             .await
             .unwrap();
         assert!(matches!(next(&mut rx).await, OutEvent::GraphSnapshot(_)));
+        assert!(shared.denied_kinds().contains(&Kind::Pod));
+        assert!(!shared.partial_kinds().contains(&Kind::Pod));
+    }
+
+    fn fell_back(kind: Kind, namespaces: &[&str]) -> ReducerMsg {
+        ReducerMsg::Store(StoreEvent::FellBack {
+            kind,
+            namespaces: namespaces.iter().map(|n| n.to_string()).collect(),
+        })
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_fallback_drops_the_objects_of_namespaces_it_does_not_cover() {
+        let cluster = StreamId::cluster(Kind::Pod);
+        let shared = Shared::default();
+        let mut pods = shared.subscribe_pods();
+        let (tx, _h, mut rx) = spawn_streams(&[cluster.clone(), StreamId::cluster(Kind::ConfigMap)], shared.clone()).await;
+        for (ns, name) in [("a", "x"), ("b", "y"), ("c", "z")] {
+            tx.send(ReducerMsg::Store(StoreEvent::Applied(pod_in(ns, name)))).await.unwrap();
+        }
+        tx.send(ReducerMsg::Store(StoreEvent::Applied(cm("keep")))).await.unwrap();
+        tx.send(ReducerMsg::Store(StoreEvent::InitDone(cluster.clone()))).await.unwrap();
+        tx.send(ReducerMsg::Store(StoreEvent::InitDone(Kind::ConfigMap.into())))
+            .await
+            .unwrap();
+        assert!(matches!(next(&mut rx).await, OutEvent::GraphSnapshot(g) if g.nodes.len() == 4));
+        while pods.try_recv().is_ok() {}
+        // The cluster-wide watch is forbidden mid-flight; only a and b are watched from now on.
+        tx.send(fell_back(Kind::Pod, &["a", "b"])).await.unwrap();
+        match next(&mut rx).await {
+            OutEvent::GraphDelta(d) => assert_eq!(d.removed_nodes, vec!["Pod/c/z"]),
+            other => panic!("expected c's pod removed, got {other:?}"),
+        }
+        assert_eq!(shared.store().len(), 3, "a's and b's pods stay until their own lists confirm them");
+        assert!(pods.try_recv().is_ok(), "removing pods ticks the pod broadcast");
+        assert!(shared.partial_kinds().contains(&Kind::Pod));
+        // A fallback to nowhere drops every object of the kind, and nothing else.
+        tx.send(fell_back(Kind::Pod, &[])).await.unwrap();
+        match next(&mut rx).await {
+            OutEvent::GraphDelta(mut d) => {
+                d.removed_nodes.sort();
+                assert_eq!(d.removed_nodes, vec!["Pod/a/x", "Pod/b/y"]);
+            }
+            other => panic!("expected the remaining pods removed, got {other:?}"),
+        }
+        assert_eq!(shared.store().len(), 1);
+        assert!(shared.denied_kinds().contains(&Kind::Pod));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_dead_namespaced_stream_keeps_its_last_known_objects() {
+        // Single-namespace behaviour, unchanged: a stream that stops for good (e.g. RBAC revoked
+        // mid-watch) leaves what it last listed on screen, and the kind is marked denied.
+        let a = StreamId::namespaced(Kind::Pod, "a");
+        let shared = Shared::default();
+        let (tx, _h, mut rx) = spawn_streams(std::slice::from_ref(&a), shared.clone()).await;
+        tx.send(ReducerMsg::Store(StoreEvent::Applied(pod_in("a", "x")))).await.unwrap();
+        tx.send(ReducerMsg::Store(StoreEvent::InitDone(a.clone()))).await.unwrap();
+        assert!(matches!(next(&mut rx).await, OutEvent::GraphSnapshot(_)));
+        tx.send(forbid(&a)).await.unwrap();
+        assert!(matches!(next(&mut rx).await, OutEvent::ConnectionError(_)));
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        assert!(rx.try_recv().is_err(), "nothing removed");
+        assert_eq!(shared.store().len(), 1);
+        assert!(shared.denied_kinds().contains(&Kind::Pod));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_fell_back_cluster_stream_that_dies_takes_its_replacements_with_it() {
+        // The per-namespace watches run inside the cluster-wide stream's task: if that task dies
+        // (a panic), they are gone too, so the kind is denied, not partial with a ghost stream.
+        let cluster = StreamId::cluster(Kind::Pod);
+        let shared = Shared::default();
+        let (tx, _h, mut rx) = spawn_streams(std::slice::from_ref(&cluster), shared.clone()).await;
+        tx.send(fell_back(Kind::Pod, &["a", "b"])).await.unwrap();
+        tx.send(ReducerMsg::Store(StoreEvent::Applied(pod_in("a", "x")))).await.unwrap();
+        tx.send(ReducerMsg::Store(StoreEvent::InitDone(StreamId::namespaced(Kind::Pod, "a"))))
+            .await
+            .unwrap();
+        tx.send(ReducerMsg::Store(StoreEvent::Failed {
+            stream: cluster.clone(),
+            error: AppError::internal("Pod watcher panicked"),
+            fatal: true,
+        }))
+        .await
+        .unwrap();
+        assert!(matches!(next(&mut rx).await, OutEvent::ConnectionError(_)));
+        // b never listed, but it is dead now: the snapshot does not wait for it.
+        assert!(matches!(next(&mut rx).await, OutEvent::GraphSnapshot(g) if g.nodes.len() == 1));
         assert!(shared.denied_kinds().contains(&Kind::Pod));
         assert!(!shared.partial_kinds().contains(&Kind::Pod));
     }
