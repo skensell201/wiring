@@ -20,9 +20,11 @@ export function EmptyState({ icon: Icon, title, children, primary, secondary, sp
   const outer = overlay
     ? "pointer-events-none absolute inset-0 grid place-items-center p-8"
     : "grid h-full w-full place-items-center bg-space px-8 py-6";
+  // Over the graph the card sits on dimmed nodes, so it needs its own opaque surface.
+  const card = overlay ? "rounded-card border border-border bg-space px-8 py-6 shadow-lg" : "";
   return (
     <div className={outer}>
-      <section role={tone === "error" ? "alert" : "status"} aria-labelledby={titleId} aria-busy={spinning || undefined} className="pointer-events-auto flex max-w-lg flex-col items-center gap-3 text-center">
+      <section role={tone === "error" ? "alert" : "status"} aria-labelledby={titleId} aria-busy={spinning || undefined} className={`pointer-events-auto flex max-w-lg flex-col items-center gap-3 text-center ${card}`}>
         <Icon aria-hidden className={`size-8 text-accent ${spinning ? "motion-safe:animate-spin" : ""}`} />
         <h2 id={titleId} className="break-words text-lg font-medium text-text-hi">{title}</h2>
         {children != null && <div className="break-words text-sm text-text-muted">{children}</div>}

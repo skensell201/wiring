@@ -54,6 +54,13 @@ describe("EmptyState", () => {
     expect(screen.getByRole("button", { name: "Retry" })).toHaveFocus();
   });
 
+  it("gives an overlay card its own opaque surface, so dimmed nodes don't show through", () => {
+    const { rerender } = render(<EmptyState overlay icon={Inbox} title="No matches" />);
+    expect(screen.getByRole("status", { name: "No matches" })).toHaveClass("bg-space");
+    rerender(<EmptyState icon={Inbox} title="No matches" />);
+    expect(screen.getByRole("status", { name: "No matches" })).not.toHaveClass("bg-space");
+  });
+
   it("leaves focus alone by default", () => {
     render(<EmptyState icon={Inbox} title="Nothing here yet" primary={{ label: "+ Create", onClick: () => {} }} />);
     expect(screen.getByRole("button", { name: "+ Create" })).not.toHaveFocus();
