@@ -324,7 +324,8 @@ export function kindStats(nodes: Map<NodeId, GraphNode>): Map<Kind, { count: num
 export function applySnapshot<S extends GraphState>(s: S, g: Graph): S {
   const nodes = new Map(g.nodes.map((n) => [n.id, n]));
   const edges = new Map(g.edges.map((e) => [e.id, e]));
-  const dropped = s.selectedId !== null && s.nodes.has(s.selectedId) && !nodes.has(s.selectedId);
+  // A too-large snapshot carries no nodes at all: the selection's absence says nothing about it.
+  const dropped = !g.tooLarge && s.selectedId !== null && s.nodes.has(s.selectedId) && !nodes.has(s.selectedId);
   return dropSelection({ ...s, nodes, edges, graphReady: true }, dropped);
 }
 

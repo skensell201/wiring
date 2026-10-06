@@ -751,6 +751,22 @@ describe("editor", () => {
     expect(useAppStore.getState().details).toBeNull();
   });
 
+  it("entering tooLarge is not a deletion: the details and an open editor stay", async () => {
+    const tooLarge = { nodes: 1873, kinds: [{ kind: "Pod" as const, count: 1873, worst: "ok" as const }] };
+    await selectPod();
+    useAppStore.getState().applySnapshot({ nodes: [], edges: [], tooLarge });
+    let s = useAppStore.getState();
+    expect(s.selectedId).toBe("Pod/p/a");
+    expect(s.details?.data?.yaml).toBe(POD_YAML);
+    await selectPod();
+    useAppStore.getState().startEdit();
+    useAppStore.getState().setBuffer(EDITED_YAML);
+    useAppStore.getState().applySnapshot({ nodes: [], edges: [], tooLarge });
+    s = useAppStore.getState();
+    expect(s.selectedId).toBe("Pod/p/a");
+    expect(s.details?.editor).toMatchObject({ mode: "edit", buffer: EDITED_YAML, error: null });
+  });
+
   it("a table refresh that loses the edited row keeps the editor and flags the deletion", async () => {
     await selectPod();
     vi.mocked(invoke).mockImplementation(async (cmd: string, args?: any) => (cmd === "list_rows" ? { kind: args.kind, columns: [], rows: [] } : null));
