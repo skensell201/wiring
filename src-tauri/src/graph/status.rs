@@ -91,7 +91,7 @@ fn node_pressure(n: &Node) -> Option<&NodeCondition> {
         .find(|c| NODE_PRESSURE.contains(&c.type_.as_str()) && c.status == "True")
 }
 
-/// Not ready -> err; a pressure condition -> warn. A node without a Ready condition (hand-written
+/// Not ready -> err; a pressure condition or a cordon -> warn. A node without a Ready condition (hand-written
 /// fixtures) counts as ok.
 fn node(n: &Node) -> (Status, Badges) {
     let not_ready = node_conditions(n).iter().any(|c| c.type_ == "Ready" && c.status != "True");
@@ -103,9 +103,13 @@ fn node(n: &Node) -> (Status, Badges) {
     if let Some(c) = pressure {
         badges.push(c.type_.clone());
     }
+    let cordoned = super::rows::node_cordoned(n);
+    if cordoned {
+        badges.push("SchedulingDisabled".into());
+    }
     let status = if not_ready {
         Status::Err
-    } else if pressure.is_some() {
+    } else if pressure.is_some() || cordoned {
         Status::Warn
     } else {
         Status::Ok
@@ -599,10 +603,11 @@ pub fn problem(obj: &Object, status: Status, store: &Store) -> Option<Problem> {
         },
         Object::Node(n) => match node_conditions(n).iter().find(|c| c.type_ == "Ready" && c.status != "True") {
             Some(c) => own("NotReady", c.message.clone()),
-            None => {
-                let c = node_pressure(n)?;
-                own(c.type_.clone(), c.message.clone())
-            }
+            None => match node_pressure(n) {
+                Some(c) => own(c.type_.clone(), c.message.clone()),
+                None if super::rows::node_cordoned(n) => own("SchedulingDisabled", Some("node is cordoned".into())),
+                None => return None,
+            },
         },
         _ => return None,
     })
@@ -876,7 +881,7 @@ pub fn summary(obj: &Object) -> SummaryRows {
             ));
         }
         Object::Node(n) => {
-            rows.push(("Status".into(), super::rows::node_ready_text(n)));
+            rows.push(("Status".into(), super::rows::node_status_text(n)));
             rows.push(("Roles".into(), super::rows::node_roles(n)));
             if let Some(i) = n.status.as_ref().and_then(|s| s.node_info.as_ref()) {
                 rows.push(("Kubelet".into(), i.kubelet_version.clone()));
@@ -977,6 +982,22 @@ mod tests {
         assert_eq!(st, Status::Warn);
         assert!(badges.contains(&"MemoryPressure".to_string()));
         assert_eq!(problem(node("node-c"), st, &s).unwrap().reason, "MemoryPressure");
+    }
+
+    #[test]
+    fn a_cordoned_node_shows_scheduling_disabled() {
+        let s = Store::from_fixture("graph-extras").unwrap();
+        let node = s.find(Kind::Node, None, "node-d").unwrap();
+        let (st, badges) = describe(node, &s);
+        assert_eq!(st, Status::Warn);
+        assert!(badges.contains(&"SchedulingDisabled".to_string()), "{badges:?}");
+        let p = problem(node, st, &s).unwrap();
+        assert_eq!(
+            (p.reason.as_str(), p.message.as_deref()),
+            ("SchedulingDisabled", Some("node is cordoned"))
+        );
+        let get = |key: &str| summary(node).into_iter().find(|(k, _)| k == key).map(|(_, v)| v);
+        assert_eq!(get("Status").as_deref(), Some("Ready,SchedulingDisabled"));
     }
 
     #[test]

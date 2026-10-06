@@ -102,3 +102,11 @@ status:
   conditions:
     - { type: Ready, status: "True" }
     - { type: MemoryPressure, status: "True", reason: KubeletHasInsufficientMemory, message: kubelet has insufficient memory available }
+---
+apiVersion: v1
+kind: Node
+metadata: { name: node-d }
+spec: { unschedulable: true }
+status:
+  nodeInfo: { architecture: arm64, bootID: b, containerRuntimeVersion: c, kernelVersion: k, kubeProxyVersion: v1.36.1, kubeletVersion: v1.36.1, machineID: m, operatingSystem: linux, osImage: Linux, systemUUID: u }
+  conditions: [ { type: Ready, status: "True" } ]

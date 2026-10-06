@@ -282,6 +282,21 @@ pub(crate) fn node_ready_text(n: &k8s_openapi::api::core::v1::Node) -> String {
     }
 }
 
+/// Whether the node is cordoned (`kubectl cordon` sets `spec.unschedulable`).
+pub(crate) fn node_cordoned(n: &k8s_openapi::api::core::v1::Node) -> bool {
+    n.spec.as_ref().and_then(|s| s.unschedulable).unwrap_or(false)
+}
+
+/// The STATUS column as kubectl prints it: `Ready`, `NotReady,SchedulingDisabled`, ...
+pub(crate) fn node_status_text(n: &k8s_openapi::api::core::v1::Node) -> String {
+    let ready = node_ready_text(n);
+    if node_cordoned(n) {
+        format!("{ready},SchedulingDisabled")
+    } else {
+        ready
+    }
+}
+
 /// Roles from `node-role.kubernetes.io/<role>` labels, `<none>` like kubectl.
 pub(crate) fn node_roles(n: &k8s_openapi::api::core::v1::Node) -> String {
     let roles: Vec<&str> = n
@@ -526,7 +541,7 @@ fn kind_cells<'a>(
         Object::Node(n) => {
             let pods = node_pods.get(obj.name()).copied().unwrap_or(0);
             vec![
-                coloured(node_ready_text(n), status),
+                coloured(node_status_text(n), status),
                 plain(node_roles(n)),
                 plain(
                     n.status
@@ -720,6 +735,7 @@ spec:
         assert_eq!(cell(&nodes, "node-a", "pods").text, "2");
         assert_eq!(cell(&nodes, "node-b", "status").text, "NotReady");
         assert_eq!(cell(&nodes, "node-c", "roles").text, "<none>");
+        assert_eq!(cell(&nodes, "node-d", "status").text, "Ready,SchedulingDisabled");
         let policies = table(&s, Kind::NetworkPolicy, now());
         assert_eq!(cell(&policies, "web-ingress", "podSelector").text, "app=web");
         assert_eq!(cell(&policies, "deny-all", "podSelector").text, "all pods");
