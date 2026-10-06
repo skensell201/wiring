@@ -300,6 +300,14 @@ mod tests {
             builtin("kind: ConfigMap\nmetadata: { name: cfg }\n"),
             "a missing apiVersion is filled in for built-ins"
         );
+        assert!(
+            builtin("apiVersion: autoscaling/v1\nkind: HorizontalPodAutoscaler\nmetadata: { name: web }\n"),
+            "another version of a built-in group stays built-in"
+        );
+        assert!(
+            !builtin("kind: Certificate\nmetadata: { name: web-tls }\n"),
+            "a non-built-in kind is custom even without apiVersion"
+        );
     }
 
     #[test]

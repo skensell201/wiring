@@ -141,6 +141,101 @@ impl Session {
     }
 }
 
+/// A custom kind resolved against one session, with that session's client: requests for it
+/// can only reach the cluster the kind was resolved in.
+#[derive(Clone)]
+pub struct BoundKind {
+    pub kind: CustomKind,
+    pub client: Client,
+    pub generation: u64,
+}
+
+impl std::fmt::Debug for BoundKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BoundKind")
+            .field("kind", &self.kind)
+            .field("generation", &self.generation)
+            .finish_non_exhaustive()
+    }
+}
+
+fn connection_changed() -> AppError {
+    AppError::new(ErrorKind::Conflict, "the cluster connection changed; try again")
+}
+
+/// The current session's custom kinds with its client and generation, all read under one lock.
+/// The kinds come from the session's cache unless `refresh`; otherwise `discover` runs with
+/// that client and without the lock, and the result is rejected (`conflict`) when another
+/// session took over meanwhile. A non-refresh discovery never overwrites a cache filled while
+/// it ran: the cached kinds win.
+pub async fn custom_kinds<D, Fut>(
+    sessions: &Mutex<Option<Session>>,
+    refresh: bool,
+    discover: D,
+) -> AppResult<(Vec<CustomKind>, Client, u64)>
+where
+    D: FnOnce(Client) -> Fut,
+    Fut: Future<Output = AppResult<Vec<CustomKind>>>,
+{
+    let (client, generation) = {
+        let guard = sessions.lock().await;
+        let session = guard.as_ref().ok_or_else(|| AppError::internal("not connected"))?;
+        let bound = (session.client_handle(), session.generation());
+        if !refresh {
+            if let Some(kinds) = session.custom_kinds() {
+                return Ok((kinds.to_vec(), bound.0, bound.1));
+            }
+        }
+        bound
+    };
+    let kinds = discover(client.clone()).await?;
+    let mut guard = sessions.lock().await;
+    let session = guard
+        .as_mut()
+        .filter(|s| s.generation() == generation)
+        .ok_or_else(connection_changed)?;
+    let kinds = match session.custom_kinds() {
+        Some(cached) if !refresh => cached.to_vec(),
+        _ => {
+            session.set_custom_kinds(kinds.clone());
+            kinds
+        }
+    };
+    Ok((kinds, client, generation))
+}
+
+/// `group`/`version`/`kind` resolved through [`custom_kinds`], bound to the session it was
+/// resolved in; `notFound` when the cluster does not serve it (or it cannot be listed).
+pub async fn resolve_kind<D, Fut>(
+    sessions: &Mutex<Option<Session>>,
+    group: &str,
+    version: &str,
+    kind: &str,
+    discover: D,
+) -> AppResult<BoundKind>
+where
+    D: FnOnce(Client) -> Fut,
+    Fut: Future<Output = AppResult<Vec<CustomKind>>>,
+{
+    let (kinds, client, generation) = custom_kinds(sessions, false, discover).await?;
+    let found = crate::discovery::find_kind(&kinds, group, version, kind).ok_or_else(|| {
+        let what = if group.is_empty() {
+            kind.to_owned()
+        } else {
+            format!("{kind} ({group})")
+        };
+        AppError::new(
+            ErrorKind::NotFound,
+            format!("{what} is not served by this cluster or cannot be listed"),
+        )
+    })?;
+    Ok(BoundKind {
+        kind: found,
+        client,
+        generation,
+    })
+}
+
 /// `list_custom`: the rows of the kind `resolve` yields, in the current scope; the table then
 /// stays live through `custom_table` events. The session lock is held only to begin and to
 /// finish, never across `resolve` or the list. A superseded request still answers with its
@@ -473,6 +568,69 @@ mod tests {
             error: None,
         }));
         assert!(tokio::time::timeout(Duration::from_secs(10), rx.recv()).await.is_err());
+    }
+
+    fn no_discovery(_: Client) -> futures::future::Ready<AppResult<Vec<CustomKind>>> {
+        panic!("discovery must not run on a cache hit")
+    }
+
+    #[tokio::test]
+    async fn a_cached_kind_resolves_with_the_same_sessions_client_and_generation() {
+        let mut session = offline_session();
+        session.set_custom_kinds(vec![kind()]);
+        let generation = session.generation();
+        let sessions = Mutex::new(Some(session));
+        let bound = resolve_kind(&sessions, "x.io", "v1", "T", no_discovery).await.unwrap();
+        assert_eq!(bound.kind, kind());
+        assert_eq!(bound.generation, generation);
+    }
+
+    #[tokio::test]
+    async fn a_session_replaced_during_discovery_rejects_the_resolve() {
+        let sessions = Mutex::new(Some(offline_session()));
+        let err = resolve_kind(&sessions, "x.io", "v1", "T", |_| async {
+            // Another context connects while discovery of the first one is running.
+            *sessions.lock().await = Some(offline_session());
+            Ok(vec![kind()])
+        })
+        .await
+        .unwrap_err();
+        assert_eq!(err.kind, ErrorKind::Conflict);
+        assert!(
+            sessions.lock().await.as_ref().unwrap().custom_kinds().is_none(),
+            "the old cluster's kinds are not cached into the new session"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_late_discovery_does_not_overwrite_a_newer_cache_unless_refreshing() {
+        let sessions = Mutex::new(Some(offline_session()));
+        let fill_meanwhile = |name: &'static str| {
+            let sessions = &sessions;
+            move |_| async move {
+                sessions.lock().await.as_mut().unwrap().set_custom_kinds(vec![kind_named("New")]);
+                Ok(vec![kind_named(name)])
+            }
+        };
+        let (kinds, _, _) = custom_kinds(&sessions, false, fill_meanwhile("Old")).await.unwrap();
+        assert_eq!(kinds, vec![kind_named("New")]);
+        let cached = |s: &Mutex<Option<Session>>| s.try_lock().unwrap().as_ref().unwrap().custom_kinds().unwrap().to_vec();
+        assert_eq!(cached(&sessions), vec![kind_named("New")]);
+        let (kinds, _, _) = custom_kinds(&sessions, true, fill_meanwhile("Fresh")).await.unwrap();
+        assert_eq!(kinds, vec![kind_named("Fresh")]);
+        assert_eq!(cached(&sessions), vec![kind_named("Fresh")]);
+    }
+
+    #[tokio::test]
+    async fn an_unserved_kind_is_not_found_and_names_its_group_only_when_it_has_one() {
+        let mut session = offline_session();
+        session.set_custom_kinds(vec![]);
+        let sessions = Mutex::new(Some(session));
+        let err = resolve_kind(&sessions, "x.io", "v1", "T", no_discovery).await.unwrap_err();
+        assert_eq!(err.kind, ErrorKind::NotFound);
+        assert_eq!(err.message, "T (x.io) is not served by this cluster or cannot be listed");
+        let err = resolve_kind(&sessions, "", "v1", "Thing", no_discovery).await.unwrap_err();
+        assert_eq!(err.message, "Thing is not served by this cluster or cannot be listed");
     }
 
     #[tokio::test]

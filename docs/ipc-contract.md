@@ -139,7 +139,9 @@ manifest goes down the built-in path only when its `kind` is a built-in `Kind` a
 kind's API group (any version, e.g. `autoscaling/v1` for a HorizontalPodAutoscaler), or missing; anything else — e.g. a Knative `serving.knative.dev/v1` `Service` — is resolved through
 discovery by its `apiVersion` and `kind`). They
 behave as for built-in kinds (strict field validation, `resourceVersion` conflicts, Overwrite), except that the
-objects are read from the server on demand: they are never in the graph store. A custom resource that owns a
+objects are read from the server on demand: they are never in the graph store. A request runs against the cluster its kind
+was resolved in: when the connection changes during discovery it rejects with `conflict` ("the cluster
+connection changed; try again"). A custom resource that owns a
 watched object appears on the graph as a node of kind `Custom` with status `unknown` and an `owns` edge.
 
 ## Helm

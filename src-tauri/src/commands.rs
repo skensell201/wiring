@@ -24,6 +24,7 @@ use crate::kubeconfig::{self, ContextInfo};
 use crate::logs::session::LogRequest;
 use crate::logs::LogMessage;
 use crate::manifest;
+use crate::session::custom::{self, BoundKind};
 use crate::session::emitter::{Emitter, OutEvent};
 use crate::session::rollout::Revision;
 use crate::session::{ConnectInfo, ObjectDetails, Session};
@@ -137,43 +138,9 @@ pub async fn set_expanded_groups(state: State<'_, AppState>, expanded_groups: Ve
         .await
 }
 
-/// The session's client and generation, taken under the lock and released right away so the
-/// requests that follow never hold it.
-async fn client_of(state: &AppState) -> AppResult<(kube::Client, u64)> {
-    let mut guard = state.session.lock().await;
-    let session = session_mut(&mut guard)?;
-    Ok((session.client_handle(), session.generation()))
-}
-
-/// Discovery results, from the session's cache unless `refresh`; discovery runs without the
-/// lock and is only cached into the session that started it.
-async fn custom_kinds_cached(state: &AppState, refresh: bool) -> AppResult<Vec<CustomKind>> {
-    let (client, generation) = {
-        let mut guard = state.session.lock().await;
-        let session = session_mut(&mut guard)?;
-        if !refresh {
-            if let Some(kinds) = session.custom_kinds() {
-                return Ok(kinds.to_vec());
-            }
-        }
-        (session.client_handle(), session.generation())
-    };
-    let kinds = discovery::discover(client).await?;
-    let mut guard = state.session.lock().await;
-    if let Some(session) = guard.as_mut().filter(|s| s.generation() == generation) {
-        session.set_custom_kinds(kinds.clone());
-    }
-    Ok(kinds)
-}
-
-async fn resolve_kind(state: &AppState, group: &str, version: &str, kind: &str) -> AppResult<CustomKind> {
-    let kinds = custom_kinds_cached(state, false).await?;
-    discovery::find_kind(&kinds, group, version, kind).ok_or_else(|| {
-        AppError::new(
-            ErrorKind::NotFound,
-            format!("{kind} ({group}) is not served by this cluster or cannot be listed"),
-        )
-    })
+/// `group`/`version`/`kind` resolved against the current session, with that session's client.
+async fn resolve_kind(state: &AppState, group: &str, version: &str, kind: &str) -> AppResult<BoundKind> {
+    custom::resolve_kind(&state.session, group, version, kind, discovery::discover).await
 }
 
 /// Graph neighbours of `node_id`, for a custom resource's details.
@@ -188,20 +155,20 @@ async fn related_of(state: &AppState, generation: u64, node_id: &str) -> Vec<Nod
 
 #[tauri::command]
 pub async fn custom_kinds(state: State<'_, AppState>) -> AppResult<Vec<CustomKind>> {
-    custom_kinds_cached(&state, false).await
+    Ok(custom::custom_kinds(&state.session, false, discovery::discover).await?.0)
 }
 
 #[tauri::command]
 pub async fn refresh_custom_kinds(state: State<'_, AppState>) -> AppResult<Vec<CustomKind>> {
-    custom_kinds_cached(&state, true).await
+    Ok(custom::custom_kinds(&state.session, true, discovery::discover).await?.0)
 }
 
 /// The rows of `resource` in the current scope; the table then stays live through
 /// `custom_table` events until `stop_custom`, another `list_custom` or a scope switch.
 #[tauri::command]
 pub async fn list_custom(state: State<'_, AppState>, resource: ResourceRef) -> AppResult<CustomTable> {
-    crate::session::custom::list_custom(&state.session, || {
-        resolve_kind(&state, &resource.group, &resource.version, &resource.kind)
+    custom::list_custom(&state.session, || async {
+        Ok(resolve_kind(&state, &resource.group, &resource.version, &resource.kind).await?.kind)
     })
     .await
 }
@@ -235,10 +202,9 @@ pub async fn helm_release(state: State<'_, AppState>, namespace: String, name: S
 #[tauri::command]
 pub async fn get_object(state: State<'_, AppState>, node_id: String) -> AppResult<ObjectDetails> {
     if let Some(id) = CustomId::of(&node_id)? {
-        let kind = resolve_kind(&state, &id.group, &id.version, &id.kind).await?;
-        let (client, generation) = client_of(&state).await?;
-        let mut details = ops::get(&client, &kind, &id).await?;
-        details.related = related_of(&state, generation, &node_id).await;
+        let bound = resolve_kind(&state, &id.group, &id.version, &id.kind).await?;
+        let mut details = ops::get(&bound.client, &bound.kind, &id).await?;
+        details.related = related_of(&state, bound.generation, &node_id).await;
         return Ok(details);
     }
     let mut guard = state.session.lock().await;
@@ -277,10 +243,9 @@ pub async fn list_rows(state: State<'_, AppState>, kind: Kind, include_helm_stor
 #[tauri::command]
 pub async fn update_object(state: State<'_, AppState>, node_id: String, yaml: String, force: bool) -> AppResult<ObjectDetails> {
     if let Some(id) = CustomId::of(&node_id)? {
-        let kind = resolve_kind(&state, &id.group, &id.version, &id.kind).await?;
-        let (client, generation) = client_of(&state).await?;
-        let mut details = ops::update(&client, &kind, &id, &yaml, force).await?;
-        details.related = related_of(&state, generation, &node_id).await;
+        let bound = resolve_kind(&state, &id.group, &id.version, &id.kind).await?;
+        let mut details = ops::update(&bound.client, &bound.kind, &id, &yaml, force).await?;
+        details.related = related_of(&state, bound.generation, &node_id).await;
         return Ok(details);
     }
     let mut guard = state.session.lock().await;
@@ -293,9 +258,8 @@ pub async fn create_object(state: State<'_, AppState>, namespace: String, yaml: 
     let raw = manifest::parse_raw(&yaml)?;
     if !crate::session::write::is_builtin_manifest(&raw) {
         let (group, version) = ops::manifest_group_version(&raw).map(|(g, v)| (g.to_owned(), v.to_owned()))?;
-        let kind = resolve_kind(&state, &group, &version, &raw.kind).await?;
-        let (client, _) = client_of(&state).await?;
-        return ops::create(&client, &kind, raw, &namespace).await;
+        let bound = resolve_kind(&state, &group, &version, &raw.kind).await?;
+        return ops::create(&bound.client, &bound.kind, raw, &namespace).await;
     }
     let mut guard = state.session.lock().await;
     let session = session_mut(&mut guard)?;
@@ -305,9 +269,8 @@ pub async fn create_object(state: State<'_, AppState>, namespace: String, yaml: 
 #[tauri::command]
 pub async fn delete_object(state: State<'_, AppState>, node_id: String) -> AppResult<()> {
     if let Some(id) = CustomId::of(&node_id)? {
-        let kind = resolve_kind(&state, &id.group, &id.version, &id.kind).await?;
-        let (client, _) = client_of(&state).await?;
-        return ops::delete(&client, &kind, &id).await;
+        let bound = resolve_kind(&state, &id.group, &id.version, &id.kind).await?;
+        return ops::delete(&bound.client, &bound.kind, &id).await;
     }
     let mut guard = state.session.lock().await;
     let session = session_mut(&mut guard)?;
