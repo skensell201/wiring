@@ -28,7 +28,7 @@ const GZIP_MAGIC: [u8; 3] = [0x1f, 0x8b, 0x08];
 /// smaller than this), so a crafted gzip cannot exhaust memory.
 const MAX_DECODED_BYTES: usize = 32 * 1024 * 1024;
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Default, Deserialize)]
 #[serde(default)]
 pub(crate) struct RawRelease {
     pub name: String,
@@ -37,6 +37,23 @@ pub(crate) struct RawRelease {
     pub info: RawInfo,
     pub chart: RawChart,
     pub config: Option<Value>,
+}
+
+/// `config` (the user's values) can hold credentials, so Debug never prints it.
+impl std::fmt::Debug for RawRelease {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RawRelease")
+            .field("name", &self.name)
+            .field("namespace", &self.namespace)
+            .field("version", &self.version)
+            .field("status", &self.info.status)
+            .field(
+                "chart",
+                &format_args!("{} {}", self.chart.metadata.name, self.chart.metadata.version),
+            )
+            .field("config", &"<redacted>")
+            .finish()
+    }
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -69,14 +86,18 @@ fn corrupt() -> AppError {
 
 /// base64 → (gzip, when the magic bytes say so) → JSON.
 pub(crate) fn decode(payload: &[u8]) -> AppResult<RawRelease> {
+    decode_with_limit(payload, MAX_DECODED_BYTES)
+}
+
+fn decode_with_limit(payload: &[u8], limit: usize) -> AppResult<RawRelease> {
     let bytes = STANDARD.decode(payload.trim_ascii()).map_err(|_| corrupt())?;
     let json = if bytes.starts_with(&GZIP_MAGIC) {
         let mut out = Vec::new();
         GzDecoder::new(bytes.as_slice())
-            .take(MAX_DECODED_BYTES as u64 + 1)
+            .take(limit as u64 + 1)
             .read_to_end(&mut out)
             .map_err(|_| corrupt())?;
-        if out.len() > MAX_DECODED_BYTES {
+        if out.len() > limit {
             return Err(corrupt());
         }
         out
@@ -197,16 +218,41 @@ pub(crate) mod tests {
         assert!(decode(&gz_garbage).is_err());
     }
 
-    #[test]
-    fn a_decompression_bomb_is_rejected() {
-        // Zeros compress ~1000:1, so this is a ~33 KiB record that would inflate past the cap.
-        let mut gz = GzEncoder::new(Vec::new(), Compression::default());
-        let chunk = vec![0u8; 1 << 20];
-        for _ in 0..(MAX_DECODED_BYTES / chunk.len() + 1) {
-            gz.write_all(&chunk).unwrap();
+    /// base64(gzip(`total - 2` spaces + `{}`)): valid JSON once inflated, `total` bytes long.
+    fn padded_json(total: usize) -> Vec<u8> {
+        let mut gz = GzEncoder::new(Vec::new(), Compression::fast());
+        let chunk = vec![b' '; 1 << 20];
+        let mut left = total - 2;
+        while left > 0 {
+            let n = left.min(chunk.len());
+            gz.write_all(&chunk[..n]).unwrap();
+            left -= n;
         }
-        let payload = STANDARD.encode(gz.finish().unwrap()).into_bytes();
-        assert!(decode(&payload).is_err());
+        gz.write_all(b"{}").unwrap();
+        STANDARD.encode(gz.finish().unwrap()).into_bytes()
+    }
+
+    #[test]
+    fn a_decompression_bomb_is_rejected_by_the_cap_alone() {
+        // Valid JSON when uncapped, so only the size cap can reject it.
+        let err = decode(&padded_json(MAX_DECODED_BYTES + 1)).unwrap_err();
+        assert_eq!(err.kind, ErrorKind::Invalid);
+    }
+
+    #[test]
+    fn a_record_just_under_the_cap_decodes() {
+        let rel = decode(&padded_json(MAX_DECODED_BYTES)).unwrap();
+        assert_eq!(rel.version, 0);
+    }
+
+    #[test]
+    fn debug_never_prints_the_values() {
+        let mut v = release_json("web", "shop", 1, "deployed", "1.0.0");
+        v["config"] = json!({ "password": "hunter2-secret" });
+        let rel = decode(&encode(&v)).unwrap();
+        let shown = format!("{rel:?}");
+        assert!(!shown.contains("hunter2") && !shown.contains("password"), "{shown}");
+        assert!(shown.contains("web") && shown.contains("<redacted>"));
     }
 
     #[test]
