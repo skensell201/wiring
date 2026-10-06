@@ -22,3 +22,15 @@ export function firstNamespace(scope: NamespaceScope | null, known: string[]): s
   if (scope === "all") return known[0] ?? null;
   return scope[0] ?? null;
 }
+
+/** The scope to reopen after connecting: the remembered one, minus namespaces that are gone (All
+ *  only with the permission to list namespaces), else the `fallback` namespace, else none. */
+export function restoredScope(remembered: NamespaceScope | null, namespaces: string[], canListNamespaces: boolean, fallback: string | null): NamespaceScope | null {
+  const known = (ns: string) => namespaces.length === 0 || namespaces.includes(ns);
+  if (remembered === "all" && namespaces.length > 0 && canListNamespaces) return "all";
+  if (Array.isArray(remembered)) {
+    const kept = remembered.filter(known);
+    if (kept.length > 0) return kept;
+  }
+  return fallback ? [fallback] : null;
+}

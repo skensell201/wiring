@@ -74,6 +74,25 @@ describe("ContextPicker", () => {
   });
 });
 
+describe("connectContext", () => {
+  it("restores the context's remembered scope instead of its default namespace", async () => {
+    const { settings } = await import("../../shared/settings");
+    const { connectContext } = await import("./connectContext");
+    vi.mocked(settings.getLastScope).mockResolvedValueOnce(["blog", "gone"]);
+    const selectScope = vi.fn(async () => {});
+    const selectNamespace = vi.fn(async () => {});
+    useAppStore.setState({
+      contexts: [{ name: "prod", cluster: "c", user: "u", namespace: "shop", sourceFile: "/k" }],
+      connect: vi.fn(async () => true), selectScope, selectNamespace,
+      connection: { ...initialState().connection, context: "prod", namespaces: ["blog", "shop"], canListNamespaces: true },
+    });
+    expect(await connectContext("prod")).toBe(true);
+    expect(settings.getLastScope).toHaveBeenCalledWith("prod");
+    expect(selectScope).toHaveBeenCalledWith(["blog"]);
+    expect(selectNamespace).not.toHaveBeenCalled();
+  });
+});
+
 describe("NamespacePicker", () => {
   const open = (selectScope = vi.fn(async () => {}), extra: Record<string, unknown> = {}) => {
     useAppStore.setState({ connection: { ...initialState().connection, context: "prod", namespaces: ["blog", "payments", "shop"], scope: ["shop"], ...extra }, selectScope });

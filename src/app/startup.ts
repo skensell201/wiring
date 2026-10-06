@@ -1,4 +1,4 @@
-import type { NamespaceScope } from "../shared/ipc/types";
+import { restoredScope } from "../shared/scope";
 import { settings } from "../shared/settings";
 import { useAppStore } from "./store";
 
@@ -20,14 +20,7 @@ export async function startup(): Promise<void> {
   if (!(await s().connect(ctx.name))) return;
   const remembered = await settings.getLastScope(ctx.name);
   const { namespaces, canListNamespaces } = s().connection;
-  const known = (ns: string) => namespaces.length === 0 || namespaces.includes(ns);
-  let scope: NamespaceScope | null = null;
   // All namespaces needs the permission to list them (it may have been revoked since).
-  if (remembered === "all") scope = namespaces.length > 0 && canListNamespaces ? "all" : null;
-  else if (remembered) {
-    const kept = remembered.filter(known);
-    scope = kept.length > 0 ? kept : null;
-  }
-  if (!scope && ctx.namespace) scope = [ctx.namespace];
+  const scope = restoredScope(remembered, namespaces, canListNamespaces, ctx.namespace);
   if (scope) await s().selectScope(scope);
 }

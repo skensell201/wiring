@@ -1,7 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { firstNamespace, inScope, isMulti, scopeLabel } from "./scope";
+import { firstNamespace, inScope, isMulti, restoredScope, scopeLabel } from "./scope";
 
 describe("namespace scope helpers", () => {
+  it("restores a remembered scope, or falls back", () => {
+    expect(restoredScope("all", ["a", "b"], true, "a")).toBe("all");
+    expect(restoredScope("all", ["a"], false, "a")).toEqual(["a"]);
+    expect(restoredScope(["b", "gone"], ["a", "b"], true, "a")).toEqual(["b"]);
+    expect(restoredScope(["gone"], ["a", "b"], true, "a")).toEqual(["a"]);
+    expect(restoredScope(["typed"], [], false, null)).toEqual(["typed"]);
+    expect(restoredScope(null, ["a"], true, null)).toBeNull();
+  });
   it("labels a scope", () => {
     expect(scopeLabel(null, [])).toBeNull();
     expect(scopeLabel(["shop"], [])).toBe("shop");
