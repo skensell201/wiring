@@ -12,7 +12,9 @@ const PLUGIN = /\(exec plugin: ([^)]+)\)/;
  * spawned; a plugin that ran and failed reads "auth exec command '…' failed with status …" instead.
  * Only a not-found io error means "not installed" (Unix, Windows, and Rust's own wording).
  */
-const NOT_STARTED = /unable to run auth exec: .*(no such file or directory|cannot find the file|cannot find the path|program not found|os error [23]\b)/i;
+const NOT_FOUND = ["no such file or directory", "cannot find the file", "cannot find the path", "program not found", "os error [23]\\b"];
+const NOT_STARTED = new RegExp(`unable to run auth exec: .*(${NOT_FOUND.join("|")})`, "i");
+const NOT_RUNNABLE = /unable to run auth exec: .*(permission denied|os error 13\b)/i;
 /** rustls ("invalid peer certificate: UnknownIssuer | Expired | NotValidForName …"), OpenSSL and Go wording. */
 const CERTIFICATE = /invalid peer certificate|certificate verify failed|x509|unknownissuer|certexpired|notvalidforname|certificate (?:has expired|is not valid|signed by unknown)/i;
 const TIMED_OUT = /timed out/i;
@@ -31,12 +33,16 @@ export function describeConnectError(error: AppError): ConnectErrorInfo {
   const detail = firstLine(error.message);
   if (error.kind === "auth") {
     const plugin = PLUGIN.exec(error.message)?.[1].trim();
-    if (plugin && NOT_STARTED.test(error.message)) {
-      const name = plugin.split(/[\\/]/).pop() || plugin;
+    const name = plugin && (plugin.split(/[\\/]/).pop() || plugin);
+    if (plugin && name && NOT_RUNNABLE.test(error.message)) {
+      return { cause: "helper", title: `The ${name} login helper can't be run`, detail, hint: "Check that the file is executable, then Retry." };
+    }
+    if (plugin && name && NOT_STARTED.test(error.message)) {
       const install = INSTALL[name] ?? `Install ${name} and make sure it is on your PATH.`;
       return { cause: "helper", title: `The ${name} login helper isn't installed`, detail, hint: `${install} ${RESTART}` };
     }
-    return { cause: "credentials", title: "Your credentials were rejected", detail, hint: "Log in again with your provider's CLI, then Retry." };
+    const hint = name ? `Sign in again with ${name}, then Retry.` : "Check the token or client certificate in your kubeconfig, then Retry.";
+    return { cause: "credentials", title: "The cluster didn't accept your credentials", detail, hint };
   }
   if (error.kind === "network" && TIMED_OUT.test(error.message)) {
     return { cause: "timeout", title: "Connection timed out", detail, hint: NETWORK_HINT };

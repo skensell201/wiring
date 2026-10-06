@@ -34,16 +34,36 @@ describe("describeConnectError", () => {
   it("treats other auth failures as rejected credentials, with or without a plugin", () => {
     for (const e of [err("auth", "Unauthorized (exec plugin: aws)"), err("auth", "Unauthorized")]) {
       expect(describeConnectError(e)).toMatchObject({
-        cause: "credentials", title: "Your credentials were rejected", hint: "Log in again with your provider's CLI, then Retry.",
+        cause: "credentials", title: "The cluster didn't accept your credentials",
       });
     }
+    expect(describeConnectError(err("auth", "Unauthorized (exec plugin: /opt/bin/aws)")).hint).toBe("Sign in again with aws, then Retry.");
+    expect(describeConnectError(err("auth", "Unauthorized")).hint).toBe("Check the token or client certificate in your kubeconfig, then Retry.");
+  });
+
+  it("says a helper that exists but can't be spawned can't be run", () => {
+    expect(describeConnectError(err("auth", "unable to run auth exec: Permission denied (os error 13) (exec plugin: /opt/aws)"))).toMatchObject({
+      cause: "helper", title: "The aws login helper can't be run", hint: "Check that the file is executable, then Retry.",
+    });
+  });
+
+  it.each([
+    ["forbidden", "forbidden: User cannot get path /version"],
+  ] as const)("leaves a %s answer at connect as other", (kind, message) => {
+    expect(describeConnectError(err(kind as AppError["kind"], message)).cause).toBe("other");
+  });
+
+  it.each([
+    "error trying to connect: dns error: failed to lookup address information: nodename nor servname provided",
+    "error trying to connect: proxy error: unsuccessful tunnel",
+  ])("calls %s unreachable", (message) => {
+    expect(describeConnectError(err("network", message)).cause).toBe("unreachable");
   });
 
   it("does not call a plugin that ran and failed uninstalled", () => {
     for (const message of [
       "auth exec command 'aws' failed with status exit status: 255: Output { stderr: \"The config profile (x) could not be found\" } (exec plugin: aws)",
       "auth exec command 'aws' failed with status exit status: 1: profile not found (exec plugin: aws)",
-      "unable to run auth exec: Permission denied (os error 13) (exec plugin: aws)",
     ]) {
       expect(describeConnectError(err("auth", message)).cause).toBe("credentials");
     }
