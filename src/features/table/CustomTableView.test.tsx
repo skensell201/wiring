@@ -53,7 +53,14 @@ describe("CustomTableView", () => {
     expect(useAppStore.getState().createDialog).toMatchObject({ open: true, custom: cert });
   });
 
-  it("does not ask for a namespace on a cluster-scoped kind with no objects", () => {
+  it("asks for a namespace on a cluster-scoped kind until one is selected", () => {
+    const issuer: ResourceRef = { group: "cert-manager.io", version: "v1", kind: "ClusterIssuer", plural: "clusterissuers", namespaced: false };
+    useAppStore.setState({ view: { name: "custom", resource: issuer } });
+    render(<CustomTableView />);
+    expect(screen.getByRole("status", { name: "Choose a namespace" })).toBeInTheDocument();
+  });
+
+  it("does not offer namespace actions on a cluster-scoped kind with no objects", () => {
     const issuer: ResourceRef = { group: "cert-manager.io", version: "v1", kind: "ClusterIssuer", plural: "clusterissuers", namespaced: false };
     useAppStore.setState({
       connection: { ...initialState().connection, context: "prod", state: "connected", scope: ["shop"] },

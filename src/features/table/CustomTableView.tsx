@@ -38,14 +38,14 @@ export function CustomTableView() {
     );
   }
 
-  // A cluster-scoped kind is listed whatever namespaces are selected.
-  const label = resource.namespaced ? scopeLabel(scope, namespaces) : "The cluster";
+  // Listing needs a selected scope even for a cluster-scoped kind (the backend refuses without one).
+  const selected = scopeLabel(scope, namespaces);
+  const label = selected === null ? null : resource.namespaced ? selected : "The cluster";
   const empty = tableEmptyState({ scope: label, denied: false, loaded: !!table, total: table?.rows.length ?? 0, shown: rows.length, search });
-  const visible = !!table && (scope !== null || !resource.namespaced);
 
   return (
     <div className="h-full w-full overflow-auto bg-space px-8 py-6">
-      {table && visible && (
+      {table && scope && (
         <table role="grid" aria-label={resource.kind}
           className="w-full border-separate border-spacing-0 rounded-card border border-border bg-surface text-sm outline-none">
           <thead className="sticky top-0 z-10 bg-surface">
