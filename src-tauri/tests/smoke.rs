@@ -717,7 +717,10 @@ fn install_smoke_crd(context: &str) -> Option<CrdGuard> {
     let guard = CrdGuard {
         context: context.to_string(),
     };
-    kubectl(context, &["delete", "crd", SMOKE_CRD, "--ignore-not-found", "--wait=true"]);
+    kubectl(
+        context,
+        &["delete", "crd", SMOKE_CRD, "--ignore-not-found", "--wait=true", "--timeout=60s"],
+    );
     kubectl(
         context,
         &["apply", "-f", concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/smoke-crd.yaml")],
@@ -771,10 +774,10 @@ async fn custom_table_until(
     }
 }
 
-/// The smoke CRD's kind, table, live watch, edits, a CR owner on the graph, and a Helm release.
+/// The smoke CRD's kind, table, live watch, edits, and a CR owner on the graph.
 /// Takes the session by value: discovery and the table go through the commands' own entry
 /// points, which work on the app's `Mutex<Option<Session>>`.
-async fn exercise_custom_and_helm(session: Session, rx: &mut UnboundedReceiver<OutEvent>, graph: &mut Graph, context: &str) -> Session {
+async fn exercise_custom(session: Session, rx: &mut UnboundedReceiver<OutEvent>, graph: &mut Graph, context: &str) -> Session {
     // Discovery finds the smoke kind with its printer columns.
     let sessions = Mutex::new(Some(session));
     let bound = resolve_kind(&sessions, "wiringsmoke.example.com", "", "WiringSmoke", discovery::discover)
@@ -798,7 +801,7 @@ async fn exercise_custom_and_helm(session: Session, rx: &mut UnboundedReceiver<O
         .iter()
         .find(|r| r.node_id == SMOKE_CR)
         .unwrap_or_else(|| panic!("alpha in {:?}", table.table.rows));
-    assert_eq!(row.cells[1].text, "small", "{:?}", row.cells);
+    assert_eq!(row.cells.get(1).map(|c| c.text.as_str()), Some("small"), "{:?}", row.cells);
     let mut session = sessions.into_inner().expect("the session is still there");
     assert_eq!(session.open_custom(), Some(&kind.resource));
     kubectl(
@@ -816,7 +819,11 @@ async fn exercise_custom_and_helm(session: Session, rx: &mut UnboundedReceiver<O
     );
     let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
     let ok = custom_table_until(rx, graph, deadline, |t| {
-        t.table.rows.iter().any(|r| r.node_id == SMOKE_CR && r.cells[1].text == "medium")
+        t.resource == kind.resource
+            && t.table
+                .rows
+                .iter()
+                .any(|r| r.node_id == SMOKE_CR && r.cells.get(1).is_some_and(|c| c.text == "medium"))
     })
     .await;
     assert!(ok, "the watched custom table never showed the patch");
@@ -872,8 +879,34 @@ async fn exercise_custom_and_helm(session: Session, rx: &mut UnboundedReceiver<O
         "the CR owner never reached the graph: {:?}",
         graph.nodes.iter().map(|n| &n.id).collect::<Vec<_>>()
     );
+    session
+}
 
-    // A Helm release: one annotated ConfigMap and its storage Secret.
+/// A Helm release (one annotated ConfigMap and its storage Secret): listed with its details, and
+/// the storage Secret kept out of the graph and, unless asked for, the Secrets table.
+async fn exercise_helm(session: &Session, rx: &mut UnboundedReceiver<OutEvent>, graph: &mut Graph) {
+    // The Secret first, and in the store before the ConfigMap is created: Secrets and
+    // ConfigMaps are separate watch streams, so only this order makes the graph that first
+    // shows helm-cfg one built from a store that already held the Secret.
+    session.create_object(NAMESPACE, &helm_secret_yaml()).await.unwrap();
+    let storage = format!("sh.helm.release.v1.{SMOKE_RELEASE}.v1");
+    let names = |include: bool| -> Vec<String> {
+        session
+            .list_rows(Kind::Secret, include)
+            .rows
+            .into_iter()
+            .filter_map(|r| r.cells.first().map(|c| c.text.clone()))
+            .collect()
+    };
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    while !names(true).contains(&storage) {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the storage Secret never reached the store: {:?}",
+            names(true)
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
     session
         .create_object(
             NAMESPACE,
@@ -881,9 +914,14 @@ async fn exercise_custom_and_helm(session: Session, rx: &mut UnboundedReceiver<O
         )
         .await
         .unwrap();
-    session.create_object(NAMESPACE, &helm_secret_yaml()).await.unwrap();
-    let shared = session.shared_handle();
     let helm_cfg = format!("ConfigMap/{NAMESPACE}/helm-cfg");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    let ok = graph_until(rx, graph, deadline, |g| has_node(g, &helm_cfg)).await;
+    assert!(ok, "helm-cfg never reached the graph");
+    assert!(graph.node(&format!("Secret/{NAMESPACE}/{storage}")).is_none());
+    assert!(!names(false).contains(&storage), "{:?}", names(false));
+
+    let shared = session.shared_handle();
     let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
     let release = loop {
         if let Some(r) = shared.helm_releases().into_iter().find(|r| r.name == SMOKE_RELEASE) {
@@ -909,21 +947,6 @@ async fn exercise_custom_and_helm(session: Session, rx: &mut UnboundedReceiver<O
     let d = shared.helm_release(NAMESPACE, SMOKE_RELEASE).unwrap();
     assert_eq!(d.values, "replicaCount: 1\n");
     assert_eq!(d.notes, "smoke notes");
-
-    // The storage Secret stays out of the graph and, unless asked for, the Secrets table.
-    let storage = format!("sh.helm.release.v1.{SMOKE_RELEASE}.v1");
-    let names = |include: bool| -> Vec<String> {
-        session
-            .list_rows(Kind::Secret, include)
-            .rows
-            .into_iter()
-            .map(|r| r.cells[0].text.clone())
-            .collect()
-    };
-    assert!(!names(false).contains(&storage), "{:?}", names(false));
-    assert!(names(true).contains(&storage), "{:?}", names(true));
-    assert!(graph.node(&format!("Secret/{NAMESPACE}/{storage}")).is_none());
-    session
 }
 
 /// Prints how long each phase took (and the total), to spot the slow ones in CI logs.
@@ -1054,8 +1077,10 @@ async fn graph_snapshot_reflects_applied_fixture() {
     phases.done("metrics");
     // Before the scopes phase, which switches the scope away from the smoke namespace.
     if crd_guard.is_some() {
-        session = exercise_custom_and_helm(session, &mut rx, &mut graph, &context).await;
-        phases.done("custom resources + helm");
+        session = exercise_custom(session, &mut rx, &mut graph, &context).await;
+        phases.done("custom resources");
+        exercise_helm(&session, &mut rx, &mut graph).await;
+        phases.done("helm");
     }
     exercise_scopes(&mut session, &mut rx, &mut graph).await;
     phases.done("scopes");
