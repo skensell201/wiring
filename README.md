@@ -41,7 +41,9 @@ Download the latest installer from [**Releases**](https://github.com/skensell201
 | macOS (Apple Silicon and Intel) | `Wiring_<version>_universal.dmg` | The build is unsigned. After copying to Applications, run `xattr -d com.apple.quarantine /Applications/Wiring.app`, or right-click the app and choose **Open**. |
 | Windows 10/11 | `Wiring_<version>_x64_en-US.msi` or `Wiring_<version>_x64-setup.exe` | The build is unsigned. When SmartScreen appears, choose **More info → Run anyway**. |
 
-Wiring reads your kubeconfig from `~/.kube/config`, or from `KUBECONFIG` when it is set. You need at least one context. You can also add a kubeconfig file from inside the app with **Add kubeconfig…**.
+Wiring reads your kubeconfig from `~/.kube/config`, or from `KUBECONFIG` when it is set. You can also add a kubeconfig file from inside the app with **Add kubeconfig…**. A file without contexts is refused. If Wiring finds no contexts at all, it opens on a welcome screen. That screen lists each file it looked at and what it found there (not found, unreadable, no contexts), with **Add kubeconfig…** and **Rescan**.
+
+**Login helpers.** Clusters that sign in through a helper program, such as `gke-gcloud-auth-plugin`, `aws` or `kubelogin`, need it installed. On macOS and Linux, Wiring uses your login shell's `PATH`, so it finds a helper installed with Homebrew or a cloud SDK even when you start Wiring from the Dock or a launcher. (When you start Wiring from a terminal, it already has your `PATH`.) Restart Wiring after installing one.
 
 ## Features
 
@@ -53,6 +55,13 @@ Wiring reads your kubeconfig from `~/.kube/config`, or from `KUBECONFIG` when it
 - NetworkPolicies show which pods they apply to and which pods they let in. Turn on the RBAC chips to see which Roles a ServiceAccount gets through which bindings, and the Node chip to see where each pod runs. A NotReady node is the cause of the pods stuck on it.
 
 **Navigator.** The left sidebar lists every kubeconfig context and the resources of the selected namespace by category: Workloads, Config, Network (with Network Policies), Storage, Access Control (Service Accounts, Roles and Role Bindings, Cluster Roles and Cluster Role Bindings) and Cluster (Nodes), followed by Custom Resources and Helm. Each kind shows a live count and the worst status among its objects. Kinds your RBAC role cannot read are struck through instead of failing. The sidebar collapses to an icon rail.
+
+**Empty and error states.** When Wiring has nothing to show, the centre pane says why and offers the next step:
+- While connecting, the pane and the header show which cluster Wiring is dialling.
+- A failed connection names the cause, with **Retry** and **Choose another cluster**. The cause is one of: the cluster can't be reached, its certificate isn't trusted, the cluster didn't accept your credentials, a login helper isn't installed (with how to install it) or can't be run, or the cluster didn't answer within 20 seconds.
+- A namespace with no objects, a namespace you have no access to (RBAC), every kind hidden by the chips, and a search with no matches each get their own message and button. When there are too many objects to draw, the graph switches to tables and says so.
+- Tables of kinds you can read in only some namespaces say so above the rows.
+- While some resources can't be watched, the header reads *Reconnecting…*.
 
 **Several namespaces.** The namespace picker in the header takes one namespace (click its name), several (tick them, then **Apply**) or **All namespaces**. With more than one, the graph shows a lane per namespace, tables get a Namespace column, and the navigator counts across all of them. Up to 20 namespaces can be selected at once. Objects keep their own namespace for details, editing, logs, the terminal and actions; **+ Create** has a namespace select. A selection with more than 1,500 objects is shown as tables only. *All namespaces* needs permission to list and watch cluster-wide. A kind your role cannot list that way is watched per namespace and marked *partial*.
 
@@ -143,7 +152,8 @@ WIRING_SMOKE_CONTEXT=docker-desktop cargo test --test smoke -- --ignored
 src/                     React frontend
   app/                   store (zustand), startup, event wiring, global keys
   features/
-    cluster/             header, context and namespace pickers
+    cluster/             header, namespace picker
+    onboarding/          welcome, connecting and connection-failure panes
     navigator/           sidebar: clusters and the resource tree
     graph/               React Flow canvas, nodes, edges, layout, kind chips
     table/               per-kind tables
@@ -151,7 +161,7 @@ src/                     React frontend
     editor/              YAML editor, diff review, Create dialog
     logs/                Logs tab, virtualised log view, ANSI rendering
     helm/                Helm releases view
-  shared/                IPC types and commands, UI primitives
+  shared/                IPC types and commands, UI primitives, empty states
   styles/theme.css       design tokens (colours, type, radii)
 src-tauri/               Rust backend
   src/session/           per-context watches, reducer, writes
