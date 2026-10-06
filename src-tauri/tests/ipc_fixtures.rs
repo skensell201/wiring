@@ -61,6 +61,7 @@ fn connect_info() {
             context: "prod-eu".into(),
             server_version: "v1.33.2".into(),
             namespaces: vec!["default".into(), "kube-system".into(), "payments".into()],
+            can_list_namespaces: true,
         },
     );
 }

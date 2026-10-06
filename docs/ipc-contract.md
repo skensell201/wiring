@@ -36,7 +36,7 @@ Argument names are camelCase on the JS side; Tauri maps them to the Rust snake_c
 | `rollout_history` | `{ nodeId }` | `Revision[]`, newest first |
 | `rollback_object` | `{ nodeId, revision }` | `ObjectDetails` |
 
-`ConnectInfo.namespaces` may be **empty** when the user cannot list namespaces (namespace-scoped RBAC); offer a free-text namespace input in that case. If the kubeconfig context has a default namespace it is included.
+`ConnectInfo.namespaces` may be **empty** when the user cannot list namespaces (namespace-scoped RBAC); offer a free-text namespace input in that case. If the kubeconfig context has a default namespace it is included. `ConnectInfo.canListNamespaces` is `true` only when `namespaces` came from listing them; when it is `false` (listing was forbidden, so the list is just the context namespace) do not offer *All namespaces* — the backend refuses it.
 
 ### Writes
 

@@ -45,6 +45,9 @@ pub struct ConnectInfo {
     pub context: String,
     pub server_version: String,
     pub namespaces: Vec<String>,
+    /// `namespaces` came from listing them, not from the context-namespace fallback; only
+    /// then is all namespaces offered (and accepted by `select_namespaces`).
+    pub can_list_namespaces: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -77,16 +80,17 @@ fn exec_plugin_command(kubeconfig: &Kubeconfig, context: &str) -> Option<String>
 
 /// Users without cluster-wide `list namespaces` (common with namespace-scoped RBAC) can
 /// still browse the namespace their context names, so a 403 here must not fail `connect`.
-fn namespaces_or_fallback(listed: Result<Vec<String>, kube::Error>, context_namespace: Option<&str>) -> AppResult<Vec<String>> {
+/// The flag says whether the list came from listing (`true`) or from that fallback.
+fn namespaces_or_fallback(listed: Result<Vec<String>, kube::Error>, context_namespace: Option<&str>) -> AppResult<(Vec<String>, bool)> {
     match listed {
-        Ok(namespaces) => Ok(namespaces),
+        Ok(namespaces) => Ok((namespaces, true)),
         Err(e) => {
             let err = AppError::from(&e);
             if err.kind != ErrorKind::Forbidden {
                 return Err(err);
             }
             tracing::warn!(error = %err.message, "cannot list namespaces; falling back to the context namespace");
-            Ok(context_namespace.map(str::to_owned).into_iter().collect())
+            Ok((context_namespace.map(str::to_owned).into_iter().collect(), false))
         }
     }
 }
@@ -155,16 +159,16 @@ impl Session {
             .list(&ListParams::default())
             .await
             .map(|list| list.items.into_iter().filter_map(|n| n.metadata.name).collect::<Vec<_>>());
-        let listable = listed.is_ok();
-        let namespaces = namespaces_or_fallback(listed, context_namespace.as_deref())?;
+        let (namespaces, can_list_namespaces) = namespaces_or_fallback(listed, context_namespace.as_deref())?;
 
         let info = ConnectInfo {
             context: context.to_string(),
             server_version: version.git_version,
             namespaces,
+            can_list_namespaces,
         };
         let mut session = Session::new(client, emitter);
-        session.namespaces = listable.then(|| info.namespaces.clone());
+        session.namespaces = can_list_namespaces.then(|| info.namespaces.clone());
         Ok((session, info))
     }
 
@@ -693,12 +697,16 @@ mod tests {
         };
         assert_eq!(
             namespaces_or_fallback(Err(forbidden()), Some("team-a")).unwrap(),
-            vec!["team-a".to_string()]
+            (vec!["team-a".to_string()], false),
+            "a fallback list is not a listing: all namespaces is not offered"
         );
-        assert_eq!(namespaces_or_fallback(Err(forbidden()), None).unwrap(), Vec::<String>::new());
+        assert_eq!(
+            namespaces_or_fallback(Err(forbidden()), None).unwrap(),
+            (Vec::<String>::new(), false)
+        );
         assert_eq!(
             namespaces_or_fallback(Ok(vec!["a".into(), "b".into()]), Some("team-a")).unwrap(),
-            vec!["a".to_string(), "b".to_string()]
+            (vec!["a".to_string(), "b".to_string()], true)
         );
         let unauthorized = kube::Error::Api(Box::new(kube::core::Status {
             code: 401,

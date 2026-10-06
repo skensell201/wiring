@@ -53,7 +53,8 @@ export interface GraphDelta {
 }
 
 export interface ContextInfo { name: string; cluster: string; user: string; namespace: string | null; sourceFile: string }
-export interface ConnectInfo { context: string; serverVersion: string; namespaces: string[] }
+/** `canListNamespaces` is false when `namespaces` is only the context namespace (listing was forbidden): no "All namespaces" then. */
+export interface ConnectInfo { context: string; serverVersion: string; namespaces: string[]; canListNamespaces: boolean }
 export interface ObjectDetails { yaml: string; summary: [string, string][]; related: NodeId[] }
 export interface K8sEvent {
   name: string; type: string; reason: string; message: string; count: number;
@@ -154,7 +155,7 @@ export function isContextInfo(v: unknown): v is ContextInfo {
   return isObj(v) && isStr(v.name) && isStr(v.cluster) && isStr(v.user) && isStrOrNull(v.namespace) && isStr(v.sourceFile);
 }
 export function isConnectInfo(v: unknown): v is ConnectInfo {
-  return isObj(v) && isStr(v.context) && isStr(v.serverVersion) && arrayOf(v.namespaces, isStr);
+  return isObj(v) && isStr(v.context) && isStr(v.serverVersion) && arrayOf(v.namespaces, isStr) && typeof v.canListNamespaces === "boolean";
 }
 export function isObjectDetails(v: unknown): v is ObjectDetails {
   return isObj(v) && isStr(v.yaml) && Array.isArray(v.summary)
