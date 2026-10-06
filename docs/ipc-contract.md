@@ -201,8 +201,8 @@ The backend stores `extraKubeconfigs: string[]` in `settings.json` (tauri-plugin
 
 ## Security notes
 
-- `tauri.conf.json` sets a CSP that allows only the app's own scripts, styles (plus inline styles), images and fonts (plus `data:`), and IPC (`connect-src ipc: http://ipc.localhost`).
-- The webview's capability (`src-tauri/capabilities/default.json`) grants only core events and window dragging, the store, and the open/save dialogs. Files, the browser, the updater and relaunching are reached through the commands above, never directly.
+- `tauri.conf.json` sets a CSP that allows only the app's own scripts, styles (plus inline styles), images and fonts (both also from `data:`), and IPC (`connect-src ipc: http://ipc.localhost`).
+- The webview's capability (`src-tauri/capabilities/default.json`) grants `core:default`, window dragging, the store, and the open/save dialogs. Files, the browser, the updater and relaunching are reached through the commands above, never directly.
 - Secret YAML in `get_object` includes base64 `data` (accepted for the MVP).
 
 ## Logs
