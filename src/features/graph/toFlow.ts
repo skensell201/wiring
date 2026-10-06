@@ -184,7 +184,7 @@ export function toFlow(input: ToFlowInput): { lanes: LaneFlowNode[]; nodes: Reso
     width: NODE_WIDTH,
     height: NODE_HEIGHT,
     selected: node.id === input.selectedId,
-    data: nodeData(node, !matches(node) || (highlight.size > 0 && !inRelease(node.id)), input.expandedGroups.has(node.id), onPath.has(node.id) ? tone : undefined),
+    data: nodeData(node, !matches(node) || (highlight.size > 0 && !inRelease(node.id) && !onPath.has(node.id) && node.id !== input.selectedId), input.expandedGroups.has(node.id), onPath.has(node.id) ? tone : undefined),
   }));
 
   // hoveredId can outlive its node (a delta removed it before the mouse moved), and a hover that

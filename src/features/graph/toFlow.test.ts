@@ -284,4 +284,13 @@ describe("release highlight", () => {
   it("dims nothing without a highlight", () => {
     expect(toFlow(input).nodes.every((x) => !x.data.dimmed)).toBe(true);
   });
+
+  it("keeps the selected node and its problem path lit outside the release", () => {
+    const bad: GraphNode = { ...n("Deployment/shop/bad", "Deployment"), status: "warn", problem: { reason: "not ready", message: null, cause: "Pod/shop/bad-1" } };
+    const pod: GraphNode = { ...n("Pod/shop/bad-1", "Pod"), status: "err", problem: { reason: "CrashLoopBackOff", message: null, cause: null } };
+    const f = toFlow({ ...input, nodes: new Map([dep, other, bad, pod].map((x) => [x.id, x])), selectedId: bad.id, highlightIds: new Set([dep.id]) });
+    const dimmed = Object.fromEntries(f.nodes.map((x) => [x.id, x.data.dimmed]));
+    expect(dimmed).toEqual({ [dep.id]: false, [other.id]: true, [bad.id]: false, [pod.id]: false });
+  });
 });
+

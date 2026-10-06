@@ -14,7 +14,11 @@ const TAB_LABEL: Record<HelmTab, string> = { overview: "Overview", values: "Valu
 const CELL = "border-b border-border px-5";
 const HEAD = "h-11 border-b border-border px-5 text-left text-xs font-medium text-text-muted";
 
-const when = (t: string | null) => (t ? new Date(t).toLocaleString() : "—");
+const when = (t: string | null) => {
+  if (!t) return "—";
+  const d = new Date(t);
+  return Number.isNaN(d.getTime()) ? t : d.toLocaleString();
+};
 
 /** Helm releases of the scope (read-only, from Helm 3 storage Secrets) and the selected one's tabs. */
 export function HelmView() {
@@ -50,8 +54,14 @@ export function HelmView() {
             {rows.map((r) => {
               const isSelected = selected?.namespace === r.namespace && selected.name === r.name;
               return (
-                <tr key={`${r.namespace}/${r.name}`} aria-selected={isSelected} onClick={() => void selectRelease(r.namespace, r.name)}
-                  className={`h-12 cursor-default ${isSelected ? "bg-muted/50" : "hover:bg-muted/25"}`}>
+                <tr key={`${r.namespace}/${r.name}`} aria-selected={isSelected} tabIndex={0}
+                  onClick={() => void selectRelease(r.namespace, r.name)}
+                  onKeyDown={(e) => {
+                    if (e.key !== "Enter" && e.key !== " ") return;
+                    e.preventDefault();
+                    void selectRelease(r.namespace, r.name);
+                  }}
+                  className={`h-12 cursor-default outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-accent ${isSelected ? "bg-muted/50" : "hover:bg-muted/25"}`}>
                   <td className={`${CELL} text-text-hi`}>{r.name}</td>
                   <td className={CELL}>{r.namespace}</td>
                   <td className={CELL}>{r.chart}</td>

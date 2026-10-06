@@ -743,7 +743,10 @@ export const useAppStore = create<AppState>()((set, get) => ({
       const details = await commands.helmRelease(namespace, name);
       const sel = get().helmSelected;
       if (get().connection.scope !== scope || sel?.namespace !== namespace || sel.name !== name) return;
-      set({ helmDetails: details, highlightIds: new Set(details.resources) });
+      const current = get().highlightIds;
+      const same = current.size === details.resources.length && details.resources.every((id) => current.has(id));
+      // The same members keep the same Set, so the graph does not recompute for a no-op refresh.
+      set(same ? { helmDetails: details } : { helmDetails: details, highlightIds: new Set(details.resources) });
     } catch (e) {
       const sel = get().helmSelected;
       if (get().connection.scope === scope && sel?.namespace === namespace && sel.name === name) get().toast(toAppError(e));

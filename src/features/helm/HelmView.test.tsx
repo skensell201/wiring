@@ -38,6 +38,22 @@ describe("HelmView", () => {
     expect(within(grid).getByText("web-1.4.2")).toBeInTheDocument();
   });
 
+  it("selects a release from the keyboard", async () => {
+    render(<HelmView />);
+    const row = screen.getByText("web").closest("tr")!;
+    expect(row).toHaveAttribute("tabindex", "0");
+    fireEvent.keyDown(row, { key: "Enter" });
+    await waitFor(() => expect(useAppStore.getState().helmSelected).toEqual({ namespace: "shop", name: "web" }));
+    fireEvent.keyDown(screen.getByText("api").closest("tr")!, { key: " " });
+    await waitFor(() => expect(useAppStore.getState().helmSelected).toEqual({ namespace: "shop", name: "api" }));
+  });
+
+  it("shows an unparseable timestamp as it came", () => {
+    useAppStore.setState({ helmReleases: [{ ...web, updated: "yesterday-ish" }] });
+    render(<HelmView />);
+    expect(screen.getByText("yesterday-ish")).toBeInTheDocument();
+  });
+
   it("selecting a release shows its tabs and highlights its objects", async () => {
     render(<HelmView />);
     fireEvent.click(screen.getByText("web"));
@@ -79,6 +95,14 @@ describe("release selection in the store", () => {
     await useAppStore.getState().refreshHelm();
     expect(useAppStore.getState().helmSelected).toBeNull();
     expect(useAppStore.getState().highlightIds.size).toBe(0);
+  });
+
+  it("keeps the same highlight set when a refresh brings the same resources", async () => {
+    await useAppStore.getState().selectRelease("shop", "web");
+    const first = useAppStore.getState().highlightIds;
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => (cmd === "helm_release" ? { ...details, resources: [...details.resources] } : null));
+    await useAppStore.getState().selectRelease("shop", "web");
+    expect(useAppStore.getState().highlightIds).toBe(first);
   });
 
   it("drops details that land after the selection moved on", async () => {
