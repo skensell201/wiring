@@ -201,11 +201,26 @@ pub fn validate_file(path: &Path) -> AppResult<()> {
     // Deliberate: kubectl allows split kubeconfigs (clusters/users in one file), but a
     // file added here that brings no contexts adds nothing to pick, so it is refused.
     if cfg.contexts.is_empty() {
-        let name = path
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| path.display().to_string());
-        return Err(AppError::new(ErrorKind::Invalid, format!("{name} has no contexts")));
+        return Err(AppError::new(ErrorKind::Invalid, format!("{} has no contexts", file_name(path))));
+    }
+    Ok(())
+}
+
+/// `team.yaml` from `/Users/me/team.yaml`, or the whole path when it has no file name.
+fn file_name(path: &Path) -> String {
+    path.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.display().to_string())
+}
+
+/// Refuses a path already among the loaded kubeconfig files (the `$KUBECONFIG` entries or
+/// `~/.kube/config`, and the files added before): adding it again would change nothing.
+/// Paths compare canonicalised where they exist, so another spelling of the same file matches.
+pub fn ensure_not_loaded(path: &Path, loaded: &[PathBuf]) -> AppResult<()> {
+    let key = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    let wanted = key(path);
+    if loaded.iter().any(|p| key(p) == wanted) {
+        return Err(AppError::new(ErrorKind::Invalid, format!("{} is already loaded", file_name(path))));
     }
     Ok(())
 }
@@ -455,5 +470,31 @@ mod tests {
 
         let missing = validate_file(&dir.path().join("nope")).unwrap_err();
         assert_eq!(missing.kind, ErrorKind::NotFound);
+    }
+
+    #[test]
+    fn a_path_already_loaded_is_refused_by_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = kubeconfig_file(dir.path(), "a.yaml", &[("prod", "c1", "u1")]);
+        let b = kubeconfig_file(dir.path(), "b.yaml", &[("dev", "c1", "u1")]);
+        let err = ensure_not_loaded(&a, &[b.clone(), a.clone()]).unwrap_err();
+        assert_eq!(err.kind, ErrorKind::Invalid);
+        assert_eq!(err.message, "a.yaml is already loaded");
+        assert!(ensure_not_loaded(&a, &[b]).is_ok());
+        assert!(ensure_not_loaded(&a, &[]).is_ok());
+    }
+
+    #[test]
+    fn an_already_loaded_path_matches_through_another_spelling() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        let a = kubeconfig_file(dir.path(), "a.yaml", &[("prod", "c1", "u1")]);
+        let roundabout = dir.path().join("sub").join("..").join("a.yaml");
+        assert!(ensure_not_loaded(&roundabout, std::slice::from_ref(&a)).is_err());
+        assert!(ensure_not_loaded(&a, &[roundabout]).is_err());
+        // A loaded path that does not exist (an unset default) still compares as written.
+        let gone = dir.path().join("gone.yaml");
+        assert!(ensure_not_loaded(&a, std::slice::from_ref(&gone)).is_ok());
+        assert!(ensure_not_loaded(&gone, std::slice::from_ref(&gone)).is_err());
     }
 }

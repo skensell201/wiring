@@ -86,10 +86,10 @@ pub fn kubeconfig_sources(app: AppHandle) -> AppResult<Vec<KubeconfigSource>> {
 pub fn add_kubeconfig(app: AppHandle, path: String) -> AppResult<Vec<ContextInfo>> {
     let p = PathBuf::from(&path);
     kubeconfig::validate_file(&p)?;
+    // Already a default source or added before: saving it again would only duplicate it.
+    kubeconfig::ensure_not_loaded(&p, &all_kubeconfig_paths(&app))?;
     let mut extra = extra_kubeconfigs(&app);
-    if !extra.contains(&p) {
-        extra.push(p);
-    }
+    extra.push(p);
     let store = app.store(SETTINGS_FILE).map_err(|e| AppError::internal(e.to_string()))?;
     store.set(KEY_EXTRA_KUBECONFIGS, json!(kubeconfig::path_strings(&extra)));
     store.save().map_err(|e| AppError::internal(e.to_string()))?;
