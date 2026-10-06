@@ -10,12 +10,13 @@ import { KindChips } from "./KindChips";
 /** Title of the centre pane (the category above it for a table, the kind filter under it for the
  *  graph) plus the Graph | Table switch. */
 export function ViewHeader() {
-  const { view, nodes, tooLarge, table, customTables, helmReleases, scope, namespaces, lastTableKind, hiddenKinds, deniedKinds, showGraph, showTable, toggleKind } = useAppStore(
+  const { view, nodes, tooLarge, table, customTables, helmReleases, scope, namespaces, lastTableKind, hiddenKinds, deniedKinds, showGraph, showTable, toggleKind, release, highlighted, clearRelease } = useAppStore(
     useShallow((s) => ({
       view: s.view, nodes: s.nodes, tooLarge: s.tooLarge, table: s.view.name === "table" ? s.tables.get(s.view.kind) : undefined,
       customTables: s.customTables, helmReleases: s.helmReleases, scope: s.connection.scope, namespaces: s.connection.namespaces,
       lastTableKind: s.lastTableKind, hiddenKinds: s.hiddenKinds, deniedKinds: s.deniedKinds,
       showGraph: s.showGraph, showTable: s.showTable, toggleKind: s.toggleKind,
+      release: s.helmSelected, highlighted: s.highlightIds.size > 0, clearRelease: s.clearRelease,
     })),
   );
   const stats = useMemo(
@@ -58,6 +59,13 @@ export function ViewHeader() {
         {view.name === "graph" && (
           <div className="mt-3 pb-1">
             <KindChips hidden={hiddenKinds} denied={deniedKinds} present={present} onToggle={toggleKind} />
+            {release && highlighted && (
+              <div className="mt-2 flex items-center gap-2 text-xs text-text-muted">
+                <span>Release <span className="text-text-hi">{release.name}</span> highlighted</span>
+                <span aria-hidden>·</span>
+                <button type="button" onClick={clearRelease} className="font-medium text-accent hover:text-text-hi">Clear</button>
+              </div>
+            )}
           </div>
         )}
       </div>

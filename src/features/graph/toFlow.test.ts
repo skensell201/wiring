@@ -264,3 +264,24 @@ it("hides custom resource owners and their owns edges with the Custom chip", () 
   expect(f.nodes.map((x) => x.id)).toEqual([secret.id]);
   expect(f.edges).toHaveLength(0);
 });
+
+describe("release highlight", () => {
+  const n = (id: string, kind: GraphNode["kind"]): GraphNode => ({ id, kind, namespace: "shop", name: id.split("/").pop()!, status: "ok", badges: [], group: null });
+  const dep = n("Deployment/shop/web", "Deployment");
+  const group = n("PodGroup/shop/Deployment/web", "PodGroup");
+  const other = n("ConfigMap/shop/other", "ConfigMap");
+  const input = {
+    nodes: new Map([dep, group, other].map((x) => [x.id, x])), edges: new Map(), hiddenKinds: new Set<GraphNode["kind"]>(), search: "",
+    hoveredId: null, selectedId: null, expandedGroups: new Set<string>(),
+  };
+
+  it("dims everything outside the release, counting a member's pod group as a member", () => {
+    const f = toFlow({ ...input, highlightIds: new Set([dep.id]) });
+    const dimmed = Object.fromEntries(f.nodes.map((x) => [x.id, x.data.dimmed]));
+    expect(dimmed).toEqual({ [dep.id]: false, [group.id]: false, [other.id]: true });
+  });
+
+  it("dims nothing without a highlight", () => {
+    expect(toFlow(input).nodes.every((x) => !x.data.dimmed)).toBe(true);
+  });
+});

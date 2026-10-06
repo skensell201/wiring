@@ -7,7 +7,7 @@ import { applyLogMessage, initialLogs, type LogsState } from "../features/logs/l
 import { commands } from "../shared/ipc/commands";
 import type {
   AppError, ConnectionState, ContextInfo, CustomKind, CustomTable, Graph, GraphDelta, GraphEdge, Forward, GraphNode, K8sEvent, Kind, LogMessage, NamespaceScope, NodeId, ObjectDetails,
-  HelmRelease, ResourceRef, Status, Table, TooLarge,
+  HelmRelease, HelmReleaseDetails, ResourceRef, Status, Table, TooLarge,
 } from "../shared/ipc/types";
 import { toAppError } from "../shared/ipc/types";
 import { firstNamespace, inScope } from "../shared/scope";
@@ -140,6 +140,10 @@ export interface AppState extends GraphState {
   customTableErrors: Map<string, string>;
   /** Helm releases in the scope; `null` until fetched. */
   helmReleases: HelmRelease[] | null;
+  /** The release open in the Helm view, its details, and the node ids it highlights on the graph. */
+  helmSelected: { namespace: string; name: string } | null;
+  helmDetails: HelmReleaseDetails | null;
+  highlightIds: Set<NodeId>;
   focusRequest: FocusRequest | null;
   createDialog: CreateDialog;
   deleteDialog: DeleteDialog;
@@ -188,6 +192,8 @@ export interface AppState extends GraphState {
   applyCustomTable: (t: CustomTable) => void;
   showHelm: () => Promise<void>;
   refreshHelm: () => Promise<void>;
+  selectRelease: (namespace: string, name: string) => Promise<void>;
+  clearRelease: () => void;
   focusInGraph: (id: NodeId) => Promise<void>;
   /** The canvas has centred on the requested node; drop the request so it does not replay. */
   clearFocusRequest: () => void;
@@ -284,6 +290,9 @@ export function initialState(): Omit<AppState, keyof Actions> {
     customTables: new Map(),
     customTableErrors: new Map(),
     helmReleases: null,
+    helmSelected: null,
+    helmDetails: null,
+    highlightIds: new Set(),
     focusRequest: null,
     createDialog: { open: false, kind: "Deployment", custom: null, buffer: "", namespace: "", error: null, submitting: false },
     deleteDialog: { open: false, nodeId: null },
@@ -320,7 +329,7 @@ type Actions = Pick<AppState,
   | "applySnapshot" | "applyDelta" | "setObjectEvents" | "setConnectionState" | "loadContexts" | "addKubeconfig" | "connect"
   | "reconnect" | "disconnect" | "selectNamespace" | "selectScope" | "select" | "setHovered" | "toggleGroup" | "toggleKind" | "setSearch" | "toast"
   | "dismissToast" | "setPickerOpen" | "showGraph" | "showTable" | "refreshTable"
-  | "loadCustomKinds" | "showCustom" | "refreshCustom" | "applyCustomTable" | "showHelm" | "refreshHelm" | "focusInGraph" | "clearFocusRequest"
+  | "loadCustomKinds" | "showCustom" | "refreshCustom" | "applyCustomTable" | "showHelm" | "refreshHelm" | "selectRelease" | "clearRelease" | "focusInGraph" | "clearFocusRequest"
   | "toggleSidebar" | "startEdit" | "setBuffer" | "reviewEdit" | "backToEdit" | "applyEdit" | "cancelEdit" | "reloadEdit"
   | "confirmDiscard" | "cancelDiscard" | "openCreate" | "setCreateKind" | "setCreateNamespace" | "setCreateBuffer" | "submitCreate" | "closeCreate"
   | "requestDelete" | "confirmDelete" | "cancelDelete" | "startLogs" | "stopLogs" | "setLogsContainer" | "toggleLogsPrevious"
@@ -517,11 +526,13 @@ export const useAppStore = create<AppState>()((set, get) => ({
       nodes: before.nodes, edges: before.edges, graphReady: before.graphReady, tooLarge: before.tooLarge,
       deniedKinds: before.deniedKinds, partialKinds: before.partialKinds, tables: before.tables, scope: before.connection.scope,
       customTables: before.customTables, customTableErrors: before.customTableErrors, helmReleases: before.helmReleases,
+      helmSelected: before.helmSelected, helmDetails: before.helmDetails, highlightIds: before.highlightIds,
     };
     set((s) => ({
       nodes: new Map(), edges: new Map(), graphReady: false, tooLarge: null, selectedId: null, details: null, hoveredId: null,
       deniedKinds: new Set(), partialKinds: new Set(), tables: new Map(), focusRequest: null, connection: { ...s.connection, scope },
       customTables: new Map(), customTableErrors: new Map(), helmReleases: null,
+      helmSelected: null, helmDetails: null, highlightIds: new Set(),
       deleteDialog: initialState().deleteDialog, discardDialog: initialState().discardDialog, detailsMaximized: false,
       actionsMenu: null, actionDialog: null, requestedTab: null,
     }));
@@ -710,11 +721,36 @@ export const useAppStore = create<AppState>()((set, get) => ({
     try {
       const releases = await commands.helmReleases();
       if (scope === null || get().connection.scope !== scope) return;
-      set({ helmReleases: releases ?? [] }); // as with custom kinds: a missing list must not re-trigger the fetch
+      const list = releases ?? [];
+      set({ helmReleases: list }); // as with custom kinds: a missing list must not re-trigger the fetch
+      // The open release follows the list: re-read while it is there, closed once it is gone.
+      const sel = get().helmSelected;
+      if (sel) {
+        if (list.some((r) => r.namespace === sel.namespace && r.name === sel.name)) void get().selectRelease(sel.namespace, sel.name);
+        else get().clearRelease();
+      }
     } catch (e) {
       if (scope !== null && get().connection.scope === scope) get().toast(toAppError(e));
     }
   },
+
+  selectRelease: async (namespace, name) => {
+    const prev = get().helmSelected;
+    // Re-selecting (a refresh) keeps the shown details until the new ones land.
+    if (prev?.namespace !== namespace || prev.name !== name) set({ helmSelected: { namespace, name }, helmDetails: null, highlightIds: new Set() });
+    const scope = get().connection.scope;
+    try {
+      const details = await commands.helmRelease(namespace, name);
+      const sel = get().helmSelected;
+      if (get().connection.scope !== scope || sel?.namespace !== namespace || sel.name !== name) return;
+      set({ helmDetails: details, highlightIds: new Set(details.resources) });
+    } catch (e) {
+      const sel = get().helmSelected;
+      if (get().connection.scope === scope && sel?.namespace === namespace && sel.name === name) get().toast(toAppError(e));
+    }
+  },
+
+  clearRelease: () => set({ helmSelected: null, helmDetails: null, highlightIds: new Set() }),
 
   focusInGraph: async (id) => {
     if (get().tooLarge) {

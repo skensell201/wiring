@@ -9,6 +9,7 @@ import { DetailsPanel } from "./features/details/DetailsPanel";
 import { CreateDialog } from "./features/editor/CreateDialog";
 import { Canvas } from "./features/graph/Canvas";
 import { ViewHeader } from "./features/graph/ViewHeader";
+import { HelmView } from "./features/helm/HelmView";
 import { Navigator } from "./features/navigator/Navigator";
 import { CustomTableView } from "./features/table/CustomTableView";
 import { TableView } from "./features/table/TableView";
@@ -49,7 +50,7 @@ export function App() {
           <>
             <ViewHeader />
             <main className="min-h-0 flex-1">
-              <ErrorBoundary name="main view">{viewName === "graph" ? <Canvas /> : viewName === "custom" ? <CustomTableView key={customKey} /> : <TableView />}</ErrorBoundary>
+              <ErrorBoundary name="main view">{viewName === "graph" ? <Canvas /> : viewName === "custom" ? <CustomTableView key={customKey} /> : viewName === "helm" ? <HelmView /> : <TableView />}</ErrorBoundary>
             </main>
           </>
         )}
