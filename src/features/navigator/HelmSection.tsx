@@ -22,7 +22,7 @@ export function HelmSection() {
       <button type="button" aria-current={active ? "page" : undefined} onClick={() => void showHelm()}
         className={`${ROW} pl-8 ${active ? ACTIVE : IDLE}`}>
         <span className="flex-1 truncate">Releases</span>
-        {" "/* a flex row drops it; it keeps the accessible name "Kind 3" */}
+        {" "/* a flex row drops it; it keeps the accessible name "Releases 3" */}
         {releases && <span className="text-xs tabular-nums text-text-muted">{releases.length}</span>}
       </button>
     </SectionGroup>

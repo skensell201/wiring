@@ -50,6 +50,9 @@ pub enum OutEvent {
     MetricsUpdated(MetricsUpdate),
     /// Rows of the custom table that is open (see `custom::watch`).
     CustomTable(crate::custom::CustomTable),
+    /// A Helm storage Secret changed (at most one per reducer flush): re-read `helm_releases`.
+    /// Those Secrets are no graph nodes, so no `GraphDelta` says it.
+    HelmChanged,
 }
 
 impl OutEvent {
@@ -67,6 +70,7 @@ impl OutEvent {
             OutEvent::ForwardsChanged(f) => ("forwards_changed", json(&f)),
             OutEvent::MetricsUpdated(m) => ("metrics_updated", json(&m)),
             OutEvent::CustomTable(t) => ("custom_table", json(&t)),
+            OutEvent::HelmChanged => ("helm_changed", serde_json::Value::Null),
         }
     }
 }

@@ -71,6 +71,7 @@ Argument names are camelCase on the JS side; Tauri maps them to the Rust snake_c
 | `object_events` | `ObjectEvents` | Full list, newest first, for the node passed to `watch_events`. Ignore payloads whose `nodeId` is not the current selection. |
 | `forwards_changed` | `Forward[]` | Every running forward, ordered by id, after each start, stop and status change (see [Port-forward](#port-forward)). Empty after a disconnect. |
 | `custom_table` | `CustomTable` | The full rows of the live custom table after a change (debounced); see [Custom resources](#custom-resources) |
+| `helm_changed` | `null` | A Helm storage Secret (`type: helm.sh/release.v1`) was added, changed or deleted — at most one per debounced flush. Those Secrets are not graph nodes, so no `graph_delta` says it; re-read `helm_releases` (and an open `helm_release`). See [Helm](#helm) |
 | `metrics_updated` | `{ state: "pending" \| "available" \| "unavailable" \| "forbidden" }` | After each metrics-server sample of the selected namespace (every 15 s), and once when the Metrics API turns out to be missing (404 → `unavailable`) or forbidden (403 → `forbidden`), after which polling stops for that namespace session. Three failed polls in a row before any sample (a registered but unhealthy metrics-server) also send `unavailable`, with the Overview note "metrics-server not responding"; polling continues and a sample sends `available`. A sample older than 60 s adds "(stale)" to the Overview usage rows. Refetch the open Pod / Deployment / StatefulSet / DaemonSet table and the selected details. Usage badges arrive as an ordinary `graph_delta`. |
 
 ### Ordering rules the frontend must follow
@@ -154,8 +155,8 @@ returns `HelmReleaseDetails` `{ release, description, firstDeployed, lastDeploye
 `values` is the user-supplied values as YAML (empty when none), `history` lists every stored revision newest
 first (`{ revision, chart, appVersion, status, health, updated, description }`), and `resources` are the node
 ids of the release's objects in the store (Helm's `meta.helm.sh/release-*` annotations, or
-`app.kubernetes.io/managed-by: Helm` + `app.kubernetes.io/instance`). Both read the watched Secrets: there is no
-event, so the frontend re-reads them when the graph changes. Release values can hold credentials and are
+`app.kubernetes.io/managed-by: Helm` + `app.kubernetes.io/instance`). Both read the watched Secrets: the frontend
+re-reads them on `helm_changed` and on every `graph_snapshot`. Release values can hold credentials and are
 never logged.
 
 ## Metrics

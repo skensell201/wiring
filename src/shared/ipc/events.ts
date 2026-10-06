@@ -10,6 +10,7 @@ export interface BackendEvents {
   forwards_changed: Forward[];
   metrics_updated: MetricsUpdate;
   custom_table: CustomTable;
+  helm_changed: null;
   update_progress: UpdateProgress;
   menu_check_updates: null;
 }

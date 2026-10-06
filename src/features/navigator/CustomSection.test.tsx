@@ -111,6 +111,62 @@ describe("custom kinds store", () => {
   });
 });
 
+describe("custom table answers in flight", () => {
+  const rollTable = { ...table, rows: [] };
+  function deferredLists() {
+    const pending: Array<{ kind: string; resolve: (v: unknown) => void }> = [];
+    vi.mocked(invoke).mockImplementation((cmd: string, args?: unknown) => {
+      if (cmd !== "list_custom") return Promise.resolve(null);
+      const kind = (args as { resource: { kind: string } }).resource.kind;
+      return new Promise((resolve) => pending.push({ kind, resolve }));
+    });
+    return pending;
+  }
+  const listCalls = () => vi.mocked(invoke).mock.calls.filter(([c]) => c === "list_custom").map(([, a]) => (a as { resource: { kind: string } }).resource.kind);
+
+  it("a late answer for the kind left restarts the open kind's watch once", async () => {
+    const pending = deferredLists();
+    useAppStore.setState({ connection: connected() });
+    const a = useAppStore.getState().showCustom(cert.resource);
+    const b = useAppStore.getState().showCustom(rollout.resource);
+    pending[1].resolve({ resource: rollout.resource, table: rollTable, error: null });
+    await b;
+    pending[0].resolve({ resource: cert.resource, table, error: null }); // A's late answer replaced B's watch
+    await a;
+    await vi.waitFor(() => expect(listCalls()).toEqual(["Certificate", "Rollout", "Rollout"]));
+    pending[2].resolve({ resource: rollout.resource, table: rollTable, error: null });
+    await vi.waitFor(() => expect(useAppStore.getState().customTables.get("argoproj.io/v1alpha1/Rollout")).toBe(rollTable));
+    expect(useAppStore.getState().customTables.has("cert-manager.io/v1/Certificate")).toBe(false);
+    expect(listCalls()).toHaveLength(3); // no loop
+  });
+
+  it("an answer that lands after a scope switch is dropped", async () => {
+    const pending = deferredLists();
+    useAppStore.setState({ connection: connected() });
+    const a = useAppStore.getState().showCustom(cert.resource);
+    useAppStore.setState({ connection: { ...connected(), scope: ["other"] } });
+    pending[0].resolve({ resource: cert.resource, table, error: null });
+    await a;
+    expect(useAppStore.getState().customTables.size).toBe(0);
+  });
+
+  it("failures of a stale fetch are not toasted", async () => {
+    let fail: (e: unknown) => void = () => {};
+    vi.mocked(invoke).mockImplementation((cmd: string) =>
+      cmd === "list_custom" || cmd === "helm_releases" ? new Promise((_, reject) => { fail = reject; }) : Promise.resolve(null));
+    useAppStore.setState({ connection: connected() });
+    const custom = useAppStore.getState().showCustom(cert.resource);
+    useAppStore.getState().showGraph();
+    fail({ kind: "forbidden", message: "nope" });
+    await custom;
+    const helm = useAppStore.getState().refreshHelm();
+    useAppStore.setState({ connection: { ...connected(), scope: ["other"] } });
+    fail({ kind: "forbidden", message: "nope" });
+    await helm;
+    expect(useAppStore.getState().toasts).toEqual([]);
+  });
+});
+
 describe("Helm section", () => {
   it("opens the releases view with its count", async () => {
     const release = { name: "web", namespace: "shop", chart: "web-1.0.0", appVersion: "1", revision: 1, status: "deployed", health: "ok", updated: null };

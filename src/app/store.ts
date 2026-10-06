@@ -452,6 +452,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
 
   connect: async (context) => {
     const lost = lostEditsToast(get());
+    customKindsGen++; // a custom kinds load of the session being replaced must not land in the next
     set((s) => ({ connection: { ...s.connection, busy: true } }));
     try {
       const info = await commands.connect(context);
@@ -651,6 +652,10 @@ export const useAppStore = create<AppState>()((set, get) => ({
   refreshCustom: async (resource) => {
     const scope = get().connection.scope;
     const key = refKey(resource);
+    const current = () => {
+      const view = get().view;
+      return scope !== null && get().connection.scope === scope && view.name === "custom" && refKey(view.resource) === key;
+    };
     try {
       const t = await commands.listCustom(resource);
       if (scope === null || get().connection.scope !== scope) return;
@@ -667,7 +672,8 @@ export const useAppStore = create<AppState>()((set, get) => ({
       }
       get().applyCustomTable(t);
     } catch (e) {
-      get().toast(toAppError(e));
+      // A failure of a table left (or of another scope) is nobody's news.
+      if (current()) get().toast(toAppError(e));
     }
   },
 
@@ -694,7 +700,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
       if (scope === null || get().connection.scope !== scope) return;
       set({ helmReleases: releases ?? [] }); // as with custom kinds: a missing list must not re-trigger the fetch
     } catch (e) {
-      get().toast(toAppError(e));
+      if (scope !== null && get().connection.scope === scope) get().toast(toAppError(e));
     }
   },
 

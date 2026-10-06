@@ -321,3 +321,55 @@ describe("custom_table events", () => {
     stop();
   });
 });
+
+describe("helm_changed events", () => {
+  beforeEach(() => { vi.useFakeTimers(); vi.mocked(invoke).mockReset(); vi.mocked(invoke).mockImplementation(async (cmd: string) => (cmd === "helm_releases" ? [] : null)); });
+  afterEach(() => vi.useRealTimers());
+  const helmCalls = () => vi.mocked(invoke).mock.calls.filter(([c]) => c === "helm_releases").length;
+  const connected = { ...initialState().connection, context: "prod", state: "connected" as const, scope: ["p"] };
+
+  it("re-read the releases once per burst while the navigator counts them", async () => {
+    const stop = await wireEvents();
+    useAppStore.setState({ connection: connected, helmReleases: [] });
+    hoisted.handlers!.helm_changed(null);
+    hoisted.handlers!.helm_changed(null);
+    expect(helmCalls()).toBe(0);
+    await vi.advanceTimersByTimeAsync(TABLE_REFRESH_DEBOUNCE_MS);
+    expect(helmCalls()).toBe(1);
+    stop();
+  });
+
+  it("re-read them on the Helm view, and not before they were ever read", async () => {
+    const stop = await wireEvents();
+    useAppStore.setState({ connection: connected });
+    hoisted.handlers!.helm_changed(null);
+    await vi.advanceTimersByTimeAsync(TABLE_REFRESH_DEBOUNCE_MS);
+    expect(helmCalls()).toBe(0);
+    useAppStore.setState({ view: { name: "helm" } });
+    hoisted.handlers!.helm_changed(null);
+    await vi.advanceTimersByTimeAsync(TABLE_REFRESH_DEBOUNCE_MS);
+    expect(helmCalls()).toBe(1);
+    stop();
+  });
+
+  it("do not cancel a pending table refresh", async () => {
+    const stop = await wireEvents();
+    const refreshTable = vi.fn(async () => {});
+    useAppStore.setState({ connection: connected, helmReleases: [], graphReady: true, view: { name: "table", kind: "Pod" }, refreshTable });
+    hoisted.handlers!.graph_delta({ ...emptyDelta, addedNodes: [node] });
+    hoisted.handlers!.helm_changed(null);
+    await vi.advanceTimersByTimeAsync(TABLE_REFRESH_DEBOUNCE_MS);
+    expect(refreshTable).toHaveBeenCalledTimes(1);
+    expect(helmCalls()).toBe(1);
+    stop();
+  });
+
+  it("a graph delta alone no longer re-reads the releases", async () => {
+    const stop = await wireEvents();
+    useAppStore.setState({ connection: connected, helmReleases: [], graphReady: true, view: { name: "helm" } });
+    hoisted.handlers!.graph_delta({ ...emptyDelta, addedNodes: [node] });
+    await vi.advanceTimersByTimeAsync(TABLE_REFRESH_DEBOUNCE_MS);
+    expect(helmCalls()).toBe(0);
+    stop();
+  });
+});

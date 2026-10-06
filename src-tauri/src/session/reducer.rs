@@ -154,6 +154,8 @@ async fn run(config: ReducerConfig, shared: Shared, emitter: Arc<dyn Emitter>, m
     let mut stale: HashMap<StreamId, HashSet<ObjectKey>> = HashMap::new();
     let mut initialised = false;
     let mut flush_at: Option<Instant> = None;
+    // A Helm storage Secret changed since the last flush (or snapshot, which re-reads Helm anyway).
+    let mut helm_dirty = false;
     let mut errored_since: HashMap<StreamId, Instant> = HashMap::new();
     let mut state = ConnectionState::Connected;
     // A fresh reducer starts from a known-good state; the frontend may still show
@@ -177,6 +179,7 @@ async fn run(config: ReducerConfig, shared: Shared, emitter: Arc<dyn Emitter>, m
                         if initialised {
                             flush_at = None;
                             emit_rebuild(&shared, &emitter);
+                            emit_helm_changed(&emitter, &mut helm_dirty);
                         }
                     }
                     ReducerMsg::Store(StoreEvent::Failed {
@@ -196,10 +199,12 @@ async fn run(config: ReducerConfig, shared: Shared, emitter: Arc<dyn Emitter>, m
                         return;
                     }
                     ReducerMsg::Store(ev) => {
-                        let changed = apply(&shared, ev, &mut streams, &mut stale, &mut errored_since, &emitter);
+                        let (changed, helm) = apply(&shared, ev, &mut streams, &mut stale, &mut errored_since, &emitter);
+                        helm_dirty |= helm;
                         if !initialised && !streams.any_pending() {
                             initialised = true;
                             flush_at = None;
+                            helm_dirty = false;
                             let (graph, _) = shared.rebuild();
                             emitter.emit(OutEvent::GraphSnapshot(graph));
                         } else if initialised && changed && flush_at.is_none() {
@@ -211,6 +216,7 @@ async fn run(config: ReducerConfig, shared: Shared, emitter: Arc<dyn Emitter>, m
             _ = flush => {
                 flush_at = None;
                 emit_rebuild(&shared, &emitter);
+                emit_helm_changed(&emitter, &mut helm_dirty);
             }
             _ = ticker.tick() => {
                 let now = Instant::now();
@@ -236,6 +242,27 @@ fn emit_kind_error(emitter: &Arc<dyn Emitter>, kind: Kind, error: &AppError) {
     )));
 }
 
+/// One `HelmChanged` for whatever storage Secrets changed since the last one.
+fn emit_helm_changed(emitter: &Arc<dyn Emitter>, helm_dirty: &mut bool) {
+    if std::mem::take(helm_dirty) {
+        emitter.emit(OutEvent::HelmChanged);
+    }
+}
+
+/// Whether `ev` may touch a Helm storage Secret: one arriving, or one in the store being replaced
+/// or deleted (an upgrade can rewrite a revision's record in place, e.g. pending-upgrade → deployed).
+/// Sweeps of a Secret stream (`InitDone`, `FellBack`) count too; the caller gates on `changed`.
+fn touches_helm_storage(shared: &Shared, ev: &StoreEvent) -> bool {
+    let stored = |key: &ObjectKey| shared.store().get(key).is_some_and(crate::helm::is_storage_secret);
+    match ev {
+        StoreEvent::Applied(o) => o.kind() == Kind::Secret && (crate::helm::is_storage_secret(o) || stored(&o.key())),
+        StoreEvent::Deleted(k) => k.kind == Kind::Secret && stored(k),
+        StoreEvent::InitDone(s) => s.kind == Kind::Secret,
+        StoreEvent::FellBack { kind, .. } => *kind == Kind::Secret,
+        StoreEvent::Restarted(_) | StoreEvent::Recovered(_) | StoreEvent::Failed { .. } => false,
+    }
+}
+
 /// A change of the too-large state (or of its counts) goes out as a snapshot: deltas cannot say
 /// "the graph is not sent any more". While the graph is too large every (debounced) rebuild goes
 /// out as one: its summarised diff is empty, but the tables — then the only view — refetch on it.
@@ -249,7 +276,8 @@ fn emit_rebuild(shared: &Shared, emitter: &Arc<dyn Emitter>) {
     }
 }
 
-/// Apply one event. Returns true when the store content may have changed.
+/// Apply one event. Returns whether the store content may have changed, and whether a Helm
+/// storage Secret did.
 fn apply(
     shared: &Shared,
     ev: StoreEvent,
@@ -257,7 +285,8 @@ fn apply(
     stale: &mut HashMap<StreamId, HashSet<ObjectKey>>,
     errored_since: &mut HashMap<StreamId, Instant>,
     emitter: &Arc<dyn Emitter>,
-) -> bool {
+) -> (bool, bool) {
+    let helm = touches_helm_storage(shared, &ev);
     let pod_related = matches!(&ev, StoreEvent::Applied(o) if o.kind() == Kind::Pod)
         || matches!(&ev, StoreEvent::Deleted(k) if k.kind == Kind::Pod)
         || matches!(&ev, StoreEvent::InitDone(s) if s.kind == Kind::Pod)
@@ -268,7 +297,7 @@ fn apply(
     if pod_related && changed {
         shared.notify_pods_changed();
     }
-    changed
+    (changed, helm && changed)
 }
 
 fn apply_to_store(
@@ -1304,5 +1333,91 @@ mod tests {
         shared.store().upsert(pod("x")); // simulate an external change
         tx.send(ReducerMsg::Rebuild).await.unwrap();
         assert!(matches!(next(&mut rx).await, OutEvent::GraphDelta(_)));
+    }
+
+    fn secret(name: &str, type_: &str, rv: &str) -> Object {
+        Object::Secret(k8s_openapi::api::core::v1::Secret {
+            metadata: ObjectMeta {
+                name: Some(name.into()),
+                namespace: Some("n".into()),
+                resource_version: Some(rv.into()),
+                ..Default::default()
+            },
+            type_: Some(type_.into()),
+            ..Default::default()
+        })
+    }
+
+    /// Everything emitted within the next 200 ms (several debounce windows).
+    async fn drain(rx: &mut tokio::sync::mpsc::UnboundedReceiver<OutEvent>) -> Vec<OutEvent> {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let mut got = vec![];
+        while let Ok(ev) = rx.try_recv() {
+            got.push(ev);
+        }
+        got
+    }
+
+    fn helm_changes(events: &[OutEvent]) -> usize {
+        events.iter().filter(|e| matches!(e, OutEvent::HelmChanged)).count()
+    }
+
+    async fn started_with_secrets() -> (
+        mpsc::Sender<ReducerMsg>,
+        JoinHandle<()>,
+        tokio::sync::mpsc::UnboundedReceiver<OutEvent>,
+    ) {
+        let (tx, h, mut rx) = spawn_started(&[Kind::Secret], Shared::default()).await;
+        tx.send(ReducerMsg::Store(StoreEvent::InitDone(Kind::Secret.into()))).await.unwrap();
+        assert!(matches!(next(&mut rx).await, OutEvent::GraphSnapshot(_)));
+        (tx, h, rx)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_helm_storage_secret_change_sends_one_helm_changed() {
+        let (tx, _h, mut rx) = started_with_secrets().await;
+        let v1 = secret("sh.helm.release.v1.web.v1", crate::helm::STORAGE_TYPE, "1");
+        tx.send(ReducerMsg::Store(StoreEvent::Applied(v1))).await.unwrap();
+        assert_eq!(helm_changes(&drain(&mut rx).await), 1);
+        // Deleting it is news too.
+        tx.send(ReducerMsg::Store(StoreEvent::Deleted(
+            secret("sh.helm.release.v1.web.v1", crate::helm::STORAGE_TYPE, "1").key(),
+        )))
+        .await
+        .unwrap();
+        assert_eq!(helm_changes(&drain(&mut rx).await), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_opaque_secret_change_sends_no_helm_changed() {
+        let (tx, _h, mut rx) = started_with_secrets().await;
+        tx.send(ReducerMsg::Store(StoreEvent::Applied(secret("db", "Opaque", "1"))))
+            .await
+            .unwrap();
+        let got = drain(&mut rx).await;
+        assert!(got.iter().any(|e| matches!(e, OutEvent::GraphDelta(_))), "{got:?}");
+        assert_eq!(helm_changes(&got), 0, "{got:?}");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn several_helm_storage_changes_in_one_flush_send_one_helm_changed() {
+        let (tx, _h, mut rx) = started_with_secrets().await;
+        for (name, rv) in [
+            ("sh.helm.release.v1.web.v1", "1"),
+            ("sh.helm.release.v1.web.v2", "2"),
+            ("sh.helm.release.v1.web.v1", "3"),
+        ] {
+            tx.send(ReducerMsg::Store(StoreEvent::Applied(secret(name, crate::helm::STORAGE_TYPE, rv))))
+                .await
+                .unwrap();
+        }
+        assert_eq!(helm_changes(&drain(&mut rx).await), 1);
+    }
+
+    #[test]
+    fn helm_changed_is_emitted_as_helm_changed_with_no_payload() {
+        let (name, payload) = OutEvent::HelmChanged.into_parts();
+        assert_eq!(name, "helm_changed");
+        assert!(payload.is_null());
     }
 }
