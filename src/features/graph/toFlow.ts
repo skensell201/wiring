@@ -149,7 +149,9 @@ export function toFlow(input: ToFlowInput): { lanes: LaneFlowNode[]; nodes: Reso
   const { positions, waypoints, lanes } = cachedLayout(visible, visibleEdges);
 
   const q = input.search.trim().toLowerCase();
-  const matches = (n: GraphNode) => q === "" || n.name.toLowerCase().includes(q) || n.kind.toLowerCase().includes(q);
+  // The namespace counts too, alone (`blog`) or as `blog/web`.
+  const matches = (n: GraphNode) => q === "" || n.kind.toLowerCase().includes(q)
+    || (n.namespace === null ? n.name : `${n.namespace}/${n.name}`).toLowerCase().includes(q);
 
   // The selected node's problem chain (only when it leads somewhere): its nodes and the edges
   // between consecutive steps (either direction) are tinted in the root cause's status colour,

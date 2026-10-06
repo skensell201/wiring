@@ -64,6 +64,17 @@ describe("toFlow", () => {
     expect(byId["Pod/p/a"].dimmed).toBe(true);
   });
 
+  it("search also matches the namespace, alone or as namespace/name", () => {
+    const blogWeb: GraphNode = { ...n("Deployment/blog/web", "Deployment"), namespace: "blog" };
+    const shopWeb: GraphNode = { ...n("Deployment/shop/web", "Deployment"), namespace: "shop" };
+    const blogDb: GraphNode = { ...n("StatefulSet/blog/db", "StatefulSet"), namespace: "blog" };
+    const all = new Map([blogWeb, shopWeb, blogDb].map((x) => [x.id, x]));
+    const dimmed = (search: string) => Object.fromEntries(
+      toFlow({ nodes: all, edges: new Map(), hiddenKinds: new Set(), search, hoveredId: null, selectedId: null, expandedGroups: new Set() }).nodes.map((x) => [x.id, x.data.dimmed]));
+    expect(dimmed("blog")).toEqual({ [blogWeb.id]: false, [shopWeb.id]: true, [blogDb.id]: false });
+    expect(dimmed("Blog/Web")).toEqual({ [blogWeb.id]: false, [shopWeb.id]: true, [blogDb.id]: true });
+  });
+
   it("highlights edges touching the hovered node", () => {
     const f = toFlow({ nodes, edges, hiddenKinds: new Set(), search: "", hoveredId: "Service/p/web", selectedId: null, expandedGroups: new Set() });
     const byId = Object.fromEntries(f.edges.map((x) => [x.id, x.data]));
