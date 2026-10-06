@@ -214,6 +214,32 @@ describe("actions", () => {
     expect(settings.setLastScope).not.toHaveBeenCalled();
   });
 
+  it("a refused switch refetches the restored scope's denied kinds if they were never loaded", async () => {
+    // A → B quickly drops A's RBAC answer; B is then refused and A comes back without it.
+    useAppStore.setState({
+      ...applySnapshot(initialState(), { nodes: [], edges: [] }), deniedLoaded: false,
+      connection: { ...initialState().connection, context: "prod", namespaces: ["a", "b"], scope: ["a"] },
+    });
+    vi.mocked(invoke).mockImplementationOnce(async () => { throw { kind: "forbidden", message: "no" }; });
+    await useAppStore.getState().selectScope(["b"]);
+    const s = useAppStore.getState();
+    expect(s.connection.scope).toEqual(["a"]);
+    expect(s.deniedLoaded).toBe(true);
+    expect([...s.deniedKinds]).toEqual(["Secret"]);
+    expect([...s.partialKinds]).toEqual(["Pod"]);
+  });
+
+  it("a refused switch keeps already-loaded denied kinds without asking again", async () => {
+    useAppStore.setState({
+      ...applySnapshot(initialState(), { nodes: [], edges: [] }), deniedLoaded: true, deniedKinds: new Set(["ConfigMap"]),
+      connection: { ...initialState().connection, context: "prod", namespaces: ["a", "b"], scope: ["a"] },
+    });
+    vi.mocked(invoke).mockImplementationOnce(async () => { throw { kind: "forbidden", message: "no" }; });
+    await useAppStore.getState().selectScope(["b"]);
+    expect(vi.mocked(invoke).mock.calls.map(([cmd]) => cmd)).not.toContain("denied_kinds");
+    expect([...useAppStore.getState().deniedKinds]).toEqual(["ConfigMap"]);
+  });
+
   it("selectScope('all') sends null", async () => {
     await useAppStore.getState().selectScope("all");
     expect(invoke).toHaveBeenCalledWith("select_namespaces", { namespaces: null, expandedGroups: [] });

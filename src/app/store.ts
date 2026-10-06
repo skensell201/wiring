@@ -612,28 +612,36 @@ export const useAppStore = create<AppState>()((set, get) => ({
       deleteDialog: initialState().deleteDialog, discardDialog: initialState().discardDialog, detailsMaximized: false,
       actionsMenu: null, actionDialog: null, requestedTab: null,
     }));
+    // The RBAC sets for `forScope`, kept only while it is still the current selection (a newer
+    // one owns these sets then).
+    const loadDenied = async (forScope: NamespaceScope | null) => {
+      try {
+        const [denied, partial] = await Promise.all([commands.deniedKinds(), commands.partialKinds()]);
+        if (get().connection.scope === forScope) set({ deniedKinds: new Set(denied), partialKinds: new Set(partial), deniedLoaded: true });
+      } catch (e) {
+        // Unknown then: stop waiting, so an empty scope reads as empty rather than loading forever.
+        if (get().connection.scope === forScope) set({ deniedLoaded: true });
+        get().toast(toAppError(e));
+      }
+    };
     try {
       await commands.selectNamespaces(scope, expanded);
     } catch (e) {
       const { scope: prevScope, ...graph } = previous;
-      if (get().connection.scope === scope) set((s) => ({ ...graph, connection: { ...s.connection, scope: prevScope } }));
+      if (get().connection.scope === scope) {
+        set((s) => ({ ...graph, connection: { ...s.connection, scope: prevScope } }));
+        // A quick A → B switch dropped A's answer; without this an empty A would load forever.
+        if (prevScope !== null && !graph.deniedLoaded) await loadDenied(prevScope);
+      }
       get().toast(toAppError(e));
       return;
     }
     // Remembered only once the backend accepted it (and not while the discard dialog was up).
     const { connection } = get();
     if (connection.context && connection.scope === scope) void settings.setLastScope(connection.context, scope);
-    try {
-      const [denied, partial] = await Promise.all([commands.deniedKinds(), commands.partialKinds()]);
-      // Only if this is still the current selection - a newer one owns these sets now.
-      if (get().connection.scope === scope) set({ deniedKinds: new Set(denied), partialKinds: new Set(partial), deniedLoaded: true });
-      // An open table is refetched by the graph_snapshot handler once the backend has the new
-      // objects; fetching here would race the watchers and land an empty table.
-    } catch (e) {
-      // Unknown then: stop waiting, so an empty scope reads as empty rather than loading forever.
-      if (get().connection.scope === scope) set({ deniedLoaded: true });
-      get().toast(toAppError(e));
-    }
+    // An open table is refetched by the graph_snapshot handler once the backend has the new
+    // objects; fetching here would race the watchers and land an empty table.
+    await loadDenied(scope);
   },
 
   select: async (id) => {
