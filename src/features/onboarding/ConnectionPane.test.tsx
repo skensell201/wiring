@@ -94,10 +94,31 @@ describe("other panes", () => {
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("add_kubeconfig", { path: "/tmp/team.yaml" }));
   });
 
-  it("says which context it is connecting to", () => {
+  it("says which context it is connecting to, with Cancel as the only action", () => {
     render(<ConnectionPane pane={{ type: "connecting", context: "prod" }} />);
     expect(screen.getByRole("status", { name: "Connecting to prod…" })).toBeInTheDocument();
-    expect(screen.queryByRole("button")).toBeNull();
+    expect(screen.getAllByRole("button").map((b) => b.textContent)).toEqual(["Cancel"]);
+  });
+
+  it("Cancel disconnects, and the connect it cancelled does not land", async () => {
+    let answer!: (v: unknown) => void;
+    const base = vi.mocked(invoke).getMockImplementation()!;
+    vi.mocked(invoke).mockImplementation(async (cmd: string, args?: any) =>
+      (cmd === "connect" ? new Promise((r) => { answer = r; }) : base(cmd, args)));
+    useAppStore.setState({ contexts: [{ name: "gke-prod", cluster: "c", user: "u", namespace: null, sourceFile: "/k" }], contextsLoaded: true });
+    const connecting = useAppStore.getState().connect("gke-prod");
+    const pane = () => {
+      const s = useAppStore.getState();
+      return connectionPane(s.connection, s.contexts.length, s.contextsLoaded);
+    };
+    expect(pane()).toEqual({ type: "connecting", context: "gke-prod" });
+    render(<ConnectionPane pane={pane()!} />);
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(called()).toContain("disconnect"));
+    await waitFor(() => expect(pane()).toEqual({ type: "choose", contexts: 1 }));
+    answer(INFO);
+    expect(await connecting).toBe(false);
+    expect(useAppStore.getState().connection.context).toBeNull();
   });
 });
 

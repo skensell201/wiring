@@ -28,7 +28,7 @@ export function ConnectionPane({ pane }: { pane: Pane }) {
     case "starting":
       return null; // the contexts load in a blink; anything said here would only flash
     case "connecting":
-      return <EmptyState icon={LoaderCircle} spinning title={`Connecting to ${pane.context}…`}>Waiting for the cluster to answer…</EmptyState>;
+      return <ConnectingPane context={pane.context} />;
     case "failed":
       return <FailurePane context={pane.context} error={pane.error} />;
     case "welcome":
@@ -36,6 +36,16 @@ export function ConnectionPane({ pane }: { pane: Pane }) {
     case "choose":
       return <ChoosePane count={pane.contexts} />;
   }
+}
+
+function ConnectingPane({ context }: { context: string }) {
+  // Disconnecting drops the late result of the connect (the store's connect generations).
+  const disconnect = useAppStore((s) => s.disconnect);
+  return (
+    <EmptyState icon={LoaderCircle} spinning title={`Connecting to ${context}…`} secondary={{ label: "Cancel", onClick: () => void disconnect() }}>
+      Waiting for the cluster to answer…
+    </EmptyState>
+  );
 }
 
 function WelcomePane() {
