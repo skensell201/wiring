@@ -205,7 +205,8 @@ impl Session {
         v
     }
 
-    /// Kinds watched per namespace because their cluster-wide watch was forbidden.
+    /// Kinds shown incompletely: watched per namespace because their cluster-wide watch was
+    /// forbidden, or forbidden in some of the selected namespaces. A denied kind is not partial.
     pub fn partial_kinds(&self) -> Vec<Kind> {
         let mut v: Vec<Kind> = self.shared.partial_kinds().iter().copied().collect();
         v.sort();
@@ -249,6 +250,8 @@ impl Session {
                 }
             }
         });
+        // Known limitation: the namespaces a forbidden cluster-wide watch falls back to are the
+        // list taken at `connect`; a namespace created later is not watched until reconnecting.
         let fallback = self.namespaces.as_deref().unwrap_or_default();
         self.tasks = watch::spawn_plan(&self.client, &plan, fallback, &store_tx);
         self.tasks.push(metrics::spawn(

@@ -28,7 +28,8 @@ pub struct Shared {
     graph: Arc<Mutex<Graph>>,
     expanded_groups: Arc<Mutex<HashSet<NodeId>>>,
     denied_kinds: Arc<Mutex<HashSet<Kind>>>,
-    /// Kinds watched in some namespaces but forbidden in others (or cluster-wide).
+    /// Kinds shown incompletely: watched per namespace because their cluster-wide watch was
+    /// forbidden, or forbidden in some of the selected namespaces. A denied kind is not partial.
     partial_kinds: Arc<Mutex<HashSet<Kind>>>,
     /// Fires after the reducer applied a Pod add/update/delete (or finished a Pod re-list);
     /// log sessions re-derive their targets on it. Payload-free: receivers re-read the store.

@@ -66,6 +66,8 @@ enum StreamState {
 struct Streams {
     states: HashMap<StreamId, StreamState>,
     pending: usize,
+    /// Kinds whose cluster-wide watch was forbidden and now run per namespace.
+    fell_back: HashSet<Kind>,
 }
 
 impl Streams {
@@ -114,18 +116,29 @@ fn kind_marks(shared: &Shared, kind: Kind) -> (bool, bool) {
     (shared.partial_kinds().contains(&kind), shared.denied_kinds().contains(&kind))
 }
 
-/// Mark `kind` denied when every one of its streams is dead, partial when only some are.
+/// Mark `kind` from its streams. Denied: none of its streams is left alive (a fallback to no
+/// namespace has none at all). Partial, otherwise: it runs per namespace because its cluster-wide
+/// watch was forbidden, or some of its streams are dead (forbidden namespaces). A dead stream never
+/// comes back, so a kind whose remaining streams all list stays partial only while on the fallback.
 /// Returns whether that changed the kind's marks, i.e. whether there is news to report.
 fn mark_kind(shared: &Shared, streams: &Streams, kind: Kind) -> bool {
     let before = kind_marks(shared, kind);
-    let states: Vec<StreamState> = streams.of_kind(kind).map(|(_, st)| st).collect();
-    let dead = states.iter().filter(|st| **st == StreamState::Dead).count();
-    if states.is_empty() || dead == states.len() {
-        shared.partial_kinds().remove(&kind);
-        shared.denied_kinds().insert(kind);
-    } else if dead > 0 {
-        shared.partial_kinds().insert(kind);
+    let (mut total, mut dead) = (0, 0);
+    for (_, st) in streams.of_kind(kind) {
+        total += 1;
+        dead += usize::from(st == StreamState::Dead);
     }
+    let denied = dead == total;
+    let partial = !denied && (dead > 0 || streams.fell_back.contains(&kind));
+    let set = |marks: &mut HashSet<Kind>, on: bool| {
+        if on {
+            marks.insert(kind);
+        } else {
+            marks.remove(&kind);
+        }
+    };
+    set(&mut shared.denied_kinds(), denied);
+    set(&mut shared.partial_kinds(), partial);
     kind_marks(shared, kind) != before
 }
 
@@ -355,10 +368,13 @@ fn apply_to_store(
             false
         }
         StoreEvent::FellBack { kind, namespaces } => {
-            let cluster = StreamId::cluster(kind);
-            streams.remove(&cluster);
-            stale.remove(&cluster);
-            errored_since.remove(&cluster);
+            // From now on the kind's streams are exactly the replacements below.
+            let old: Vec<StreamId> = streams.of_kind(kind).map(|(s, _)| s.clone()).collect();
+            for s in old.iter().chain([&StreamId::cluster(kind)]) {
+                streams.remove(s);
+                stale.remove(s);
+                errored_since.remove(s);
+            }
             let replacements: Vec<StreamId> = namespaces.iter().map(|ns| StreamId::namespaced(kind, ns)).collect();
             // What the cluster-wide stream listed in namespaces no replacement covers would
             // otherwise linger forever. Objects in covered namespaces stay: each replacement's
@@ -378,12 +394,10 @@ fn apply_to_store(
             for s in replacements {
                 streams.set(s, StreamState::Pending);
             }
-            if namespaces.is_empty() {
-                shared.partial_kinds().remove(&kind);
-                shared.denied_kinds().insert(kind);
-            } else {
-                shared.partial_kinds().insert(kind);
-            }
+            streams.fell_back.insert(kind);
+            // No toast: falling back is not a failure; the kind's partial (or, with no namespace
+            // to fall back to, denied) mark says it.
+            mark_kind(shared, streams, kind);
             swept
         }
     }
@@ -1084,6 +1098,42 @@ mod tests {
         tx.send(fell_back(Kind::ConfigMap, &["a"])).await.unwrap();
         tokio::time::sleep(Duration::from_millis(40)).await;
         quiet(&mut rx, "one snapshot only");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn partial_means_on_the_fallback_or_some_namespaces_forbidden() {
+        // Pods: a set whose every namespace lists is not partial; one forbidden namespace makes it so.
+        // Secrets: a cluster-wide watch that fell back is partial even when every namespace lists,
+        // and denied (not partial) once every replacement is dead.
+        let [pa, pb] = ["a", "b"].map(|ns| StreamId::namespaced(Kind::Pod, ns));
+        let [ca, cb] = ["a", "b"].map(|ns| StreamId::namespaced(Kind::ConfigMap, ns));
+        let secrets = StreamId::cluster(Kind::Secret);
+        let shared = Shared::default();
+        let plan = [pa.clone(), pb.clone(), ca.clone(), cb.clone(), secrets];
+        let (tx, _h, mut rx) = spawn_streams(&plan, shared.clone()).await;
+        tx.send(fell_back(Kind::Secret, &["a", "b"])).await.unwrap();
+        for s in [
+            &pa,
+            &pb,
+            &ca,
+            &StreamId::namespaced(Kind::Secret, "a"),
+            &StreamId::namespaced(Kind::Secret, "b"),
+        ] {
+            tx.send(ReducerMsg::Store(StoreEvent::InitDone(s.clone()))).await.unwrap();
+        }
+        tx.send(forbid(&cb)).await.unwrap();
+        until_snapshot(&mut rx).await;
+        let partial = shared.partial_kinds().clone();
+        assert!(!partial.contains(&Kind::Pod), "every namespace listed: {partial:?}");
+        assert!(partial.contains(&Kind::ConfigMap), "one namespace forbidden: {partial:?}");
+        assert!(partial.contains(&Kind::Secret), "running on the fallback: {partial:?}");
+        assert!(shared.denied_kinds().is_empty());
+        for ns in ["a", "b"] {
+            tx.send(forbid(&StreamId::namespaced(Kind::Secret, ns))).await.unwrap();
+        }
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        assert!(shared.denied_kinds().contains(&Kind::Secret));
+        assert!(!shared.partial_kinds().contains(&Kind::Secret));
     }
 
     #[tokio::test(start_paused = true)]
