@@ -22,10 +22,12 @@ use wiring_lib::logs::session::LogRequest;
 use wiring_lib::logs::LogMessage;
 use wiring_lib::session::emitter::{ChannelEmitter, ConnectionState, OutEvent};
 use wiring_lib::session::rollout::Revision;
+use wiring_lib::session::scope::NamespaceScope;
 use wiring_lib::session::Session;
 use wiring_lib::store::Kind;
 
 const NAMESPACE: &str = "wiring-smoke";
+const NAMESPACE_B: &str = "wiring-smoke-b";
 
 fn kubectl(context: &str, args: &[&str]) {
     let status = Command::new("kubectl")
@@ -630,6 +632,39 @@ async fn exercise_logs(session: &mut Session, context: &str) {
     assert_eq!(err.kind, ErrorKind::Invalid, "{err:?}");
 }
 
+/// Two namespaces in one graph and one table, then all namespaces.
+async fn exercise_scopes(session: &mut Session, rx: &mut UnboundedReceiver<OutEvent>, graph: &mut Graph) {
+    let both = NamespaceScope::from_arg(Some(vec![NAMESPACE.into(), NAMESPACE_B.into()])).unwrap();
+    session.select_scope(both, HashSet::new()).await.unwrap();
+    *graph = Graph::default();
+    let b_cfg = format!("ConfigMap/{NAMESPACE_B}/b-cfg");
+    let web = format!("Deployment/{NAMESPACE}/web");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    let ok = graph_until(rx, graph, deadline, |g| has_node(g, &b_cfg) && has_node(g, &web)).await;
+    assert!(
+        ok,
+        "both namespaces in one graph: {:?}",
+        graph.nodes.iter().map(|n| &n.id).collect::<Vec<_>>()
+    );
+    let table = session.list_rows(Kind::ConfigMap);
+    assert_eq!(table.columns[0].key, "namespace", "{:?}", table.columns);
+    assert!(table.rows.iter().any(|r| r.cells[0].text == NAMESPACE_B), "{:?}", table.rows);
+
+    session.select_scope(NamespaceScope::All, HashSet::new()).await.unwrap();
+    *graph = Graph::default();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
+    let ok = graph_until(rx, graph, deadline, |g| {
+        g.too_large.is_some() || g.nodes.iter().any(|n| n.namespace.as_deref() == Some("kube-system"))
+    })
+    .await;
+    assert!(ok, "kube-system objects with all namespaces: {} nodes", graph.nodes.len());
+    eprintln!(
+        "all namespaces: {} nodes, tooLarge {:?}",
+        graph.nodes.len(),
+        graph.too_large.as_ref().map(|t| t.nodes)
+    );
+}
+
 /// Prints how long each phase took (and the total), to spot the slow ones in CI logs.
 struct Phases {
     begin: std::time::Instant,
@@ -661,7 +696,12 @@ async fn graph_snapshot_reflects_applied_fixture() {
     let mut phases = Phases::start();
     // Idempotent re-runs: a namespace left over from an aborted run is still terminating.
     kubectl(&context, &["delete", "namespace", NAMESPACE, "--ignore-not-found", "--wait=true"]);
+    kubectl(&context, &["delete", "namespace", NAMESPACE_B, "--ignore-not-found", "--wait=true"]);
     kubectl(&context, &["apply", "-f", fixture]);
+    kubectl(
+        &context,
+        &["apply", "-f", concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/smoke-b.yaml")],
+    );
     kubectl(
         &context,
         &["-n", NAMESPACE, "rollout", "status", "deployment/web", "--timeout=180s"],
@@ -681,7 +721,10 @@ async fn graph_snapshot_reflects_applied_fixture() {
     let (emitter, mut rx) = ChannelEmitter::new();
     let (mut session, info) = Session::connect(merged, &context, Arc::new(emitter)).await.unwrap();
     assert!(info.namespaces.contains(&NAMESPACE.to_string()));
-    session.select_namespace(NAMESPACE, HashSet::new()).await.unwrap();
+    session
+        .select_scope(NamespaceScope::single(NAMESPACE).unwrap(), HashSet::new())
+        .await
+        .unwrap();
 
     // The reducer announces `connected` first; a `disconnected` here would mean a torn-down
     // session leaked its final state into the new one.
@@ -730,7 +773,10 @@ async fn graph_snapshot_reflects_applied_fixture() {
     phases.done("exec");
     exercise_metrics(&session, &context).await;
     phases.done("metrics");
+    exercise_scopes(&mut session, &mut rx, &mut graph).await;
+    phases.done("scopes");
 
     session.shutdown().await;
     kubectl(&context, &["delete", "namespace", NAMESPACE, "--wait=false"]);
+    kubectl(&context, &["delete", "namespace", NAMESPACE_B, "--wait=false"]);
 }

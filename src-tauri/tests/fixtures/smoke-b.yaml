@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: Namespace
+metadata: { name: wiring-smoke-b }
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: b-cfg, namespace: wiring-smoke-b }
+data: { k: v }
