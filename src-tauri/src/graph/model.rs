@@ -70,6 +70,16 @@ pub enum Relation {
     UsesSa,
     #[serde(rename = "scales")]
     Scales,
+    #[serde(rename = "applies")]
+    Applies,
+    #[serde(rename = "allows")]
+    Allows,
+    #[serde(rename = "grants")]
+    Grants,
+    #[serde(rename = "subject")]
+    Subject,
+    #[serde(rename = "runsOn")]
+    RunsOn,
 }
 
 impl Relation {
@@ -84,6 +94,11 @@ impl Relation {
             Relation::Binds => "binds",
             Relation::UsesSa => "usesSA",
             Relation::Scales => "scales",
+            Relation::Applies => "applies",
+            Relation::Allows => "allows",
+            Relation::Grants => "grants",
+            Relation::Subject => "subject",
+            Relation::RunsOn => "runsOn",
         }
     }
 }
