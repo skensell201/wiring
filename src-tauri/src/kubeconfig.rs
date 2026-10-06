@@ -17,6 +17,41 @@ pub struct ContextInfo {
     pub source_file: String,
 }
 
+/// Where a kubeconfig path came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SourceOrigin {
+    /// An entry of `$KUBECONFIG`.
+    Env,
+    /// `~/.kube/config`, used when `$KUBECONFIG` is unset or empty.
+    Default,
+    /// Added in the app ("Add kubeconfig…").
+    Added,
+}
+
+/// What a kubeconfig path held when it was read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SourceState {
+    Ok,
+    Missing,
+    Invalid,
+    Empty,
+}
+
+/// One path Wiring reads kubeconfig from, for the welcome pane.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KubeconfigSource {
+    pub path: String,
+    pub origin: SourceOrigin,
+    pub state: SourceState,
+    /// The file's own contexts, before the first-file-wins merge of `list_contexts`.
+    pub contexts: usize,
+    /// First line of the read/parse error when `state` is `Invalid`.
+    pub error: Option<String>,
+}
+
 /// Only the first line of an error's `Display`, so raw parser output (which
 /// may echo source tokens) never reaches the UI.
 fn first_line(e: &impl std::fmt::Display) -> String {
@@ -27,15 +62,43 @@ pub fn split_env_paths(value: &str) -> Vec<PathBuf> {
     std::env::split_paths(value).filter(|p| !p.as_os_str().is_empty()).collect()
 }
 
-/// `$KUBECONFIG` entries if set, otherwise `~/.kube/config`.
-pub fn default_paths() -> Vec<PathBuf> {
-    if let Ok(env) = std::env::var("KUBECONFIG") {
-        let paths = split_env_paths(&env);
+/// `kubeconfig_env` entries (`$KUBECONFIG`) if any, otherwise `<home>/.kube/config`.
+fn sources_from(kubeconfig_env: Option<&str>, home: Option<PathBuf>) -> Vec<(PathBuf, SourceOrigin)> {
+    if let Some(env) = kubeconfig_env {
+        let paths = split_env_paths(env);
         if !paths.is_empty() {
-            return paths;
+            return paths.into_iter().map(|p| (p, SourceOrigin::Env)).collect();
         }
     }
-    dirs::home_dir().map(|h| vec![h.join(".kube").join("config")]).unwrap_or_default()
+    home.map(|h| vec![(h.join(".kube").join("config"), SourceOrigin::Default)])
+        .unwrap_or_default()
+}
+
+/// `$KUBECONFIG` entries if set, otherwise `~/.kube/config`, each with its origin.
+pub fn default_sources() -> Vec<(PathBuf, SourceOrigin)> {
+    sources_from(std::env::var("KUBECONFIG").ok().as_deref(), dirs::home_dir())
+}
+
+/// `$KUBECONFIG` entries if set, otherwise `~/.kube/config`.
+pub fn default_paths() -> Vec<PathBuf> {
+    default_sources().into_iter().map(|(p, _)| p).collect()
+}
+
+/// One path, read.
+enum Read {
+    Missing,
+    Invalid(String),
+    Parsed(Box<Kubeconfig>),
+}
+
+fn read_one(path: &Path) -> Read {
+    if !path.exists() {
+        return Read::Missing;
+    }
+    match Kubeconfig::read_from(path) {
+        Ok(cfg) => Read::Parsed(Box::new(cfg)),
+        Err(e) => Read::Invalid(first_line(&e)),
+    }
 }
 
 /// Reads every existing, parseable file. Missing files are skipped silently;
@@ -44,18 +107,35 @@ pub fn default_paths() -> Vec<PathBuf> {
 fn read_existing(paths: &[PathBuf]) -> Vec<(PathBuf, Kubeconfig)> {
     let mut out = vec![];
     for p in paths {
-        if !p.exists() {
-            tracing::debug!(path = %p.display(), "kubeconfig not found, skipping");
-            continue;
-        }
-        match Kubeconfig::read_from(p) {
-            Ok(cfg) => out.push((p.clone(), cfg)),
-            Err(e) => {
-                tracing::warn!(path = %p.display(), error = %first_line(&e), "skipping unreadable kubeconfig");
-            }
+        match read_one(p) {
+            Read::Missing => tracing::debug!(path = %p.display(), "kubeconfig not found, skipping"),
+            Read::Invalid(error) => tracing::warn!(path = %p.display(), error = %error, "skipping unreadable kubeconfig"),
+            Read::Parsed(cfg) => out.push((p.clone(), *cfg)),
         }
     }
     out
+}
+
+/// What each source holds, in the order given (the load order).
+pub fn scan(sources: &[(PathBuf, SourceOrigin)]) -> Vec<KubeconfigSource> {
+    sources
+        .iter()
+        .map(|(path, origin)| {
+            let (state, contexts, error) = match read_one(path) {
+                Read::Missing => (SourceState::Missing, 0, None),
+                Read::Invalid(e) => (SourceState::Invalid, 0, Some(e)),
+                Read::Parsed(cfg) if cfg.contexts.is_empty() => (SourceState::Empty, 0, None),
+                Read::Parsed(cfg) => (SourceState::Ok, cfg.contexts.len(), None),
+            };
+            KubeconfigSource {
+                path: path.to_string_lossy().into_owned(),
+                origin: *origin,
+                state,
+                contexts,
+                error,
+            }
+        })
+        .collect()
 }
 
 /// All contexts across files, sorted by name. First file defining a name wins.
@@ -186,6 +266,82 @@ mod tests {
         let contexts = list_contexts(&[bad, good]).unwrap();
         let names: Vec<&str> = contexts.iter().map(|c| c.name.as_str()).collect();
         assert_eq!(names, vec!["prod"]);
+    }
+
+    fn empty_file(dir: &std::path::Path) -> PathBuf {
+        let path = dir.join("empty");
+        std::fs::File::create(&path)
+            .unwrap()
+            .write_all(b"apiVersion: v1\nkind: Config\nclusters: []\nusers: []\ncontexts: []\n")
+            .unwrap();
+        path
+    }
+
+    #[test]
+    fn scan_reports_each_source_with_its_state_and_origin() {
+        let dir = tempfile::tempdir().unwrap();
+        let good = kubeconfig_file(dir.path(), "good", &[("prod", "c1", "u1"), ("dev", "c1", "u1")]);
+        let missing = dir.path().join("nope");
+        let bad = unparseable_file(dir.path());
+        let empty = empty_file(dir.path());
+        let reports = scan(&[
+            (good.clone(), SourceOrigin::Env),
+            (missing.clone(), SourceOrigin::Default),
+            (bad.clone(), SourceOrigin::Added),
+            (empty.clone(), SourceOrigin::Added),
+        ]);
+        let s = |p: &PathBuf| p.to_string_lossy().into_owned();
+        let summary: Vec<_> = reports.iter().map(|r| (r.path.clone(), r.origin, r.state, r.contexts)).collect();
+        assert_eq!(
+            summary,
+            vec![
+                (s(&good), SourceOrigin::Env, SourceState::Ok, 2),
+                (s(&missing), SourceOrigin::Default, SourceState::Missing, 0),
+                (s(&bad), SourceOrigin::Added, SourceState::Invalid, 0),
+                (s(&empty), SourceOrigin::Added, SourceState::Empty, 0),
+            ]
+        );
+        assert_eq!(reports[0].error, None);
+        assert_eq!(reports[1].error, None);
+        assert_eq!(reports[3].error, None);
+        let err = reports[2].error.as_deref().expect("an invalid source says why");
+        assert!(!err.is_empty() && !err.contains('\n') && !err.contains("abc"), "{err}");
+    }
+
+    #[test]
+    fn sources_come_from_kubeconfig_or_the_default_location() {
+        let sep = if cfg!(windows) { ';' } else { ':' };
+        let home = Some(PathBuf::from("/home/me"));
+        assert_eq!(
+            sources_from(Some(format!("/a/one{sep}/b/two").as_str()), home.clone()),
+            vec![
+                (PathBuf::from("/a/one"), SourceOrigin::Env),
+                (PathBuf::from("/b/two"), SourceOrigin::Env)
+            ]
+        );
+        let default = vec![(PathBuf::from("/home/me").join(".kube").join("config"), SourceOrigin::Default)];
+        assert_eq!(sources_from(None, home.clone()), default);
+        assert_eq!(
+            sources_from(Some(""), home),
+            default,
+            "an empty KUBECONFIG falls back to the default"
+        );
+        assert_eq!(sources_from(None, None), vec![]);
+    }
+
+    #[test]
+    fn source_reports_serialize_in_camel_case() {
+        let r = KubeconfigSource {
+            path: "/k".into(),
+            origin: SourceOrigin::Added,
+            state: SourceState::Empty,
+            contexts: 0,
+            error: None,
+        };
+        assert_eq!(
+            serde_json::to_value(&r).unwrap(),
+            serde_json::json!({ "path": "/k", "origin": "added", "state": "empty", "contexts": 0, "error": null })
+        );
     }
 
     #[test]
