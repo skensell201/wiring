@@ -291,6 +291,18 @@ cargo test                                   # backend unit and IPC contract tes
 WIRING_SMOKE_CONTEXT=docker-desktop cargo test --test smoke -- --ignored
 ```
 
+### Documentation site
+
+The site at wiringk8s.xyz is a VitePress project in [`site/`](site/). Run these from the repository root:
+
+```bash
+pnpm site:dev     # live preview
+pnpm site:test    # site unit tests
+pnpm site:build   # production build into site/.vitepress/dist
+```
+
+The landing page is generated from the design mockup by `python3 site/scripts/port-landing.py` (run from the repository root). Never edit the generated `Landing*.vue` files or `landing.css` by hand; change the mockup and rerun the script. To compare the built landing with the mockup in headless Chrome, run `pnpm -C site preview` (it serves on port 4173), then `node site/scripts/check-landing.mjs` from the repository root. Set `SITE` to use another address. Deploy with `site/deploy.sh`.
+
 <!-- #endregion development -->
 
 ## Project layout
@@ -393,6 +405,8 @@ git push origin v0.5.1
 ```
 
 The [release workflow](.github/workflows/release.yml) builds a universal macOS `.dmg` and the Windows `.msi` and `.exe` installers, then attaches them to a **draft** GitHub release. Review the draft and publish it. Bump the version in `package.json`, `src-tauri/tauri.conf.json` and `src-tauri/Cargo.toml` before tagging.
+
+After you publish the release, update the version in the landing page's eyebrow: edit `docs/superpowers/specs/2026-10-06-landing-mockup.html`, rerun `python3 site/scripts/port-landing.py`, then publish the site with `site/deploy.sh` (run it with `DRY_RUN=1` first to preview the changes).
 
 The workflow signs and notarizes the macOS app and signs the Windows installers once the signing secrets are configured. Until then it builds unsigned. [Code signing](docs/code-signing.md) explains what to buy and which secrets to set. It also shows how to check a setup with a manual run (`gh workflow run release.yml`), which builds the installers as workflow artifacts without creating a release.
 
