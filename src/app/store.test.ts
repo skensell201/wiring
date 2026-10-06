@@ -466,6 +466,15 @@ describe("views", () => {
     expect(s.toasts.at(-1)).toMatchObject({ kind: "info", message: "missing is not on the graph (hidden or collapsed into a group)" });
   });
 
+  it("focusInGraph says to use the table while the graph is too large", async () => {
+    useAppStore.setState({ view: { name: "table", kind: "Pod" }, tooLarge: { nodes: 2000, kinds: [] }, focusRequest: null });
+    await useAppStore.getState().focusInGraph("Pod/p/a");
+    const s = useAppStore.getState();
+    expect(s.view).toEqual({ name: "table", kind: "Pod" });
+    expect(s.focusRequest).toBeNull();
+    expect(s.toasts.at(-1)).toMatchObject({ kind: "info", message: "The graph is too large to show \u2014 use the table" });
+  });
+
   it("toggleSidebar flips and persists", async () => {
     const { settings } = await import("../shared/settings");
     expect(useAppStore.getState().sidebarCollapsed).toBe(false);

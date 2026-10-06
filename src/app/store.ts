@@ -575,6 +575,10 @@ export const useAppStore = create<AppState>()((set, get) => ({
   },
 
   focusInGraph: async (id) => {
+    if (get().tooLarge) {
+      get().toast({ kind: "info", message: "The graph is too large to show \u2014 use the table" });
+      return;
+    }
     const target = get().nodes.get(id);
     if (!target) {
       const name = id.split("/").pop() ?? id;
