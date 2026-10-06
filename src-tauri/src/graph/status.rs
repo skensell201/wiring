@@ -5,8 +5,10 @@ use std::collections::BTreeMap;
 use k8s_openapi::api::apps::v1::{DaemonSet, Deployment, ReplicaSet, StatefulSet};
 use k8s_openapi::api::autoscaling::v2::{HorizontalPodAutoscaler, HorizontalPodAutoscalerCondition};
 use k8s_openapi::api::batch::v1::{CronJob, Job, JobCondition};
-use k8s_openapi::api::core::v1::{ContainerStatus, PersistentVolume, PersistentVolumeClaim, Pod, Service};
-use k8s_openapi::api::networking::v1::Ingress;
+use k8s_openapi::api::core::v1::{ContainerStatus, Node, NodeCondition, PersistentVolume, PersistentVolumeClaim, Pod, Service};
+use k8s_openapi::api::networking::v1::{Ingress, NetworkPolicyPeer, NetworkPolicyPort};
+use k8s_openapi::api::rbac::v1::PolicyRule;
+use k8s_openapi::apimachinery::pkg::util::intstr::IntOrString;
 
 use super::model::{Problem, Status};
 use super::relations::ingress_backend_names;
@@ -31,6 +33,9 @@ pub fn describe(obj: &Object, store: &Store) -> (Status, Badges) {
 /// `describe` with a pod index shared by the caller, for loops over many objects.
 pub fn describe_with<'a>(obj: &'a Object, store: &'a Store, index: &PodIndex<'a>) -> (Status, Badges) {
     let (status, mut badges) = base_describe(obj, store);
+    if matches!(obj, Object::Pod(_)) && picked_by_a_policy(obj, store) {
+        badges.push("policy".into());
+    }
     if let Some(b) = crate::metrics::usage::usage_badge(store, index, obj) {
         badges.push(b);
     }
@@ -64,14 +69,58 @@ fn base_describe(obj: &Object, store: &Store) -> (Status, Badges) {
         Object::PersistentVolume(p) => pv(p),
         Object::ServiceAccount(_) => (Status::Ok, vec![]),
         Object::HorizontalPodAutoscaler(h) => hpa(h),
-        // Real Node health arrives with the status task; policies and RBAC objects are always ok.
-        Object::NetworkPolicy(_)
-        | Object::Role(_)
-        | Object::RoleBinding(_)
-        | Object::ClusterRole(_)
-        | Object::ClusterRoleBinding(_)
-        | Object::Node(_) => (Status::Ok, vec![]),
+        Object::Node(n) => node(n),
+        // Policies and RBAC objects are always ok.
+        Object::NetworkPolicy(_) | Object::Role(_) | Object::RoleBinding(_) | Object::ClusterRole(_) | Object::ClusterRoleBinding(_) => {
+            (Status::Ok, vec![])
+        }
     }
+}
+
+/// Conditions that make a Ready node yellow.
+const NODE_PRESSURE: [&str; 4] = ["MemoryPressure", "DiskPressure", "PIDPressure", "NetworkUnavailable"];
+
+fn node_conditions(n: &Node) -> &[NodeCondition] {
+    n.status.as_ref().and_then(|s| s.conditions.as_deref()).unwrap_or_default()
+}
+
+fn node_pressure(n: &Node) -> Option<&NodeCondition> {
+    node_conditions(n)
+        .iter()
+        .find(|c| NODE_PRESSURE.contains(&c.type_.as_str()) && c.status == "True")
+}
+
+/// Not ready -> err; a pressure condition -> warn. A node without a Ready condition (hand-written
+/// fixtures) counts as ok.
+fn node(n: &Node) -> (Status, Badges) {
+    let not_ready = node_conditions(n).iter().any(|c| c.type_ == "Ready" && c.status != "True");
+    let mut badges = vec![super::rows::node_ready_text(n)];
+    if let Some(v) = n.status.as_ref().and_then(|s| s.node_info.as_ref()) {
+        badges.push(v.kubelet_version.clone());
+    }
+    let pressure = node_pressure(n);
+    if let Some(c) = pressure {
+        badges.push(c.type_.clone());
+    }
+    let status = if not_ready {
+        Status::Err
+    } else if pressure.is_some() {
+        Status::Warn
+    } else {
+        Status::Ok
+    };
+    (status, badges)
+}
+
+/// Whether a NetworkPolicy in the pod's namespace selects it (so its traffic is restricted).
+fn picked_by_a_policy(pod: &Object, store: &Store) -> bool {
+    store.iter_kind(Kind::NetworkPolicy).any(|np| {
+        let Object::NetworkPolicy(np) = np else { return false };
+        np.metadata.namespace.as_deref() == pod.namespace()
+            && np.spec.as_ref().is_some_and(|s| {
+                super::selector::label_selector_matches(&s.pod_selector.clone().unwrap_or_default(), pod.meta().labels.as_ref())
+            })
+    })
 }
 
 fn keys_badge(n: usize) -> String {
@@ -515,6 +564,13 @@ pub fn problem(obj: &Object, status: Status, store: &Store) -> Option<Problem> {
             Some(c) => own(c.reason.clone().unwrap_or_else(|| c.type_.clone()), c.message.clone()),
             None => own("ScalingLimited", None),
         },
+        Object::Node(n) => match node_conditions(n).iter().find(|c| c.type_ == "Ready" && c.status != "True") {
+            Some(c) => own("NotReady", c.message.clone()),
+            None => {
+                let c = node_pressure(n)?;
+                own(c.type_.clone(), c.message.clone())
+            }
+        },
         _ => return None,
     })
 }
@@ -737,15 +793,185 @@ pub fn summary(obj: &Object) -> SummaryRows {
                 }));
             }
         }
+        Object::NetworkPolicy(np) => {
+            if let Some(spec) = np.spec.as_ref() {
+                rows.push((
+                    "Pod selector".into(),
+                    super::selector::selector_text(&spec.pod_selector.clone().unwrap_or_default()),
+                ));
+                let types = spec.policy_types.clone().unwrap_or_else(|| vec!["Ingress".into()]);
+                rows.push(("Policy types".into(), types.join(", ")));
+                let ingress = spec.ingress.as_deref().unwrap_or_default();
+                if types.iter().any(|t| t == "Ingress") && ingress.is_empty() {
+                    rows.push(("Ingress".into(), "Default deny".into()));
+                }
+                for (i, r) in ingress.iter().enumerate() {
+                    rows.push((
+                        format!("Ingress {}", i + 1),
+                        rule_text("from", r.from.as_deref(), r.ports.as_deref()),
+                    ));
+                }
+                let egress = spec.egress.as_deref().unwrap_or_default();
+                if types.iter().any(|t| t == "Egress") && egress.is_empty() {
+                    rows.push(("Egress".into(), "Default deny".into()));
+                }
+                for (i, r) in egress.iter().enumerate() {
+                    rows.push((format!("Egress {}", i + 1), rule_text("to", r.to.as_deref(), r.ports.as_deref())));
+                }
+            }
+        }
+        Object::Role(r) => push_rules(&mut rows, r.rules.as_deref().unwrap_or_default()),
+        Object::ClusterRole(r) => push_rules(&mut rows, r.rules.as_deref().unwrap_or_default()),
+        Object::RoleBinding(b) => {
+            rows.push(("Role".into(), format!("{}/{}", b.role_ref.kind, b.role_ref.name)));
+            rows.push((
+                "Subjects".into(),
+                super::rows::subjects_text(b.subjects.as_deref().unwrap_or_default()),
+            ));
+        }
+        Object::ClusterRoleBinding(b) => {
+            rows.push(("Role".into(), format!("{}/{}", b.role_ref.kind, b.role_ref.name)));
+            rows.push((
+                "Subjects".into(),
+                super::rows::subjects_text(b.subjects.as_deref().unwrap_or_default()),
+            ));
+        }
+        Object::Node(n) => {
+            rows.push(("Status".into(), super::rows::node_ready_text(n)));
+            rows.push(("Roles".into(), super::rows::node_roles(n)));
+            if let Some(i) = n.status.as_ref().and_then(|s| s.node_info.as_ref()) {
+                rows.push(("Kubelet".into(), i.kubelet_version.clone()));
+                rows.push(("OS".into(), i.os_image.clone()));
+            }
+            for c in node_conditions(n).iter().filter(|c| c.type_ != "Ready" && c.status == "True") {
+                rows.push((format!("Condition {}", c.type_), c.message.clone().unwrap_or_default()));
+            }
+        }
         _ => {}
     }
     rows
+}
+
+/// `from pods app=client; 10.0.0.0/8 on TCP 80`.
+fn rule_text(dir: &str, peers: Option<&[NetworkPolicyPeer]>, ports: Option<&[NetworkPolicyPort]>) -> String {
+    use super::selector::selector_text;
+    let peers = match peers {
+        None | Some([]) => "anywhere".to_string(),
+        Some(ps) => ps
+            .iter()
+            .map(|p| match (&p.pod_selector, &p.namespace_selector, &p.ip_block) {
+                (_, _, Some(b)) => match b.except.as_deref() {
+                    Some(ex) if !ex.is_empty() => format!("{} except {}", b.cidr, ex.join(", ")),
+                    _ => b.cidr.clone(),
+                },
+                (Some(pod), None, None) => format!("pods {}", selector_text(pod)),
+                (None, Some(ns), None) => format!("namespaces {}", selector_text(ns)),
+                (Some(pod), Some(ns), None) => format!("pods {} in namespaces {}", selector_text(pod), selector_text(ns)),
+                (None, None, None) => "anywhere".to_string(),
+            })
+            .collect::<Vec<_>>()
+            .join("; "),
+    };
+    let ports = match ports {
+        None | Some([]) => "all ports".to_string(),
+        Some(ps) => ps
+            .iter()
+            .map(|p| {
+                let proto = p.protocol.clone().unwrap_or_else(|| "TCP".into());
+                match &p.port {
+                    Some(IntOrString::Int(n)) => format!("{proto} {n}"),
+                    Some(IntOrString::String(s)) => format!("{proto} {s}"),
+                    None => proto,
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(", "),
+    };
+    format!("{dir} {peers} on {ports}")
+}
+
+/// `Rule N`: `get, list pods, services` / `* deployments.apps` / `get /healthz`.
+fn push_rules(rows: &mut SummaryRows, rules: &[PolicyRule]) {
+    for (i, r) in rules.iter().enumerate() {
+        let verbs = r.verbs.join(", ");
+        let targets = if let Some(urls) = r.non_resource_urls.as_ref().filter(|u| !u.is_empty()) {
+            urls.join(", ")
+        } else {
+            let groups = r.api_groups.as_deref().unwrap_or_default();
+            r.resources
+                .iter()
+                .flatten()
+                .flat_map(|res| {
+                    groups
+                        .iter()
+                        .map(move |g| if g.is_empty() { res.clone() } else { format!("{res}.{g}") })
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        rows.push((format!("Rule {}", i + 1), format!("{verbs} {targets}")));
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::store::{Kind, Store};
+
+    fn strs(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn node_health_and_problems() {
+        let s = Store::from_fixture("graph-extras").unwrap();
+        let node = |n: &str| s.find(Kind::Node, None, n).unwrap();
+        assert_eq!(describe(node("node-a"), &s), (Status::Ok, strs(&["Ready", "v1.36.1"])));
+        let (st, _) = describe(node("node-b"), &s);
+        assert_eq!(st, Status::Err);
+        let p = problem(node("node-b"), st, &s).unwrap();
+        assert_eq!(
+            (p.reason.as_str(), p.message.as_deref()),
+            ("NotReady", Some("Kubelet stopped posting node status."))
+        );
+        let (st, badges) = describe(node("node-c"), &s);
+        assert_eq!(st, Status::Warn);
+        assert!(badges.contains(&"MemoryPressure".to_string()));
+        assert_eq!(problem(node("node-c"), st, &s).unwrap().reason, "MemoryPressure");
+    }
+
+    #[test]
+    fn pods_picked_by_a_policy_carry_a_policy_badge() {
+        let s = Store::from_fixture("graph-extras").unwrap();
+        let (_, badges) = describe(s.find(Kind::Pod, Some("s"), "web-1").unwrap(), &s);
+        assert!(badges.contains(&"policy".to_string()), "{badges:?}");
+        let (_, badges) = describe(s.find(Kind::Pod, Some("t"), "other-1").unwrap(), &s);
+        assert!(!badges.contains(&"policy".to_string()), "admitted is not selected");
+    }
+
+    #[test]
+    fn overview_explains_policies_roles_and_bindings() {
+        let s = Store::from_fixture("graph-extras").unwrap();
+        let rows = |k: Kind, ns: Option<&str>, n: &str| summary(s.find(k, ns, n).unwrap());
+        let get = |r: &SummaryRows, key: &str| r.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone()).unwrap_or_default();
+        let np = rows(Kind::NetworkPolicy, Some("s"), "web-ingress");
+        assert_eq!(get(&np, "Pod selector"), "app=web");
+        assert_eq!(
+            get(&np, "Ingress 1"),
+            "from pods app=client; pods app=client in namespaces kubernetes.io/metadata.name=t; 10.0.0.0/8 on TCP 80"
+        );
+        assert_eq!(get(&rows(Kind::NetworkPolicy, Some("s"), "deny-all"), "Ingress"), "Default deny");
+        let role = rows(Kind::Role, Some("s"), "reader");
+        assert_eq!(get(&role, "Rule 1"), "get, list pods, services");
+        assert_eq!(get(&role, "Rule 2"), "* deployments.apps");
+        assert_eq!(get(&rows(Kind::ClusterRole, None, "unused"), "Rule 1"), "get /healthz");
+        let rb = rows(Kind::RoleBinding, Some("s"), "web-reader");
+        assert_eq!(get(&rb, "Role"), "Role/reader");
+        assert_eq!(get(&rb, "Subjects"), "ServiceAccount s/web, User alice");
+        let node = rows(Kind::Node, None, "node-a");
+        assert_eq!(get(&node, "Status"), "Ready");
+        assert_eq!(get(&node, "Kubelet"), "v1.36.1");
+    }
 
     #[test]
     fn a_usage_badge_is_appended_without_touching_the_status() {

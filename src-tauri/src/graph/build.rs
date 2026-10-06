@@ -371,13 +371,27 @@ fn link_causes(nodes: &mut HashMap<NodeId, Node>, edges: &[Edge]) {
             let relation = match n.kind {
                 Kind::Deployment | Kind::StatefulSet | Kind::DaemonSet | Kind::ReplicaSet | Kind::Job | Kind::CronJob => Relation::Owns,
                 Kind::Service => Relation::Selects,
+                // A pod stuck because its node is down: the node is the cause.
+                Kind::Pod
+                    if n.problem
+                        .as_ref()
+                        .is_some_and(|p| matches!(p.reason.as_str(), "Pending" | "Unknown")) =>
+                {
+                    Relation::RunsOn
+                }
                 _ => return None,
             };
             outgoing
                 .get(&(n.id.as_str(), relation))?
                 .iter()
                 .filter_map(|t| nodes.get(*t))
-                .filter(|t| t.status >= Status::Warn)
+                .filter(|t| {
+                    if relation == Relation::RunsOn {
+                        t.status == Status::Err
+                    } else {
+                        t.status >= Status::Warn
+                    }
+                })
                 .max_by(|a, b| a.status.cmp(&b.status).then_with(|| b.id.cmp(&a.id)))
                 .map(|t| (n.id.clone(), t.id.clone()))
         })
@@ -394,6 +408,21 @@ mod tests {
     use super::*;
     use crate::graph::model::{Problem, Status};
     use crate::store::{Kind, Store};
+
+    #[test]
+    fn a_pending_pod_on_a_not_ready_node_points_at_the_node() {
+        let s = Store::from_fixture("graph-extras").unwrap();
+        let g = build(&s, &BuildOptions::default());
+        let p = g
+            .nodes
+            .iter()
+            .find(|n| n.id == "Pod/s/client-1")
+            .and_then(|n| n.problem.as_ref())
+            .unwrap();
+        assert_eq!(p.cause.as_deref(), Some("Node//node-b"));
+        let other = g.nodes.iter().find(|n| n.id == "Pod/t/other-1").and_then(|n| n.problem.as_ref());
+        assert!(other.is_none_or(|p| p.cause.is_none()), "a healthy node causes nothing");
+    }
 
     fn edge_ids(g: &Graph) -> Vec<&str> {
         g.edges.iter().map(|e| e.id.as_str()).collect()
