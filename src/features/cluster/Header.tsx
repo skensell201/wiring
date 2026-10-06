@@ -40,7 +40,7 @@ export function Header() {
         Wiring
       </span>
       <button type="button" className="no-drag rounded-xl border border-border-strong bg-surface px-4 py-1.5 text-sm font-medium text-text-hi hover:bg-muted" onClick={() => void toggleSidebar()}
-        title="Toggle navigator">
+        title="Toggle navigator" aria-expanded={!sidebarCollapsed}>
         ⎈ <span>{connection.context ?? "choose cluster"}</span>{connection.serverVersion ? <span className="ml-2 text-xs font-normal text-text-muted">{connection.serverVersion}</span> : null}
       </button>
       {connection.context && <NamespacePicker />}

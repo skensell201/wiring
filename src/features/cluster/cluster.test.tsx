@@ -198,6 +198,16 @@ describe("Header", () => {
     expect(toggleSidebar).toHaveBeenCalledTimes(2);
   });
 
+  it("the context button says whether the navigator is open", () => {
+    useAppStore.setState({ sidebarCollapsed: false });
+    const { unmount } = render(<Header />);
+    expect(screen.getByRole("button", { name: /choose cluster/i })).toHaveAttribute("aria-expanded", "true");
+    unmount();
+    useAppStore.setState({ sidebarCollapsed: true });
+    render(<Header />);
+    expect(screen.getByRole("button", { name: /choose cluster/i })).toHaveAttribute("aria-expanded", "false");
+  });
+
   it("+ Create opens the create dialog, and is disabled until a namespace is selected", () => {
     const openCreate = vi.fn();
     useAppStore.setState({ connection: { ...initialState().connection, context: "prod", scope: null }, openCreate });

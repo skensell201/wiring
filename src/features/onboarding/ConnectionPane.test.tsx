@@ -72,6 +72,22 @@ describe("other panes", () => {
     expect(screen.getByRole("status", { name: "Choose a cluster" })).toHaveTextContent("Pick one of your 2 kubeconfig contexts in the navigator.");
   });
 
+  it("offers Add kubeconfig… first while the navigator is open", () => {
+    render(<ConnectionPane pane={{ type: "choose", contexts: 2 }} />);
+    expect(screen.getAllByRole("button").map((b) => b.textContent)).toEqual(["Add kubeconfig…"]);
+  });
+
+  it("offers Show navigator first, then Add kubeconfig…, while the navigator is collapsed", async () => {
+    const toggleSidebar = vi.fn(async () => {});
+    useAppStore.setState({ sidebarCollapsed: true, toggleSidebar });
+    render(<ConnectionPane pane={{ type: "choose", contexts: 2 }} />);
+    expect(screen.getAllByRole("button").map((b) => b.textContent)).toEqual(["Show navigator", "Add kubeconfig…"]);
+    fireEvent.click(screen.getByRole("button", { name: "Show navigator" }));
+    expect(toggleSidebar).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("button", { name: "Add kubeconfig…" }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("add_kubeconfig", { path: "/tmp/team.yaml" }));
+  });
+
   it("says which context it is connecting to", () => {
     render(<ConnectionPane pane={{ type: "connecting", context: "prod" }} />);
     expect(screen.getByRole("status", { name: "Connecting to prod…" })).toBeInTheDocument();

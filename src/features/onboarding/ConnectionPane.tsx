@@ -63,9 +63,15 @@ function WelcomePane() {
 }
 
 function ChoosePane({ count }: { count: number }) {
+  const { sidebarCollapsed, toggleSidebar } = useAppStore(useShallow((s) => ({ sidebarCollapsed: s.sidebarCollapsed, toggleSidebar: s.toggleSidebar })));
   const add = useAddKubeconfig();
+  const addAction = { label: "Add kubeconfig…", onClick: () => void add() };
+  // The contexts are listed in the navigator; while it is collapsed, opening it comes first.
+  const actions = sidebarCollapsed
+    ? { primary: { label: "Show navigator", onClick: () => void toggleSidebar() }, secondary: addAction }
+    : { primary: addAction };
   return (
-    <EmptyState icon={Network} title="Choose a cluster" primary={{ label: "Add kubeconfig…", onClick: () => void add() }}>
+    <EmptyState icon={Network} title="Choose a cluster" {...actions}>
       {`Pick one of your ${count} kubeconfig ${count === 1 ? "context" : "contexts"} in the navigator.`}
     </EmptyState>
   );
