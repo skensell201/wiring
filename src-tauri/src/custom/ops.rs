@@ -277,20 +277,54 @@ pub fn details_of(mut value: Value) -> AppResult<ObjectDetails> {
 }
 
 pub async fn get(client: &Client, kind: &CustomKind, id: &CustomId) -> AppResult<ObjectDetails> {
+    ensure_kind_matches(&kind.resource, id)?;
     let ns = target_namespace(&kind.resource, id.namespace.as_deref())?;
     let obj = api(client, &kind.resource, ns).get(&id.name).await.map_err(kube_err)?;
     details_of(to_value(&obj)?)
 }
 
+/// Set `metadata.namespace` to the request's namespace; a cluster-scoped request (`None`)
+/// carries none.
 fn put_namespace(body: &mut Value, namespace: Option<&str>) {
-    if let (Some(ns), Some(meta)) = (namespace, body.get_mut("metadata").and_then(Value::as_object_mut)) {
-        meta.insert("namespace".into(), Value::String(ns.to_owned()));
+    if let Some(meta) = body.get_mut("metadata").and_then(Value::as_object_mut) {
+        match namespace {
+            Some(ns) => meta.insert("namespace".into(), Value::String(ns.to_owned())),
+            None => meta.remove("namespace"),
+        };
     }
+}
+
+/// The kind resolved through discovery must be the one the id names.
+pub fn ensure_kind_matches(r: &ResourceRef, id: &CustomId) -> AppResult<()> {
+    if r.group == id.group && r.version == id.version && r.kind == id.kind {
+        return Ok(());
+    }
+    Err(invalid(format!(
+        "resolved kind {}/{}/{} does not match the id's {}/{}/{}",
+        r.group, r.version, r.kind, id.group, id.version, id.kind
+    )))
+}
+
+/// A manifest to create must be of the kind it is being created as.
+pub fn ensure_manifest_kind(m: &RawManifest, r: &ResourceRef) -> AppResult<()> {
+    let (group, version) = manifest_group_version(m)?;
+    if group != r.group || version != r.version || m.kind != r.kind {
+        return Err(invalid(format!(
+            "manifest {}/{} does not match the kind {}/{}/{}",
+            m.api_version.as_deref().unwrap_or_default(),
+            m.kind,
+            r.group,
+            r.version,
+            r.kind
+        )));
+    }
+    Ok(())
 }
 
 /// Replace the object `id` names with `yaml`, with the same conflict rules as built-in kinds:
 /// without `force` the manifest's resourceVersion must be current; with it the server's is used.
 pub async fn update(client: &Client, kind: &CustomKind, id: &CustomId, yaml: &str, force: bool) -> AppResult<ObjectDetails> {
+    ensure_kind_matches(&kind.resource, id)?;
     let m = manifest::parse_raw(yaml)?;
     ensure_matches(&m, id)?;
     let ns = target_namespace(&kind.resource, id.namespace.as_deref())?;
@@ -318,6 +352,7 @@ pub async fn update(client: &Client, kind: &CustomKind, id: &CustomId, yaml: &st
 /// Create `m` (already resolved to `kind`); its own namespace wins over `fallback_namespace`.
 pub async fn create(client: &Client, kind: &CustomKind, m: RawManifest, fallback_namespace: &str) -> AppResult<NodeId> {
     let r = &kind.resource;
+    ensure_manifest_kind(&m, r)?;
     let ns: Option<String> = if r.namespaced {
         Some(
             m.namespace
@@ -339,6 +374,7 @@ pub async fn create(client: &Client, kind: &CustomKind, m: RawManifest, fallback
 }
 
 pub async fn delete(client: &Client, kind: &CustomKind, id: &CustomId) -> AppResult<()> {
+    ensure_kind_matches(&kind.resource, id)?;
     let ns = target_namespace(&kind.resource, id.namespace.as_deref())?;
     delete_one(&api(client, &kind.resource, ns), &id.name).await
 }
@@ -625,5 +661,43 @@ mod tests {
             None,
             "a CR owner id carries its child's namespace"
         );
+    }
+
+    #[test]
+    fn the_resolved_kind_must_be_the_one_the_id_names() {
+        let mut r = cert_ref(true);
+        ensure_kind_matches(&r, &id()).unwrap();
+        r.group = "x.io".into();
+        r.kind = "Foo".into();
+        let err = ensure_kind_matches(&r, &id()).unwrap_err();
+        assert_eq!(err.kind, ErrorKind::Invalid);
+        assert!(
+            err.message.contains("x.io/v1/Foo") && err.message.contains("cert-manager.io/v1/Certificate"),
+            "{}",
+            err.message
+        );
+        let mut r = cert_ref(true);
+        r.version = "v2".into();
+        assert!(ensure_kind_matches(&r, &id()).is_err());
+    }
+
+    #[test]
+    fn a_new_manifest_must_match_the_resolved_kind() {
+        let r = cert_ref(true);
+        ensure_manifest_kind(&parse_raw(YAML).unwrap(), &r).unwrap();
+        for (from, to) in [("kind: Certificate", "kind: Issuer"), ("cert-manager.io/v1", "other.io/v1")] {
+            let err = ensure_manifest_kind(&parse_raw(&YAML.replace(from, to)).unwrap(), &r).unwrap_err();
+            assert_eq!(err.kind, ErrorKind::Invalid, "{to}");
+        }
+        assert!(ensure_manifest_kind(&parse_raw(&YAML.replace("apiVersion: cert-manager.io/v1\n", "")).unwrap(), &r).is_err());
+    }
+
+    #[test]
+    fn cluster_scoped_bodies_lose_their_namespace() {
+        let mut body = json!({ "metadata": { "name": "x", "namespace": "stray" } });
+        put_namespace(&mut body, None);
+        assert!(body["metadata"].get("namespace").is_none());
+        put_namespace(&mut body, Some("a"));
+        assert_eq!(body["metadata"]["namespace"], "a");
     }
 }

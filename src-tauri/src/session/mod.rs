@@ -331,7 +331,7 @@ impl Session {
         }
         let selector = if kind == Kind::Custom {
             let c = crate::custom::id::CustomId::parse(node_id)?;
-            format!("involvedObject.kind={},involvedObject.name={}", c.kind, c.name)
+            custom_events_selector(&c)
         } else {
             let uid = {
                 let store = self.shared.store();
@@ -498,6 +498,16 @@ where
 
 /// `"Kind/ns/name"`; cluster-scoped `"Kind//name"`; PodGroup `"PodGroup/ns/OwnerKind/ownerName"`;
 /// custom resources `"Custom/group/version/kind/ns/name"` (see `custom::id`).
+/// Events of a custom resource, matched by kind, name and API version (no uid is stored).
+fn custom_events_selector(c: &crate::custom::id::CustomId) -> String {
+    format!(
+        "involvedObject.kind={},involvedObject.name={},involvedObject.apiVersion={}",
+        c.kind,
+        c.name,
+        c.api_version()
+    )
+}
+
 pub fn parse_node_id(id: &str) -> AppResult<(Kind, Option<String>, String)> {
     if let Some(c) = crate::custom::id::CustomId::of(id)? {
         return Ok((Kind::Custom, c.namespace, c.name));
@@ -605,6 +615,17 @@ pub fn events_to_list(events: &BTreeMap<String, CoreEvent>) -> Vec<K8sEvent> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn custom_event_selector_names_the_api_group() {
+        let c = crate::custom::id::CustomId::parse("Custom/cert-manager.io/v1/Certificate/shop/web-tls").unwrap();
+        assert_eq!(
+            custom_events_selector(&c),
+            "involvedObject.kind=Certificate,involvedObject.name=web-tls,involvedObject.apiVersion=cert-manager.io/v1"
+        );
+        let core = crate::custom::id::CustomId::parse("Custom//v1/Thing/shop/a").unwrap();
+        assert!(custom_events_selector(&core).ends_with("involvedObject.apiVersion=v1"));
+    }
+
     use super::*;
     use crate::store::{Kind, Store};
 
