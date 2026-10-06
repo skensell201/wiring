@@ -12,6 +12,7 @@ describe("App shell", () => {
   it("renders", () => {
     render(<App />);
     expect(screen.getByText("Wiring")).toBeInTheDocument();
-    expect(screen.getByText(/connect to a cluster/i)).toBeInTheDocument();
+    // No contexts and no session: the welcome pane stands in for the views.
+    expect(screen.getByRole("status", { name: "Connect Wiring to a cluster" })).toBeInTheDocument();
   });
 });

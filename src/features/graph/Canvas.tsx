@@ -148,10 +148,6 @@ function CanvasInner() {
         />
       </ReactFlow>
       {empty && <GraphEmpty state={empty} />}
-      {/* Until the connection pane replaces the views while disconnected. */}
-      {!s.context && (
-        <div className="pointer-events-none absolute inset-0 grid place-items-center text-text-muted">Connect to a cluster to see its graph.</div>
-      )}
     </div>
   );
 }

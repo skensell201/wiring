@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { useShallow } from "zustand/react/shallow";
 import { startup } from "./app/startup";
 import { useAppStore } from "./app/store";
 import { useGlobalKeys } from "./app/useGlobalKeys";
@@ -11,6 +12,8 @@ import { Canvas } from "./features/graph/Canvas";
 import { ViewHeader } from "./features/graph/ViewHeader";
 import { HelmView } from "./features/helm/HelmView";
 import { Navigator } from "./features/navigator/Navigator";
+import { ConnectionPane } from "./features/onboarding/ConnectionPane";
+import { connectionPane } from "./features/onboarding/panes";
 import { CustomTableView } from "./features/table/CustomTableView";
 import { TableView } from "./features/table/TableView";
 import { refKey } from "./shared/customId";
@@ -27,6 +30,7 @@ export function App() {
   const viewName = useAppStore((s) => s.view.name);
   const customKey = useAppStore((s) => (s.view.name === "custom" ? refKey(s.view.resource) : null));
   const maximized = useAppStore((s) => s.detailsMaximized);
+  const pane = useAppStore(useShallow((s) => connectionPane(s.connection, s.contexts.length)));
   useEffect(() => {
     let active = true;
     let stop: (() => void) | undefined;
@@ -46,7 +50,12 @@ export function App() {
         <Header />
         {/* A maximised details panel takes the whole column; the view under it is unmounted, not hidden,
             so a busy graph stops rendering while logs fill the screen. */}
-        {!maximized && (
+        {!maximized && pane && (
+          <main className="min-h-0 flex-1">
+            <ErrorBoundary name="connection pane"><ConnectionPane pane={pane} /></ErrorBoundary>
+          </main>
+        )}
+        {!maximized && !pane && (
           <>
             <ViewHeader />
             <main className="min-h-0 flex-1">
