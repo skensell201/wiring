@@ -6,12 +6,19 @@ describe("kindTree", () => {
   it("places every kind except PodGroup in exactly one section", () => {
     const seen = new Map<string, number>();
     for (const s of SECTIONS) for (const k of s.kinds) seen.set(k, (seen.get(k) ?? 0) + 1);
-    for (const k of KINDS) expect(seen.get(k) ?? 0, k).toBe(k === "PodGroup" || k === "Node" ? 0 : 1);
+    for (const k of KINDS) expect(seen.get(k) ?? 0, k).toBe(k === "PodGroup" ? 0 : 1);
   });
 
   it("finds the section of a kind", () => {
     expect(sectionOf("Secret")?.label).toBe("Config");
     expect(sectionOf("PodGroup")).toBeUndefined();
+  });
+
+  it("sorts policies, RBAC objects and Nodes into their sections", () => {
+    expect(sectionOf("NetworkPolicy")?.id).toBe("network");
+    expect(sectionOf("ClusterRoleBinding")?.id).toBe("access");
+    expect(sectionOf("Node")?.id).toBe("cluster");
+    expect(SECTIONS.at(-1)?.label).toBe("Cluster");
   });
 
   it("has a plural label for every kind", () => {

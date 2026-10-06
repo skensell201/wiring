@@ -9,6 +9,7 @@ export const SECTIONS: Section[] = [
   { id: "network", label: "Network", kinds: ["Service", "Ingress", "NetworkPolicy"] },
   { id: "storage", label: "Storage", kinds: ["PersistentVolumeClaim", "PersistentVolume"] },
   { id: "access", label: "Access Control", kinds: ["ServiceAccount", "Role", "RoleBinding", "ClusterRole", "ClusterRoleBinding"] },
+  { id: "cluster", label: "Cluster", kinds: ["Node"] },
 ];
 
 /** Row labels in the tree and table headings. */
