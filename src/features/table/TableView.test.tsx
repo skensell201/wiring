@@ -202,3 +202,23 @@ it("other tables have no Helm storage toggle", () => {
   render(<TableView />);
   expect(screen.queryByRole("checkbox", { name: "Show Helm storage" })).toBeNull();
 });
+
+it("toggling Helm storage off asks for the plain list, and a late 'on' answer cannot overwrite it", async () => {
+  const mk = (name: string): Table => ({ kind: "Secret", columns: [{ key: "name", label: "Name", numeric: false }], rows: [{ nodeId: `Secret/shop/${name}`, status: "ok", cells: [{ text: name, status: null }] }] });
+  const resolvers: Array<(t: Table) => void> = [];
+  vi.mocked(invoke).mockClear();
+  vi.mocked(invoke).mockImplementation((cmd: string) => (cmd === "list_rows" ? new Promise<Table>((res) => { resolvers.push(res); }) : Promise.resolve(null)) as Promise<never>);
+  useAppStore.setState({
+    connection: { ...initialState().connection, context: "prod", state: "connected", scope: ["shop"] },
+    graphReady: true, view: { name: "table", kind: "Secret" }, tables: new Map([["Secret", mk("initial")]]),
+  });
+  render(<TableView />);
+  const toggle = screen.getByRole("checkbox", { name: "Show Helm storage" });
+  fireEvent.click(toggle);
+  fireEvent.click(toggle);
+  expect(invoke).toHaveBeenCalledWith("list_rows", { kind: "Secret", includeHelmStorage: false });
+  expect(resolvers).toHaveLength(2);
+  await act(async () => { resolvers[1](mk("off")); });
+  await act(async () => { resolvers[0](mk("on")); });
+  expect(useAppStore.getState().tables.get("Secret")?.rows[0].nodeId).toBe("Secret/shop/off");
+});

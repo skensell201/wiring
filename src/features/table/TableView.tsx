@@ -68,7 +68,7 @@ export function TableView() {
     <div className="h-full w-full overflow-auto bg-space px-8 py-6">
       {kind === "Secret" && !denied && (
         <label className="mb-3 flex w-fit items-center gap-2 text-xs text-text-muted">
-          <input type="checkbox" checked={includeHelmStorage} onChange={(e) => void setIncludeHelmStorage(e.target.checked)} className="accent-accent" />
+          <input type="checkbox" checked={includeHelmStorage} onChange={(e) => void setIncludeHelmStorage(e.target.checked)} className="accent-accent focus-visible:ring-1 focus-visible:ring-accent" />
           Show Helm storage
         </label>
       )}

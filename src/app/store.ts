@@ -626,9 +626,12 @@ export const useAppStore = create<AppState>()((set, get) => ({
     const onTable = (v: View) => v.name === "table" && v.kind === kind;
     const wasOnTable = onTable(get().view);
     try {
-      const table = await commands.listRows(kind, kind === "Secret" && get().includeHelmStorage);
+      const helm = kind === "Secret" && get().includeHelmStorage;
+      const table = await commands.listRows(kind, helm);
       // The namespace moved on while this fetch was in flight — its rows are stale.
       if (scope === null || get().connection.scope !== scope) return;
+      // The Helm toggle flipped while this fetch was in flight — a newer fetch owns the table.
+      if (kind === "Secret" && get().includeHelmStorage !== helm) return;
       // The user left this table while its refetch was in flight; showing it again refetches.
       if (wasOnTable && !onTable(get().view)) return;
       set((s) => {
