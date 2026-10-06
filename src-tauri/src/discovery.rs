@@ -5,7 +5,13 @@
 
 use std::collections::{BTreeMap, HashSet};
 
+use k8s_openapi::apiextensions_apiserver::pkg::apis::apiextensions::v1::CustomResourceDefinition;
+use kube::api::{Api, ListParams};
+use kube::discovery::{verbs, Discovery, Scope};
+use kube::Client;
 use serde::{Deserialize, Serialize};
+
+use crate::error::{AppError, AppResult};
 
 /// Everything the dynamic API needs to reach one resource kind.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -138,6 +144,73 @@ pub fn find_kind(kinds: &[CustomKind], group: &str, version: &str, kind: &str) -
         found.resource.version = version.to_owned();
     }
     Some(found)
+}
+
+/// Identity and priority-0 printer columns of each CRD, per version.
+pub fn crd_infos(crds: &[CustomResourceDefinition]) -> Vec<CrdInfo> {
+    crds.iter()
+        .map(|crd| CrdInfo {
+            group: crd.spec.group.clone(),
+            plural: crd.spec.names.plural.clone(),
+            columns: crd
+                .spec
+                .versions
+                .iter()
+                .map(|v| {
+                    let columns = v
+                        .additional_printer_columns
+                        .iter()
+                        .flatten()
+                        .filter(|c| c.priority.unwrap_or(0) == 0)
+                        .map(|c| PrinterColumn {
+                            name: c.name.clone(),
+                            json_path: c.json_path.clone(),
+                            type_: c.type_.clone(),
+                        })
+                        .collect();
+                    (v.name.clone(), columns)
+                })
+                .collect(),
+        })
+        .collect()
+}
+
+/// Discover the custom kinds the user can list. Uses aggregated discovery (two requests) and
+/// falls back to per-group discovery on servers without it. The CRDs supply printer columns
+/// when the user may list them; without that access, kinds get Name/Age only and every
+/// non-built-in group counts as custom.
+pub async fn discover(client: Client) -> AppResult<Vec<CustomKind>> {
+    let discovery = match Discovery::new(client.clone()).exclude(BUILTIN_GROUPS).run_aggregated().await {
+        Ok(d) => d,
+        Err(_) => Discovery::new(client.clone())
+            .exclude(BUILTIN_GROUPS)
+            .run()
+            .await
+            .map_err(|e| AppError::from(&e))?,
+    };
+    let mut found = Vec::new();
+    for group in discovery.groups() {
+        for (ar, caps) in group.recommended_resources() {
+            found.push(Discovered {
+                group: ar.group.clone(),
+                version: ar.version.clone(),
+                kind: ar.kind.clone(),
+                plural: ar.plural.clone(),
+                namespaced: caps.scope == Scope::Namespaced,
+                verbs: if caps.supports_operation(verbs::LIST) {
+                    caps.operations.clone()
+                } else {
+                    Vec::new()
+                },
+            });
+        }
+    }
+    let crds = Api::<CustomResourceDefinition>::all(client)
+        .list(&ListParams::default())
+        .await
+        .ok()
+        .map(|list| crd_infos(&list.items));
+    Ok(classify(&found, crds.as_deref()))
 }
 
 #[cfg(test)]
@@ -276,5 +349,37 @@ mod tests {
             "v1alpha1"
         );
         assert!(find_kind(&kinds, "other.io", "v1", "Rollout").is_none());
+    }
+
+    #[test]
+    fn crd_infos_keep_priority_zero_columns_per_version() {
+        use k8s_openapi::apiextensions_apiserver::pkg::apis::apiextensions::v1::CustomResourceDefinition;
+        let crd: CustomResourceDefinition = serde_json::from_value(serde_json::json!({
+            "apiVersion": "apiextensions.k8s.io/v1",
+            "kind": "CustomResourceDefinition",
+            "metadata": { "name": "certificates.cert-manager.io" },
+            "spec": {
+                "group": "cert-manager.io",
+                "scope": "Namespaced",
+                "names": { "plural": "certificates", "singular": "certificate", "kind": "Certificate" },
+                "versions": [
+                    { "name": "v1", "served": true, "storage": true, "additionalPrinterColumns": [
+                        { "name": "Ready", "type": "string", "jsonPath": ".status.conditions[?(@.type==\"Ready\")].status" },
+                        { "name": "Secret", "type": "string", "jsonPath": ".spec.secretName" },
+                        { "name": "Issuer", "type": "string", "jsonPath": ".spec.issuerRef.name", "priority": 1 },
+                        { "name": "Age", "type": "date", "jsonPath": ".metadata.creationTimestamp" }
+                    ] },
+                    { "name": "v1beta1", "served": false, "storage": false }
+                ]
+            }
+        }))
+        .unwrap();
+        let infos = crd_infos(&[crd]);
+        assert_eq!(infos.len(), 1);
+        assert_eq!((&infos[0].group[..], &infos[0].plural[..]), ("cert-manager.io", "certificates"));
+        let v1: Vec<&str> = infos[0].columns["v1"].iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(v1, vec!["Ready", "Secret", "Age"], "priority 1 is a wide-only column");
+        assert_eq!(infos[0].columns["v1"][2].type_, "date");
+        assert!(infos[0].columns["v1beta1"].is_empty());
     }
 }
