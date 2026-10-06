@@ -36,3 +36,17 @@ export function restoredScope(remembered: NamespaceScope | null, namespaces: str
   }
   return fallback ? [fallback] : null;
 }
+
+/** The scope text a table shows in its empty states: `null` until a scope is selected (even a
+ *  cluster-scoped kind is only watched once one is), "The cluster" for a cluster-scoped kind. */
+export function scopeText(scope: NamespaceScope | null, known: string[], clusterScoped: boolean): string | null {
+  const label = scopeLabel(scope, known);
+  return label === null ? null : clusterScoped ? "The cluster" : label;
+}
+
+/** The "Choose a namespace" sentence, shared by the graph and the tables. */
+export function noNamespaceBody(canListNamespaces: boolean): string {
+  return canListNamespaces
+    ? "Pick one or more namespaces to see their resources."
+    : "You can't list namespaces on this cluster. Type the name of one you have access to.";
+}

@@ -143,17 +143,27 @@ function cachedLayout(nodes: GraphNode[], edges: GraphEdge[]): LanedLayout {
   return result;
 }
 
+/** The nodes the kind chips let through. */
+export function visibleNodes(nodes: Map<NodeId, GraphNode>, hiddenKinds: Set<Kind>): GraphNode[] {
+  return [...nodes.values()].filter((n) => !hiddenKinds.has(n.kind));
+}
+
+/** Whether `n` matches the header search: its kind, or its name alone or as `namespace/name` (the
+ *  namespace counts too, alone or as `blog/web`). An empty search matches everything. */
+export function matchesSearch(n: GraphNode, search: string): boolean {
+  const q = search.trim().toLowerCase();
+  return q === "" || n.kind.toLowerCase().includes(q)
+    || (n.namespace === null ? n.name : `${n.namespace}/${n.name}`).toLowerCase().includes(q);
+}
+
 /** React Flow input: `lanes` are frames to render behind `nodes` (empty for a single namespace). */
 export function toFlow(input: ToFlowInput): { lanes: LaneFlowNode[]; nodes: ResourceFlowNode[]; edges: RelationFlowEdge[] } {
-  const visible = [...input.nodes.values()].filter((n) => !input.hiddenKinds.has(n.kind));
+  const visible = visibleNodes(input.nodes, input.hiddenKinds);
   const visibleIds = new Set(visible.map((n) => n.id));
   const visibleEdges = [...input.edges.values()].filter((e) => visibleIds.has(e.source) && visibleIds.has(e.target));
   const { positions, waypoints, lanes } = cachedLayout(visible, visibleEdges);
 
-  const q = input.search.trim().toLowerCase();
-  // The namespace counts too, alone (`blog`) or as `blog/web`.
-  const matches = (n: GraphNode) => q === "" || n.kind.toLowerCase().includes(q)
-    || (n.namespace === null ? n.name : `${n.namespace}/${n.name}`).toLowerCase().includes(q);
+  const matches = (n: GraphNode) => matchesSearch(n, input.search);
 
   // The selected node's problem chain (only when it leads somewhere): its nodes and the edges
   // between consecutive steps (either direction) are tinted in the root cause's status colour,

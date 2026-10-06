@@ -6,6 +6,8 @@ import { scopeLabel } from "../../shared/scope";
 import type { HelmReleaseDetails, NodeId, Status } from "../../shared/ipc/types";
 import { headingFromId } from "../details/DetailsPanel";
 import { kindLabel } from "../graph/kindMeta";
+import { TableEmpty } from "../table/TableEmpty";
+import { tableEmptyState } from "../table/tableEmptyState";
 
 const STATUS_TEXT: Record<Status, string> = { ok: "text-status-ok", warn: "text-status-warn", err: "text-status-err", unknown: "text-text-muted" };
 const TABS = ["overview", "values", "history", "notes", "resources"] as const;
@@ -38,12 +40,8 @@ export function HelmView() {
     [releases, q],
   );
 
-  let message: string | null = null;
-  if (!scope) message = "Select a namespace to see its releases.";
-  else if (denied) message = "No access to Helm releases: they are read from Secrets (RBAC)";
-  else if (releases === null) message = "Loading Helm releases…";
-  else if (releases.length === 0) message = `No Helm releases in ${scopeLabel(scope, namespaces)}`;
-  else if (rows.length === 0) message = `No releases match “${search.trim()}”`;
+  const label = scopeLabel(scope, namespaces);
+  const empty = tableEmptyState({ scope: label, denied, loaded: releases !== null, total: releases?.length ?? 0, shown: rows.length, search });
 
   return (
     <div className="flex h-full w-full flex-col gap-4 overflow-auto bg-space px-8 py-6">
@@ -80,7 +78,12 @@ export function HelmView() {
           </tbody>
         </table>
       )}
-      {message && <div className="grid flex-1 place-items-center text-text-muted">{message}</div>}
+      {empty && (
+        <div className="min-h-0 flex-1">
+          <TableEmpty state={empty} noun="Helm releases"
+            noAccessBody={`You can't list Secrets in ${label}, and Helm keeps its releases there (RBAC). Ask your cluster admin, or pick another namespace.`} />
+        </div>
+      )}
       {selected && !denied && (
         <section aria-label="Release details" className="shrink-0 rounded-card border border-border bg-surface">
           <div className="flex h-12 items-center gap-6 border-b border-border px-6">

@@ -59,6 +59,29 @@ export function NamespacePicker() {
     };
   }, [open]);
 
+  // Opens the panel with the current scope ticked and no filter.
+  const openPanel = () => {
+    setTicked(new Set(scope === null || scope === "all" ? [] : scope));
+    setFilter("");
+    setOpen(true);
+  };
+
+  // An empty state's "Choose a namespace" (`openNamespacePicker`): open the panel, or focus the
+  // free-text field when there is no list. A request made before this mounted is not replayed, and
+  // one made while the free-text field is unmounted (no namespaces yet) is dropped on purpose.
+  const pickerSeq = useAppStore((s) => s.namespacePickerSeq);
+  const seenSeq = useRef(pickerSeq);
+  const freeText = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (pickerSeq === seenSeq.current) return;
+    seenSeq.current = pickerSeq;
+    if (namespaces.length === 0) {
+      freeText.current?.focus();
+      return;
+    }
+    openPanel();
+  }, [pickerSeq, namespaces.length, scope]);
+
   const apply = (next: NamespaceScope) => {
     setOpen(false);
     void selectScope(next);
@@ -67,17 +90,13 @@ export function NamespacePicker() {
   const valid = DNS_LABEL.test(draft.trim()) && draft.trim().length <= 63;
   if (namespaces.length === 0) {
     return (
-      <input aria-label="Namespace" aria-invalid={draft.trim() !== "" && !valid} className={FIELD} placeholder="namespace…" value={draft}
+      <input ref={freeText} aria-label="Namespace" aria-invalid={draft.trim() !== "" && !valid} className={FIELD} placeholder="namespace…" value={draft}
         onChange={(e) => setDraft(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && valid) apply([draft.trim()]); }} />
     );
   }
 
   const toggleOpen = () => {
-    if (!open) {
-      setTicked(new Set(scope === null || scope === "all" ? [] : scope));
-      setFilter("");
-    }
-    setOpen(!open);
+    if (open) setOpen(false); else openPanel();
   };
   const toggle = (ns: string) => setTicked((prev) => {
     const next = new Set(prev);

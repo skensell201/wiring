@@ -48,7 +48,27 @@ describe("CustomTableView", () => {
     show();
     useAppStore.setState({ customTables: new Map([["cert-manager.io/v1/Certificate", { ...table, rows: [] }]]) });
     render(<CustomTableView />);
-    expect(screen.getByText(/No Certificate in/)).toBeInTheDocument();
+    expect(screen.getByRole("status", { name: "Nothing here yet" })).toHaveTextContent("shop has no certificates.");
+    fireEvent.click(screen.getByRole("button", { name: "+ Create" }));
+    expect(useAppStore.getState().createDialog).toMatchObject({ open: true, custom: cert });
+  });
+
+  it("asks for a namespace on a cluster-scoped kind until one is selected", () => {
+    const issuer: ResourceRef = { group: "cert-manager.io", version: "v1", kind: "ClusterIssuer", plural: "clusterissuers", namespaced: false };
+    useAppStore.setState({ view: { name: "custom", resource: issuer } });
+    render(<CustomTableView />);
+    expect(screen.getByRole("status", { name: "Choose a namespace" })).toBeInTheDocument();
+  });
+
+  it("does not offer namespace actions on a cluster-scoped kind with no objects", () => {
+    const issuer: ResourceRef = { group: "cert-manager.io", version: "v1", kind: "ClusterIssuer", plural: "clusterissuers", namespaced: false };
+    useAppStore.setState({
+      connection: { ...initialState().connection, context: "prod", state: "connected", scope: ["shop"] },
+      view: { name: "custom", resource: issuer }, customTables: new Map([["cert-manager.io/v1/ClusterIssuer", { ...table, rows: [] }]]),
+    });
+    render(<CustomTableView />);
+    expect(screen.getByRole("status", { name: "Nothing here yet" })).toHaveTextContent("The cluster has no clusterissuers.");
+    expect(screen.queryByRole("button", { name: /namespace/i })).toBeNull();
   });
 
   it("shows the watch's terminal error instead of the rows, with a Retry that lists again", async () => {
@@ -60,7 +80,8 @@ describe("CustomTableView", () => {
     });
     render(<CustomTableView />);
     expect(screen.getByText("No access to Certificate (RBAC)")).toBeInTheDocument();
-    expect(screen.queryByText(/No Certificate in/)).toBeNull();
+    expect(screen.getByRole("alert", { name: "Can't list Certificate" })).toBeInTheDocument();
+    expect(screen.queryByText(/has no certificates/)).toBeNull();
     expect(screen.queryByRole("grid")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("list_custom", { resource: cert }));

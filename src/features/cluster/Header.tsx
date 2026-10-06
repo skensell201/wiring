@@ -1,5 +1,5 @@
 import mark from "../../assets/mark.svg";
-import { Plus, Search } from "lucide-react";
+import { LoaderCircle, Plus, Search } from "lucide-react";
 import { useEffect, useRef } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { useAppStore } from "../../app/store";
@@ -11,10 +11,10 @@ import { ForwardsIndicator } from "../forward/ForwardsIndicator";
 import { NamespacePicker } from "./NamespacePicker";
 
 export function Header() {
-  const { connection, search, hasContexts, sidebarCollapsed, setSearch, reconnect, setPickerOpen, toggleSidebar, openCreate } = useAppStore(
+  const { connection, search, sidebarCollapsed, setSearch, reconnect, toggleSidebar, openCreate } = useAppStore(
     useShallow((s) => ({
-      connection: s.connection, search: s.search, hasContexts: s.contexts.length > 0, sidebarCollapsed: s.sidebarCollapsed,
-      setSearch: s.setSearch, reconnect: s.reconnect, setPickerOpen: s.setPickerOpen, toggleSidebar: s.toggleSidebar, openCreate: s.openCreate,
+      connection: s.connection, search: s.search, sidebarCollapsed: s.sidebarCollapsed,
+      setSearch: s.setSearch, reconnect: s.reconnect, toggleSidebar: s.toggleSidebar, openCreate: s.openCreate,
     })),
   );
   const searchRef = useRef<HTMLInputElement>(null);
@@ -30,10 +30,11 @@ export function Header() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
+  // While a connect is in flight the old session (if any) is going away: its namespaces and Create don't apply.
+  const session = connection.context !== null && connection.connecting === null;
+
   // The Navigator normally hosts the macOS traffic lights; its 48 px rail is too narrow for them.
   const inset = isMac && sidebarCollapsed ? "pl-12" : "";
-  // Cluster switching lives in the Navigator; the picker stays for the empty state.
-  const onContextClick = () => (hasContexts ? void toggleSidebar() : setPickerOpen(true));
 
   return (
     <header className={`drag-region flex h-16 shrink-0 items-center gap-3 border-b border-border bg-space/80 px-6 backdrop-blur-md ${inset}`}>
@@ -41,12 +42,15 @@ export function Header() {
         <img src={mark} alt="" width={22} height={22} className="select-none" draggable={false} />
         Wiring
       </span>
-      <button type="button" className="no-drag rounded-xl border border-border-strong bg-surface px-4 py-1.5 text-sm font-medium text-text-hi hover:bg-muted" onClick={onContextClick}
-        title={hasContexts ? "Toggle navigator" : "Choose a cluster"}>
-        ⎈ <span>{connection.context ?? "choose cluster"}</span>{connection.serverVersion ? <span className="ml-2 text-xs font-normal text-text-muted">{connection.serverVersion}</span> : null}
+      <button type="button" className="no-drag rounded-xl border border-border-strong bg-surface px-4 py-1.5 text-sm font-medium text-text-hi hover:bg-muted" onClick={() => void toggleSidebar()}
+        title="Toggle navigator" aria-expanded={!sidebarCollapsed}>
+        ⎈ <span>{connection.connecting ?? connection.context ?? "choose cluster"}</span>
+        {connection.connecting !== null
+          ? <span role="img" aria-label="Connecting" className="ml-2 inline-flex align-middle"><LoaderCircle aria-hidden className="size-3.5 text-text-muted motion-safe:animate-spin" /></span>
+          : connection.serverVersion ? <span className="ml-2 text-xs font-normal text-text-muted">{connection.serverVersion}</span> : null}
       </button>
-      {connection.context && <NamespacePicker />}
-      {connection.context && (
+      {session && <NamespacePicker />}
+      {session && (
         <Button className="flex items-center gap-1.5" disabled={connection.scope === null} onClick={() => openCreate()}
           title={connection.scope === null ? "Select a namespace first" : "Create an object in this namespace"}>
           <Plus className="size-4" /> Create
@@ -60,6 +64,9 @@ export function Header() {
       <UpdatePill />
       <ForwardsIndicator />
       <Dot status={connection.state} className="mx-1 size-2.5" />
+      {connection.context && connection.state === "degraded" && (
+        <span className="text-xs text-status-warn" title="Some resources can't be watched right now; Wiring keeps retrying.">Reconnecting…</span>
+      )}
       {connection.context && (
         <Button disabled={connection.busy} onClick={() => void reconnect()}>Reconnect</Button>
       )}

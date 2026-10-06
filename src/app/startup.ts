@@ -2,21 +2,25 @@ import { restoredScope } from "../shared/scope";
 import { settings } from "../shared/settings";
 import { useAppStore } from "./store";
 
-/** Boot: load contexts and reconnect the remembered context/scope. Without a remembered
- *  context (or when it is gone or fails) the Navigator's cluster list is the way forward; the
- *  modal picker opens only when there are no contexts at all. */
+/** Boot: load contexts and reconnect the remembered context/scope. Without contexts the welcome
+ *  pane takes over (it loads the kubeconfig sources itself); without a remembered context, or when
+ *  it is gone, the navigator's cluster list is the way forward; a failed connect shows its pane.
+ *  A remembered context shows as connecting from before the contexts load, so the choose pane never
+ *  flashes between the list arriving and the dial. */
 export async function startup(): Promise<void> {
   const s = useAppStore.getState;
-  useAppStore.setState({ sidebarCollapsed: await settings.getSidebarCollapsed() });
+  const [sidebarCollapsed, last] = await Promise.all([settings.getSidebarCollapsed(), settings.get<string>("lastContext")]);
+  useAppStore.setState({ sidebarCollapsed });
+  if (last) useAppStore.setState((st) => ({ connection: { ...st.connection, connecting: last } }));
   await s().loadContexts();
-  if (s().contexts.length === 0) {
-    s().setPickerOpen(true);
+  if (!last) return;
+  // Cancelled (or another connect started) while the contexts loaded: that choice stands.
+  if (s().connection.connecting !== last) return;
+  const ctx = s().contexts.find((c) => c.name === last);
+  if (!ctx) {
+    useAppStore.setState((st) => ({ connection: { ...st.connection, connecting: null } }));
     return;
   }
-  const last = await settings.get<string>("lastContext");
-  const ctx = last ? s().contexts.find((c) => c.name === last) : undefined;
-  if (!ctx) return;
-  // A failed connect lands in disconnectedState, which decides about the picker itself.
   if (!(await s().connect(ctx.name))) return;
   const remembered = await settings.getLastScope(ctx.name);
   const { namespaces, canListNamespaces } = s().connection;

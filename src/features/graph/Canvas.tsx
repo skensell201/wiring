@@ -12,7 +12,8 @@ import {
 import { useCallback, useEffect, useMemo, useRef } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { useAppStore } from "../../app/store";
-import { isMulti, scopeLabel } from "../../shared/scope";
+import { GraphEmpty } from "./GraphEmpty";
+import { graphEmptyState } from "./graphEmptyState";
 import { RelationEdge } from "./RelationEdge";
 import { LaneNode } from "./LaneNode";
 import { ResourceNode } from "./ResourceNode";
@@ -32,6 +33,7 @@ function CanvasInner() {
   const s = useAppStore(
     useShallow((s) => ({
       nodes: s.nodes, edges: s.edges, tooLarge: s.tooLarge, graphReady: s.graphReady, hiddenKinds: s.hiddenKinds,
+      deniedKinds: s.deniedKinds, partialKinds: s.partialKinds, deniedLoaded: s.deniedLoaded, canListNamespaces: s.connection.canListNamespaces,
       search: s.search, hoveredId: s.hoveredId, selectedId: s.selectedId, expandedGroups: s.expandedGroups, highlightIds: s.highlightIds,
       scope: s.connection.scope, namespaces: s.connection.namespaces, context: s.connection.context, focusRequest: s.focusRequest,
       select: s.select, openActionsMenu: s.openActionsMenu, setHovered: s.setHovered, toggleGroup: s.toggleGroup,
@@ -101,12 +103,11 @@ function CanvasInner() {
   const onNodeMouseLeave = useCallback(() => s.setHovered(null), [s.setHovered]);
   const onPaneClick = useCallback(() => { if (s.selectedId !== null) void s.select(null); }, [s.selectedId, s.select]);
 
-  let overlay: string | null = null;
-  if (!s.context) overlay = "Connect to a cluster to see its graph.";
-  else if (!s.scope) overlay = "Select a namespace to see its graph.";
-  else if (!s.graphReady) overlay = `Loading ${scopeLabel(s.scope, s.namespaces)}…`;
-  else if (s.tooLarge) overlay = `${s.tooLarge.nodes.toLocaleString("en-US")} objects — too many for the graph. Use the tables, or pick fewer namespaces.`;
-  else if (s.nodes.size === 0) overlay = isMulti(s.scope) ? "These namespaces are empty." : "Namespace is empty.";
+  // Memoized on its inputs: the canvas re-renders on every hover.
+  const empty = useMemo(() => graphEmptyState(s), [
+    s.context, s.scope, s.namespaces, s.canListNamespaces, s.graphReady, s.tooLarge,
+    s.deniedKinds, s.partialKinds, s.deniedLoaded, s.nodes, s.hiddenKinds, s.search,
+  ]);
 
   return (
     <div className="relative h-full w-full bg-space">
@@ -146,9 +147,7 @@ function CanvasInner() {
           style={{ background: "#2d2734", border: "1px solid rgb(229 231 235 / 0.12)", borderRadius: 20 }}
         />
       </ReactFlow>
-      {overlay && (
-        <div className="pointer-events-none absolute inset-0 grid place-items-center text-text-muted">{overlay}</div>
-      )}
+      {empty && <GraphEmpty state={empty} />}
     </div>
   );
 }

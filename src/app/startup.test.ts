@@ -27,21 +27,22 @@ vi.mock("../shared/ipc/tauri", () => ({
 
 import { invoke } from "../shared/ipc/tauri";
 import { startup } from "./startup";
+import { connectionPane, type Pane } from "../features/onboarding/panes";
 
 beforeEach(() => { useAppStore.setState(initialState()); mem.clear(); vi.mocked(invoke).mockClear(); });
 
 describe("startup", () => {
-  it("shows nothing modal when there is no remembered context but the Navigator has contexts", async () => {
+  it("connects nothing when there is no remembered context", async () => {
     await startup();
-    expect(useAppStore.getState().pickerOpen).toBe(false);
     expect(useAppStore.getState().contexts).toHaveLength(1);
+    expect(invoke).not.toHaveBeenCalledWith("connect", expect.anything());
   });
 
-  it("opens the picker when there are no contexts at all", async () => {
+  it("leaves an app without contexts to the welcome pane", async () => {
     vi.mocked(invoke).mockImplementationOnce(async (cmd: string) => (cmd === "list_contexts" ? [] : null));
     await startup();
-    expect(useAppStore.getState().pickerOpen).toBe(true);
     expect(useAppStore.getState().contexts).toHaveLength(0);
+    expect(invoke).not.toHaveBeenCalledWith("connect", expect.anything());
   });
 
   it("auto-connects the remembered context and namespace", async () => {
@@ -50,10 +51,50 @@ describe("startup", () => {
     mem.set("scope:staging", ["default"]); // another context's memory must not leak in
     await startup();
     const s = useAppStore.getState();
-    expect(s.pickerOpen).toBe(false);
     expect(s.connection.context).toBe("prod");
     expect(s.connection.scope).toEqual(["payments"]);
     expect(invoke).toHaveBeenCalledWith("select_namespaces", { namespaces: ["payments"], expandedGroups: [] });
+  });
+
+  it("goes from starting straight to connecting with a remembered context", async () => {
+    mem.set("lastContext", "prod");
+    const seen: (Pane["type"] | "session")[] = [];
+    const record = () => {
+      const s = useAppStore.getState();
+      const t = connectionPane(s.connection, s.contexts.length, s.contextsLoaded)?.type ?? "session";
+      if (seen[seen.length - 1] !== t) seen.push(t);
+    };
+    record();
+    const unsub = useAppStore.subscribe(record);
+    try {
+      await startup();
+    } finally {
+      unsub();
+    }
+    expect(seen).toEqual(["starting", "connecting", "session"]);
+  });
+
+  it("marks the contexts loaded even when listing them fails", async () => {
+    vi.mocked(invoke).mockImplementationOnce(async () => { throw new Error("boom"); });
+    await startup();
+    expect(useAppStore.getState().contextsLoaded).toBe(true);
+    expect(useAppStore.getState().contexts).toHaveLength(0);
+  });
+
+  it("does not dial the remembered context when the user cancelled while the contexts loaded", async () => {
+    mem.set("lastContext", "prod");
+    const base = vi.mocked(invoke).getMockImplementation()!;
+    vi.mocked(invoke).mockImplementation(async (cmd: string, args?: any) => {
+      if (cmd === "list_contexts") void useAppStore.getState().disconnect();
+      return base(cmd, args);
+    });
+    try {
+      await startup();
+    } finally {
+      vi.mocked(invoke).mockImplementation(base);
+    }
+    expect(invoke).not.toHaveBeenCalledWith("connect", expect.anything());
+    expect(useAppStore.getState().connection.connecting).toBeNull();
   });
 
   it("restores a remembered multi-namespace scope, dropping namespaces that are gone", async () => {
@@ -101,11 +142,11 @@ describe("startup", () => {
     expect(useAppStore.getState().connection.scope).toEqual(["payments"]);
   });
 
-  it("does not connect, nor open the picker, when the remembered context no longer exists", async () => {
+  it("does not connect when the remembered context no longer exists", async () => {
     mem.set("lastContext", "gone");
     await startup();
-    expect(useAppStore.getState().pickerOpen).toBe(false);
     expect(invoke).not.toHaveBeenCalledWith("connect", expect.anything());
+    expect(useAppStore.getState().connection.connecting).toBeNull();
   });
 
   it("loads the persisted sidebar-collapsed flag before connecting", async () => {
@@ -114,7 +155,7 @@ describe("startup", () => {
     expect(useAppStore.getState().sidebarCollapsed).toBe(true);
   });
 
-  it("stays on the Navigator when connecting the remembered context fails", async () => {
+  it("shows the failure when connecting the remembered context fails", async () => {
     mem.set("lastContext", "prod");
     vi.mocked(invoke).mockImplementationOnce(async (cmd: string) => {
       if (cmd === "list_contexts") return [{ name: "prod", cluster: "c", user: "u", namespace: "payments", sourceFile: "/k" }];
@@ -122,7 +163,7 @@ describe("startup", () => {
     });
     vi.mocked(invoke).mockImplementationOnce(async () => { throw new Error("connect failed"); });
     await startup();
-    expect(useAppStore.getState().pickerOpen).toBe(false);
+    expect(useAppStore.getState().connection.lastError).toEqual({ context: "prod", error: { kind: "internal", message: "connect failed" } });
     expect(useAppStore.getState().connection.context).toBeNull();
     expect(invoke).not.toHaveBeenCalledWith("select_namespaces", expect.anything());
   });

@@ -45,7 +45,7 @@ describe("wireEvents", () => {
     expect(hoisted.handlers).toBeNull();
   });
 
-  it("a disconnected state reopens the context picker and clears the graph", async () => {
+  it("a disconnected state clears the graph", async () => {
     await wireEvents();
     useAppStore.setState({ ...useAppStore.getState(), connection: { ...initialState().connection, context: "prod", state: "connected", scope: ["p"] } });
     hoisted.handlers!.graph_snapshot({ nodes: [node], edges: [] });
@@ -79,7 +79,6 @@ describe("wireEvents", () => {
     expect(s.connection.context).toBe("prod");
     expect(s.connection.busy).toBe(true);
     expect(s.nodes.size).toBe(1);
-    expect(s.pickerOpen).toBe(false);
   });
 
   it("refreshes denied kinds when a per-kind forbidden error arrives", async () => {

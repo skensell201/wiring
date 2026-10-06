@@ -10,6 +10,7 @@ import execPod from "./fixtures/exec_pod.json";
 import forward from "./fixtures/forward.json";
 import helmRelease from "./fixtures/helm_release.json";
 import helmReleaseDetails from "./fixtures/helm_release_details.json";
+import kubeconfigSource from "./fixtures/kubeconfig_source.json";
 import graph from "./fixtures/graph.json";
 import graphExtras from "./fixtures/graph_extras.json";
 import graphTooLarge from "./fixtures/graph_too_large.json";
@@ -25,7 +26,7 @@ import updateCheck from "./fixtures/update_check.json";
 import updateProgress from "./fixtures/update_progress.json";
 import {
   CONNECTION_STATES, ERROR_KINDS, KINDS, RELATIONS, STATUSES,
-  isAppError, isConnectInfo, isConnectionState, isContextInfo, isCustomKind, isCustomTable, isHelmRelease, isHelmReleaseDetails, isExecMessage, isExecPod, isForward, isGraph, isGraphDelta, isGraphNode, isLogMessage, isMetricsUpdate, isObjectDetails, isObjectEvents, isPortOption, isRevision, isTable, isUpdateCheck, isUpdateProgress,
+  isAppError, isConnectInfo, isConnectionState, isContextInfo, isKubeconfigSource, isCustomKind, isCustomTable, isHelmRelease, isHelmReleaseDetails, isExecMessage, isExecPod, isForward, isGraph, isGraphDelta, isGraphNode, isLogMessage, isMetricsUpdate, isObjectDetails, isObjectEvents, isPortOption, isRevision, isTable, isUpdateCheck, isUpdateProgress,
 } from "./types";
 
 // The JSON files are the contract shared with the Rust side (guarded there by
@@ -44,6 +45,12 @@ describe("IPC fixtures match the TypeScript types", () => {
   it("rejects a helm release with an unknown health", () => expect(isHelmRelease({ ...helmRelease, health: "great" })).toBe(false));
   it("helm_release_details", () => expect(isHelmReleaseDetails(helmReleaseDetails)).toBe(true));
   it("context_info", () => expect(isContextInfo(contextInfo)).toBe(true));
+  it("kubeconfig_source", () => expect(isKubeconfigSource(kubeconfigSource)).toBe(true));
+  it("rejects a kubeconfig source with an unknown state", () => expect(isKubeconfigSource({ ...kubeconfigSource, state: "broken" })).toBe(false));
+  it("rejects a kubeconfig source with a negative or fractional context count", () => {
+    expect(isKubeconfigSource({ ...kubeconfigSource, contexts: -1 })).toBe(false);
+    expect(isKubeconfigSource({ ...kubeconfigSource, contexts: 1.5 })).toBe(false);
+  });
   it("connect_info", () => expect(isConnectInfo(connectInfo)).toBe(true));
   it("graph", () => expect(isGraph(graph)).toBe(true));
   it("accepts a graph with policies, RBAC and nodes", () => expect(isGraph(graphExtras)).toBe(true));

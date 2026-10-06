@@ -7,12 +7,13 @@ import { applyLogMessage, initialLogs, type LogsState } from "../features/logs/l
 import { commands } from "../shared/ipc/commands";
 import type {
   AppError, ConnectionState, ContextInfo, CustomKind, CustomTable, Graph, GraphDelta, GraphEdge, Forward, GraphNode, K8sEvent, Kind, LogMessage, NamespaceScope, NodeId, ObjectDetails,
-  HelmRelease, HelmReleaseDetails, ResourceRef, Status, Table, TooLarge,
+  HelmRelease, HelmReleaseDetails, KubeconfigSource, ResourceRef, Status, Table, TooLarge,
 } from "../shared/ipc/types";
 import { toAppError } from "../shared/ipc/types";
-import { firstNamespace, inScope } from "../shared/scope";
+import { firstNamespace, inScope, isMulti } from "../shared/scope";
 import { settings } from "../shared/settings";
 import { cancelTableRefresh } from "./tableRefresh";
+import { connectContext } from "../features/cluster/connectContext";
 
 export interface Toast { id: number; kind: AppError["kind"] | "info"; message: string }
 
@@ -96,6 +97,10 @@ export interface Connection {
   /** The watched namespaces; `null` until one is chosen. */
   scope: NamespaceScope | null;
   busy: boolean;
+  /** The context a connect is dialling (the header and the centre pane say so); `null` otherwise. */
+  connecting: string | null;
+  /** The last failed connect, shown by the centre pane until the next connect or a disconnect. */
+  lastError: { context: string; error: AppError } | null;
 }
 
 export interface GraphState {
@@ -115,6 +120,12 @@ export interface GraphState {
 
 export interface AppState extends GraphState {
   contexts: ContextInfo[];
+  /** Whether `loadContexts` has finished once (either way); until then an empty list says nothing. */
+  contextsLoaded: boolean;
+  /** What each kubeconfig path held at the last scan; `null` until scanned. */
+  kubeconfigSources: KubeconfigSource[] | null;
+  /** Bumped by `openNamespacePicker`; the header's picker opens on every change. */
+  namespacePickerSeq: number;
   connection: Connection;
   hoveredId: NodeId | null;
   expandedGroups: Set<NodeId>;
@@ -122,11 +133,15 @@ export interface AppState extends GraphState {
   deniedKinds: Set<Kind>;
   /** Kinds listed only in some of the namespaces (forbidden cluster-wide, or in some of them). */
   partialKinds: Set<Kind>;
+  /** Whether `deniedKinds`/`partialKinds` have been fetched for the current scope (they arrive
+   *  after the switch, so an empty graph cannot tell "empty" from "no access" before). */
+  deniedLoaded: boolean;
   /** Set instead of `nodes` when the scope has too many objects for a graph. */
   tooLarge: TooLarge | null;
+  /** `context|scope` of the last too-large switch notice, so it is said once per scope. */
+  tooLargeNotified: string | null;
   search: string;
   toasts: Toast[];
-  pickerOpen: boolean;
   view: View;
   /** The kind of the most recent table view, so the Graph|Table switch can reopen it from Overview. */
   lastTableKind: Kind | null;
@@ -170,6 +185,17 @@ export interface AppState extends GraphState {
   setConnectionState: (s: ConnectionState) => void;
   // user actions
   loadContexts: () => Promise<void>;
+  loadKubeconfigSources: () => Promise<void>;
+  /** Re-read the contexts and the kubeconfig sources (the welcome pane's Rescan). */
+  rescanKubeconfigs: () => Promise<void>;
+  /** Connect again to the context of the last failed connect, reopening its scope. */
+  retryConnect: () => Promise<void>;
+  /** Leave the failure pane for the cluster list ("Choose another cluster"). */
+  dismissConnectError: () => Promise<void>;
+  /** Ask the header's namespace picker to open (an empty state's "Choose a namespace"). */
+  openNamespacePicker: () => void;
+  /** Turn every kind chip on. */
+  showAllKinds: () => void;
   addKubeconfig: (path: string) => Promise<void>;
   connect: (context: string) => Promise<boolean>;
   reconnect: () => Promise<void>;
@@ -183,7 +209,6 @@ export interface AppState extends GraphState {
   setSearch: (q: string) => void;
   toast: (t: Omit<Toast, "id">) => void;
   dismissToast: (id: number) => void;
-  setPickerOpen: (open: boolean) => void;
   // views and tables
   showGraph: () => void;
   showTable: (kind: Kind) => Promise<void>;
@@ -268,7 +293,10 @@ export const DEFAULT_HIDDEN_KINDS: readonly Kind[] = ["Role", "RoleBinding", "Cl
 export function initialState(): Omit<AppState, keyof Actions> {
   return {
     contexts: [],
-    connection: { state: "disconnected", context: null, serverVersion: null, namespaces: [], canListNamespaces: true, scope: null, busy: false },
+    contextsLoaded: false,
+    kubeconfigSources: null,
+    namespacePickerSeq: 0,
+    connection: { state: "disconnected", context: null, serverVersion: null, namespaces: [], canListNamespaces: true, scope: null, busy: false, connecting: null, lastError: null },
     nodes: new Map(),
     edges: new Map(),
     graphReady: false,
@@ -280,10 +308,11 @@ export function initialState(): Omit<AppState, keyof Actions> {
     hiddenKinds: new Set(DEFAULT_HIDDEN_KINDS),
     deniedKinds: new Set(),
     partialKinds: new Set(),
+    deniedLoaded: false,
     tooLarge: null,
+    tooLargeNotified: null,
     search: "",
     toasts: [],
-    pickerOpen: false,
     view: { name: "graph" },
     lastTableKind: null,
     sidebarCollapsed: false,
@@ -313,13 +342,13 @@ export function initialState(): Omit<AppState, keyof Actions> {
 }
 
 /** The state after the session is gone: graph, selection and connection reset, the context list,
- *  kind filters, toasts and the sidebar collapse preference kept. The Navigator lists the contexts
- *  to go to next; the modal picker opens only when there are none (its "add a kubeconfig" state). */
+ *  the kubeconfig sources, kind filters, toasts and the sidebar collapse preference kept. The
+ *  centre pane then shows the welcome, choose or failure pane (`connectionPane`). */
 export function disconnectedState(s: AppState): Omit<AppState, keyof Actions> {
   const lost = lostEditsToast(s);
   return {
-    ...initialState(), contexts: s.contexts, hiddenKinds: s.hiddenKinds, toasts: lost ? [...s.toasts, { id: ++toastSeq, ...lost }] : s.toasts,
-    pickerOpen: s.contexts.length === 0, sidebarCollapsed: s.sidebarCollapsed,
+    ...initialState(), contexts: s.contexts, contextsLoaded: s.contextsLoaded, hiddenKinds: s.hiddenKinds, toasts: lost ? [...s.toasts, { id: ++toastSeq, ...lost }] : s.toasts,
+    sidebarCollapsed: s.sidebarCollapsed, kubeconfigSources: s.kubeconfigSources,
   };
 }
 
@@ -331,8 +360,9 @@ function lostEditsToast(s: Pick<AppState, "details">): Omit<Toast, "id"> | null 
 
 type Actions = Pick<AppState,
   | "applySnapshot" | "applyDelta" | "setObjectEvents" | "setConnectionState" | "loadContexts" | "addKubeconfig" | "connect"
+  | "loadKubeconfigSources" | "rescanKubeconfigs" | "retryConnect" | "dismissConnectError" | "openNamespacePicker" | "showAllKinds"
   | "reconnect" | "disconnect" | "selectNamespace" | "selectScope" | "select" | "setHovered" | "toggleGroup" | "toggleKind" | "setSearch" | "toast"
-  | "dismissToast" | "setPickerOpen" | "showGraph" | "showTable" | "refreshTable" | "setIncludeHelmStorage"
+  | "dismissToast" | "showGraph" | "showTable" | "refreshTable" | "setIncludeHelmStorage"
   | "loadCustomKinds" | "showCustom" | "refreshCustom" | "applyCustomTable" | "showHelm" | "refreshHelm" | "selectRelease" | "clearRelease" | "focusInGraph" | "clearFocusRequest"
   | "toggleSidebar" | "startEdit" | "setBuffer" | "reviewEdit" | "backToEdit" | "applyEdit" | "cancelEdit" | "reloadEdit"
   | "confirmDiscard" | "cancelDiscard" | "openCreate" | "setCreateKind" | "setCreateNamespace" | "setCreateBuffer" | "submitCreate" | "closeCreate"
@@ -424,6 +454,12 @@ function leaveCustomView(prev: View, next: View): void {
  *  a load left over from a previous connection neither lands nor ends the next one's. */
 let customKindsGen = 0;
 
+/** Connect generations: a connect superseded by a later one neither lands its result nor its error. */
+let connectSeq = 0;
+
+/** `team.yaml` from `/Users/me/team.yaml` (or a Windows path). */
+const fileName = (path: string) => path.split(/[\\/]/).pop() || path;
+
 export const useAppStore = create<AppState>()((set, get) => ({
   ...initialState(),
 
@@ -438,7 +474,19 @@ export const useAppStore = create<AppState>()((set, get) => ({
     });
     refreshDetailsIfTouched(before, get());
     const s = get();
-    if (s.tooLarge && s.view.name === "graph") set({ view: { name: "table", kind: s.lastTableKind ?? "Deployment" } });
+    if (s.tooLarge && s.view.name === "graph") {
+      set({ view: { name: "table", kind: s.lastTableKind ?? "Deployment" } });
+      // Said once per scope: the backend sends a too-large snapshot on every rebuild.
+      const sc = s.connection.scope;
+      const key = `${s.connection.context}|${JSON.stringify(Array.isArray(sc) ? [...sc].sort() : sc)}`;
+      if (s.tooLargeNotified !== key) {
+        set({ tooLargeNotified: key });
+        get().toast({
+          kind: "info",
+          message: `${s.tooLarge.nodes.toLocaleString("en-US")} objects are too many to draw, so Wiring shows tables.${isMulti(sc) ? " Pick fewer namespaces to see the graph." : ""}`,
+        });
+      }
+    }
   },
   applyDelta: (d) => {
     const before = get();
@@ -456,40 +504,88 @@ export const useAppStore = create<AppState>()((set, get) => ({
 
   loadContexts: async () => {
     try {
-      set({ contexts: await commands.listContexts() });
+      set({ contexts: await commands.listContexts(), contextsLoaded: true });
+    } catch (e) {
+      set({ contextsLoaded: true });
+      get().toast(toAppError(e));
+    }
+  },
+
+  loadKubeconfigSources: async () => {
+    try {
+      // `?? []`: an answer without a list still counts as scanned.
+      set({ kubeconfigSources: (await commands.kubeconfigSources()) ?? [] });
     } catch (e) {
       get().toast(toAppError(e));
     }
   },
+
+  rescanKubeconfigs: async () => {
+    await get().loadContexts();
+    await get().loadKubeconfigSources();
+  },
+
+  retryConnect: async () => {
+    const { lastError: last, connecting } = get().connection;
+    if (!last || connecting !== null) return;
+    // A context gone since the failure (removed before a rescan) has nothing to dial: back to the list.
+    if (!get().contexts.some((c) => c.name === last.context)) return get().dismissConnectError();
+    await connectContext(last.context);
+  },
+
+  dismissConnectError: async () => {
+    set((s) => ({ connection: { ...s.connection, lastError: null } }));
+    if (get().sidebarCollapsed) await get().toggleSidebar();
+  },
+
+  openNamespacePicker: () => set((s) => ({ namespacePickerSeq: s.namespacePickerSeq + 1 })),
+
+  showAllKinds: () => set({ hiddenKinds: new Set() }),
 
   addKubeconfig: async (path) => {
     try {
       set({ contexts: await commands.addKubeconfig(path) });
     } catch (e) {
+      // Missing, unparseable, without contexts or already loaded: the backend refused it and saved nothing.
       get().toast(toAppError(e));
+      return;
     }
+    await get().loadKubeconfigSources();
+    // The file's own count: the merged context list is first-file-wins and would undercount.
+    // The backend stores the path as given, so it matches; if the report lacks it, name the file only.
+    const n = get().kubeconfigSources?.find((s) => s.path === path)?.contexts;
+    const what = n === undefined ? "" : `: ${n} ${n === 1 ? "context" : "contexts"}`;
+    get().toast({ kind: "info", message: `Added ${fileName(path)}${what}` });
   },
 
   connect: async (context) => {
     const lost = lostEditsToast(get());
     customKindsGen++; // a custom kinds load of the session being replaced must not land in the next
-    set((s) => ({ connection: { ...s.connection, busy: true } }));
+    const seq = ++connectSeq;
+    set((s) => ({ connection: { ...s.connection, busy: true, connecting: context, lastError: null } }));
     try {
       const info = await commands.connect(context);
+      if (seq !== connectSeq) return false; // superseded: a later connect owns the session now
       set({
         ...initialState(),
         contexts: get().contexts,
+        contextsLoaded: get().contextsLoaded,
+        kubeconfigSources: get().kubeconfigSources,
         hiddenKinds: get().hiddenKinds,
         sidebarCollapsed: get().sidebarCollapsed,
-        connection: { state: "connected", context: info.context, serverVersion: info.serverVersion, namespaces: info.namespaces, canListNamespaces: info.canListNamespaces, scope: null, busy: false },
+        connection: {
+          state: "connected", context: info.context, serverVersion: info.serverVersion, namespaces: info.namespaces,
+          canListNamespaces: info.canListNamespaces, scope: null, busy: false, connecting: null, lastError: null,
+        },
       });
       if (lost) get().toast(lost);
       return true;
     } catch (e) {
+      if (seq !== connectSeq) return false;
       // The backend tears the previous session down before dialling, so a failed connect leaves
-      // the app disconnected whatever it was before.
-      set(disconnectedState(get()));
-      get().toast(toAppError(e));
+      // the app disconnected whatever it was before. The centre pane shows the error; no toast.
+      const base = disconnectedState(get());
+      set({ ...base, connection: { ...base.connection, lastError: { context, error: toAppError(e) } } });
       return false;
     }
   },
@@ -502,6 +598,9 @@ export const useAppStore = create<AppState>()((set, get) => ({
   },
 
   disconnect: async () => {
+    // A connect still in flight must not land after the user left the session. The backend agrees:
+    // `connect` holds the session lock across Session::connect, so this disconnect tears it down after.
+    connectSeq++;
     try {
       await commands.disconnect();
     } catch (e) {
@@ -529,38 +628,48 @@ export const useAppStore = create<AppState>()((set, get) => ({
     const before = get();
     const previous = {
       nodes: before.nodes, edges: before.edges, graphReady: before.graphReady, tooLarge: before.tooLarge,
-      deniedKinds: before.deniedKinds, partialKinds: before.partialKinds, tables: before.tables, scope: before.connection.scope,
+      deniedKinds: before.deniedKinds, partialKinds: before.partialKinds, deniedLoaded: before.deniedLoaded, tables: before.tables, scope: before.connection.scope,
       customTables: before.customTables, customTableErrors: before.customTableErrors, helmReleases: before.helmReleases,
       helmSelected: before.helmSelected, helmDetails: before.helmDetails, highlightIds: before.highlightIds,
     };
     set((s) => ({
       nodes: new Map(), edges: new Map(), graphReady: false, tooLarge: null, selectedId: null, details: null, hoveredId: null,
-      deniedKinds: new Set(), partialKinds: new Set(), tables: new Map(), focusRequest: null, connection: { ...s.connection, scope },
+      deniedKinds: new Set(), partialKinds: new Set(), deniedLoaded: false, tables: new Map(), focusRequest: null, connection: { ...s.connection, scope },
       customTables: new Map(), customTableErrors: new Map(), helmReleases: null,
       helmSelected: null, helmDetails: null, highlightIds: new Set(),
       deleteDialog: initialState().deleteDialog, discardDialog: initialState().discardDialog, detailsMaximized: false,
       actionsMenu: null, actionDialog: null, requestedTab: null,
     }));
+    // The RBAC sets for `forScope`, kept only while it is still the current selection (a newer
+    // one owns these sets then).
+    const loadDenied = async (forScope: NamespaceScope | null) => {
+      try {
+        const [denied, partial] = await Promise.all([commands.deniedKinds(), commands.partialKinds()]);
+        if (get().connection.scope === forScope) set({ deniedKinds: new Set(denied), partialKinds: new Set(partial), deniedLoaded: true });
+      } catch (e) {
+        // Unknown then: stop waiting, so an empty scope reads as empty rather than loading forever.
+        if (get().connection.scope === forScope) set({ deniedLoaded: true });
+        get().toast(toAppError(e));
+      }
+    };
     try {
       await commands.selectNamespaces(scope, expanded);
     } catch (e) {
       const { scope: prevScope, ...graph } = previous;
-      if (get().connection.scope === scope) set((s) => ({ ...graph, connection: { ...s.connection, scope: prevScope } }));
+      if (get().connection.scope === scope) {
+        set((s) => ({ ...graph, connection: { ...s.connection, scope: prevScope } }));
+        // A quick A → B switch dropped A's answer; without this an empty A would load forever.
+        if (prevScope !== null && !graph.deniedLoaded) await loadDenied(prevScope);
+      }
       get().toast(toAppError(e));
       return;
     }
     // Remembered only once the backend accepted it (and not while the discard dialog was up).
     const { connection } = get();
     if (connection.context && connection.scope === scope) void settings.setLastScope(connection.context, scope);
-    try {
-      const [denied, partial] = await Promise.all([commands.deniedKinds(), commands.partialKinds()]);
-      // Only if this is still the current selection - a newer one owns these sets now.
-      if (get().connection.scope === scope) set({ deniedKinds: new Set(denied), partialKinds: new Set(partial) });
-      // An open table is refetched by the graph_snapshot handler once the backend has the new
-      // objects; fetching here would race the watchers and land an empty table.
-    } catch (e) {
-      get().toast(toAppError(e));
-    }
+    // An open table is refetched by the graph_snapshot handler once the backend has the new
+    // objects; fetching here would race the watchers and land an empty table.
+    await loadDenied(scope);
   },
 
   select: async (id) => {
@@ -608,7 +717,6 @@ export const useAppStore = create<AppState>()((set, get) => ({
 
   toast: (t) => set((s) => ({ toasts: [...s.toasts, { id: ++toastSeq, ...t }] })),
   dismissToast: (id) => set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) })),
-  setPickerOpen: (pickerOpen) => set({ pickerOpen }),
 
   showGraph: () => {
     leaveCustomView(get().view, { name: "graph" });

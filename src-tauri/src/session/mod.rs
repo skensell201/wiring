@@ -13,7 +13,9 @@ pub mod write;
 pub(crate) use write::{delete_one, ensure_resource_version, kube_err, set_current_identity, with_strict_validation};
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::future::Future;
 use std::sync::Arc;
+use std::time::Duration;
 
 use futures::StreamExt;
 use k8s_openapi::api::core::v1::{Event as CoreEvent, Namespace};
@@ -98,6 +100,29 @@ fn namespaces_or_fallback(listed: Result<Vec<String>, kube::Error>, context_name
     }
 }
 
+/// `None` when the list did not answer within `limit`.
+async fn list_within(
+    limit: Duration,
+    fut: impl Future<Output = Result<Vec<String>, kube::Error>>,
+) -> Option<Result<Vec<String>, kube::Error>> {
+    tokio::time::timeout(limit, fut).await.ok()
+}
+
+/// A list that timed out is treated like a forbidden one: the version probe answered, so the
+/// server is up and the context's namespace is still browsable.
+fn namespaces_after_list(
+    listed: Option<Result<Vec<String>, kube::Error>>,
+    context_namespace: Option<&str>,
+) -> AppResult<(Vec<String>, bool)> {
+    match listed {
+        Some(listed) => namespaces_or_fallback(listed, context_namespace),
+        None => {
+            tracing::warn!("listing namespaces timed out; falling back to the context namespace");
+            Ok((context_namespace.map(str::to_owned).into_iter().collect(), false))
+        }
+    }
+}
+
 /// Map a client error, naming the exec plugin on `Auth` failures so the user learns which
 /// binary is missing or broken (spec §8) — kube's own message only carries the OS error.
 fn app_error_from_client(e: &kube::Error, exec_command: Option<&str>) -> AppError {
@@ -108,6 +133,43 @@ fn app_error_from_client(e: &kube::Error, exec_command: Option<&str>) -> AppErro
         }
     }
     err
+}
+
+/// How long `connect` waits for the API server to answer the version probe and the namespace list.
+pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// "20 s", or "300 ms" for a sub-second limit (tests use those).
+fn limit_text(limit: Duration) -> String {
+    if limit.subsec_millis() == 0 {
+        format!("{} s", limit.as_secs())
+    } else {
+        format!("{} ms", limit.as_millis())
+    }
+}
+
+/// The server URL for messages: no trailing slash and never `user:pass@`.
+fn server_label(url: &str) -> String {
+    let url = url.trim_end_matches('/');
+    match url.split_once("://") {
+        Some((scheme, rest)) => {
+            let (authority, path) = rest.split_at(rest.find('/').unwrap_or(rest.len()));
+            let host = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+            format!("{scheme}://{host}{path}")
+        }
+        None => url.to_string(),
+    }
+}
+
+/// `fut`'s result, or a `Network` error once `limit` passes without one. A server that accepts
+/// the connection but never answers (a half-up VPN, a firewall dropping packets) would
+/// otherwise leave `connect` hanging with the session lock held.
+async fn within<T>(limit: Duration, server: &str, fut: impl Future<Output = AppResult<T>>) -> AppResult<T> {
+    tokio::time::timeout(limit, fut).await.unwrap_or_else(|_| {
+        Err(AppError::new(
+            ErrorKind::Network,
+            format!("timed out after {} waiting for {server}", limit_text(limit)),
+        ))
+    })
 }
 
 pub struct Session {
@@ -149,6 +211,16 @@ static NEXT_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::Atomic
 
 impl Session {
     pub async fn connect(kubeconfig: Kubeconfig, context: &str, emitter: Arc<dyn Emitter>) -> AppResult<(Session, ConnectInfo)> {
+        Self::connect_within(kubeconfig, context, emitter, CONNECT_TIMEOUT).await
+    }
+
+    /// `connect`, with the API server's answer bounded by `limit`.
+    async fn connect_within(
+        kubeconfig: Kubeconfig,
+        context: &str,
+        emitter: Arc<dyn Emitter>,
+        limit: Duration,
+    ) -> AppResult<(Session, ConnectInfo)> {
         let options = KubeConfigOptions {
             context: Some(context.to_string()),
             cluster: None,
@@ -159,6 +231,7 @@ impl Session {
         let config = Config::from_custom_kubeconfig(kubeconfig, &options)
             .await
             .map_err(|e| AppError::from(&e))?;
+        let server = server_label(&config.cluster_url.to_string());
         // `Client::try_from` runs the exec plugin synchronously (it can block for seconds),
         // so keep it off the async runtime threads.
         let client = tokio::task::spawn_blocking(move || Client::try_from(config))
@@ -166,15 +239,22 @@ impl Session {
             .map_err(|e| AppError::internal(format!("client setup task failed: {e}")))?
             .map_err(|e| app_error_from_client(&e, exec_command.as_deref()))?;
 
-        let version = client
-            .apiserver_version()
-            .await
-            .map_err(|e| app_error_from_client(&e, exec_command.as_deref()))?;
-        let listed = Api::<Namespace>::all(client.clone())
-            .list(&ListParams::default())
-            .await
-            .map(|list| list.items.into_iter().filter_map(|n| n.metadata.name).collect::<Vec<_>>());
-        let (namespaces, can_list_namespaces) = namespaces_or_fallback(listed, context_namespace.as_deref())?;
+        let version = within(limit, &server, async {
+            client
+                .apiserver_version()
+                .await
+                .map_err(|e| app_error_from_client(&e, exec_command.as_deref()))
+        })
+        .await?;
+        let namespaces_api = Api::<Namespace>::all(client.clone());
+        let listed = list_within(limit, async {
+            namespaces_api
+                .list(&ListParams::default())
+                .await
+                .map(|list| list.items.into_iter().filter_map(|n| n.metadata.name).collect::<Vec<_>>())
+        })
+        .await;
+        let (namespaces, can_list_namespaces) = namespaces_after_list(listed, context_namespace.as_deref())?;
 
         let info = ConnectInfo {
             context: context.to_string(),
@@ -768,6 +848,69 @@ mod tests {
             .expect("connect must fail");
         assert_eq!(err.kind, ErrorKind::Auth, "{err:?}");
         assert!(err.message.contains("wiring-auth-plugin"), "{}", err.message);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn within_gives_up_after_the_limit_with_a_network_error() {
+        let err = within(CONNECT_TIMEOUT, "https://10.0.0.1:6443", std::future::pending::<AppResult<()>>())
+            .await
+            .unwrap_err();
+        assert_eq!(err.kind, ErrorKind::Network);
+        assert_eq!(err.message, "timed out after 20 s waiting for https://10.0.0.1:6443");
+    }
+
+    #[tokio::test]
+    async fn within_passes_an_answer_through() {
+        assert_eq!(within(CONNECT_TIMEOUT, "s", async { Ok(7) }).await.unwrap(), 7);
+        let err = within(CONNECT_TIMEOUT, "s", async { Err::<(), _>(AppError::new(ErrorKind::Auth, "no")) })
+            .await
+            .unwrap_err();
+        assert_eq!(err.kind, ErrorKind::Auth);
+    }
+
+    #[test]
+    fn server_label_drops_credentials_and_trailing_slash() {
+        assert_eq!(server_label("https://u:p@10.0.0.1:6443/"), "https://10.0.0.1:6443");
+        assert_eq!(server_label("https://10.0.0.1:6443/"), "https://10.0.0.1:6443");
+        assert_eq!(server_label("https://u:p@[::1]:6443"), "https://[::1]:6443");
+        assert_eq!(server_label("10.0.0.1:6443/"), "10.0.0.1:6443");
+    }
+
+    #[tokio::test]
+    async fn connect_times_out_when_the_server_never_answers() {
+        use crate::session::emitter::ChannelEmitter;
+        // The kernel accepts the TCP connection into the backlog; nothing ever answers the TLS hello.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let kubeconfig = Kubeconfig::from_yaml(&format!(
+            "apiVersion: v1\nkind: Config\nclusters:\n- name: c\n  cluster:\n    server: https://127.0.0.1:{port}\n    insecure-skip-tls-verify: true\nusers:\n- name: u\n  user:\n    token: abc\ncontexts:\n- name: ctx\n  context:\n    cluster: c\n    user: u\ncurrent-context: ctx\n"
+        ))
+        .unwrap();
+        let (emitter, _rx) = ChannelEmitter::new();
+        let started = std::time::Instant::now();
+        let err = Session::connect_within(kubeconfig, "ctx", Arc::new(emitter), Duration::from_millis(300))
+            .await
+            .err()
+            .expect("connect must time out");
+        assert_eq!(err.kind, ErrorKind::Network, "{err:?}");
+        assert_eq!(err.message, format!("timed out after 300 ms waiting for https://127.0.0.1:{port}"));
+        assert!(started.elapsed() < Duration::from_secs(5), "{:?}", started.elapsed());
+        drop(listener);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_namespace_list_timeout_falls_back_to_the_context_namespace() {
+        let listed = list_within(CONNECT_TIMEOUT, std::future::pending::<Result<Vec<String>, kube::Error>>()).await;
+        assert!(listed.is_none());
+        assert_eq!(
+            namespaces_after_list(listed, Some("team-a")).unwrap(),
+            (vec!["team-a".to_string()], false)
+        );
+        let answered = list_within(CONNECT_TIMEOUT, async { Ok(vec!["a".to_string()]) }).await;
+        assert_eq!(
+            namespaces_after_list(answered, Some("team-a")).unwrap(),
+            (vec!["a".to_string()], true)
+        );
     }
 
     #[test]

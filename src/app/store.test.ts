@@ -171,6 +171,23 @@ describe("actions", () => {
     expect(invoke).toHaveBeenCalledWith("select_namespaces", { namespaces: ["payments"], expandedGroups: [] });
     expect([...s.deniedKinds]).toEqual(["Secret"]);
     expect([...s.partialKinds]).toEqual(["Pod"]);
+    expect(s.deniedLoaded).toBe(true);
+  });
+
+  it("selectNamespace marks the denied kinds unknown until the backend answers", async () => {
+    useAppStore.setState({ deniedLoaded: true, connection: { ...initialState().connection, context: "prod" } });
+    const pending = useAppStore.getState().selectNamespace("payments");
+    expect(useAppStore.getState().deniedLoaded).toBe(false);
+    await pending;
+    expect(useAppStore.getState().deniedLoaded).toBe(true);
+  });
+
+  it("selectNamespace stops waiting for denied kinds when asking for them fails", async () => {
+    useAppStore.setState({ connection: { ...initialState().connection, context: "prod" } });
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => { if (cmd === "denied_kinds") throw { kind: "network", message: "down" }; return null; });
+    await useAppStore.getState().selectNamespace("payments");
+    vi.mocked(invoke).mockImplementation(baseInvoke);
+    expect(useAppStore.getState().deniedLoaded).toBe(true);
   });
 
   it("selectScope watches several namespaces and remembers them", async () => {
@@ -195,6 +212,32 @@ describe("actions", () => {
     expect(s.nodes.has("Pod/p/a")).toBe(true);
     expect(s.toasts.at(-1)).toMatchObject({ kind: "invalid", message: expect.stringContaining("all namespaces needs permission") });
     expect(settings.setLastScope).not.toHaveBeenCalled();
+  });
+
+  it("a refused switch refetches the restored scope's denied kinds if they were never loaded", async () => {
+    // A → B quickly drops A's RBAC answer; B is then refused and A comes back without it.
+    useAppStore.setState({
+      ...applySnapshot(initialState(), { nodes: [], edges: [] }), deniedLoaded: false,
+      connection: { ...initialState().connection, context: "prod", namespaces: ["a", "b"], scope: ["a"] },
+    });
+    vi.mocked(invoke).mockImplementationOnce(async () => { throw { kind: "forbidden", message: "no" }; });
+    await useAppStore.getState().selectScope(["b"]);
+    const s = useAppStore.getState();
+    expect(s.connection.scope).toEqual(["a"]);
+    expect(s.deniedLoaded).toBe(true);
+    expect([...s.deniedKinds]).toEqual(["Secret"]);
+    expect([...s.partialKinds]).toEqual(["Pod"]);
+  });
+
+  it("a refused switch keeps already-loaded denied kinds without asking again", async () => {
+    useAppStore.setState({
+      ...applySnapshot(initialState(), { nodes: [], edges: [] }), deniedLoaded: true, deniedKinds: new Set(["ConfigMap"]),
+      connection: { ...initialState().connection, context: "prod", namespaces: ["a", "b"], scope: ["a"] },
+    });
+    vi.mocked(invoke).mockImplementationOnce(async () => { throw { kind: "forbidden", message: "no" }; });
+    await useAppStore.getState().selectScope(["b"]);
+    expect(vi.mocked(invoke).mock.calls.map(([cmd]) => cmd)).not.toContain("denied_kinds");
+    expect([...useAppStore.getState().deniedKinds]).toEqual(["ConfigMap"]);
   });
 
   it("selectScope('all') sends null", async () => {
@@ -265,7 +308,7 @@ describe("actions", () => {
     expect(c.state).toBe("connected");
   });
 
-  it("connect failure becomes a toast and leaves the app disconnected", async () => {
+  it("connect failure is kept as the last error and leaves the app disconnected, without a toast", async () => {
     // The backend tears the previous session down before dialling the new context, so a failed
     // connect from a connected state must not pretend the old connection is still alive.
     useAppStore.setState({
@@ -276,15 +319,12 @@ describe("actions", () => {
     vi.mocked(invoke).mockRejectedValueOnce({ kind: "auth", message: "exec plugin missing" });
     expect(await useAppStore.getState().connect("prod")).toBe(false);
     const s = useAppStore.getState();
-    expect(s.connection).toEqual(initialState().connection);
+    expect(s.connection).toEqual({ ...initialState().connection, lastError: { context: "prod", error: { kind: "auth", message: "exec plugin missing" } } });
     expect(s.nodes.size).toBe(0);
-    expect(s.pickerOpen).toBe(true);
-    expect(s.toasts).toHaveLength(2);
-    expect(s.toasts[0]).toMatchObject({ message: "earlier" });
-    expect(s.toasts[1]).toMatchObject({ kind: "auth", message: "exec plugin missing" });
+    expect(s.toasts).toEqual([{ id: 1, kind: "info", message: "earlier" }]);
   });
 
-  it("disconnectedState keeps contexts, hidden kinds and toasts; the picker opens only with nothing to pick from", () => {
+  it("disconnectedState keeps contexts, hidden kinds and toasts", () => {
     const s = {
       ...applySnapshot(initialState(), { nodes: [node("Pod/p/a")], edges: [] }),
       contexts: [{ name: "prod", cluster: "c", user: "u", namespace: null, sourceFile: "/k" }],
@@ -297,10 +337,8 @@ describe("actions", () => {
     expect(d.contexts).toBe(s.contexts);
     expect(d.hiddenKinds).toBe(s.hiddenKinds);
     expect(d.toasts).toBe(s.toasts);
-    expect(d.pickerOpen).toBe(false); // the Navigator lists the contexts; no modal needed
     expect(d.connection).toEqual(initialState().connection);
     expect(d.nodes.size).toBe(0);
-    expect(disconnectedState({ ...s, contexts: [] as AppState["contexts"] } as AppState).pickerOpen).toBe(true);
   });
 
   it("disconnect failure is toasted and state is reset", async () => {
@@ -309,7 +347,6 @@ describe("actions", () => {
     await useAppStore.getState().disconnect();
     const s = useAppStore.getState();
     expect(s.connection.context).toBeNull();
-    expect(s.pickerOpen).toBe(true);
     expect(s.toasts[s.toasts.length - 1]).toMatchObject({ message: "boom" });
   });
 
