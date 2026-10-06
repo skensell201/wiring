@@ -165,39 +165,85 @@ async fn session_task(
     pump(id, process, sink, input).await;
 }
 
-async fn pump(id: u32, mut p: Process, sink: Arc<ClosableExecSink>, mut input: mpsc::UnboundedReceiver<Input>) {
-    let mut buf = vec![0u8; READ_CHUNK];
-    loop {
-        tokio::select! {
-            read = p.stdout.read(&mut buf) => match read {
-                Ok(0) | Err(_) => break,
-                Ok(n) => {
-                    if !sink.send(ExecMessage::Output { session_id: id, data: encode_output(&buf[..n]) }) {
-                        // The frontend is gone: drop the process so the remote shell gets a hangup.
-                        return;
-                    }
-                }
-            },
-            msg = input.recv() => match msg {
-                Some(Input::Data(bytes)) => {
-                    if p.stdin.write_all(&bytes).await.is_err() || p.stdin.flush().await.is_err() {
-                        break;
-                    }
-                }
-                Some(Input::Resize(cols, rows)) => (p.resize)(cols, rows),
-                // The session was stopped: its sink is closed, nothing more to say.
-                None => return,
-            },
-        }
+/// How the stdout reader stopped.
+enum ReadEnd {
+    /// The output ended (or failed): report the exit status.
+    Eof,
+    /// The frontend is gone: drop the process so the remote shell gets a hangup.
+    SinkGone,
+}
+
+/// Runs the stdout reader, the stdin writer and the control loop concurrently in this task, so
+/// a large paste blocked on stdin never stops the (echoed) output from being drained: kube's
+/// pipes are small and its websocket loop writes stdout inline, so a serial pump deadlocks.
+async fn pump(id: u32, p: Process, sink: Arc<ClosableExecSink>, input: mpsc::UnboundedReceiver<Input>) {
+    let Process {
+        stdin,
+        stdout,
+        resize,
+        status,
+        keep,
+    } = p;
+    let (data_tx, data_rx) = mpsc::unbounded_channel();
+    let reader = read_stdout(id, stdout, &sink);
+    let writer = write_stdin(stdin, data_rx);
+    let control = control(input, data_tx, resize);
+    tokio::select! {
+        end = reader => if let ReadEnd::SinkGone = end { return },
+        // stdin failed: the connection is going away, report how it ended.
+        () = writer => {}
+        // The session was stopped: its sink is closed, nothing more to say.
+        () = control => return,
     }
-    let status = tokio::time::timeout(STATUS_WAIT, p.status).await.ok().flatten();
+    let status = tokio::time::timeout(STATUS_WAIT, status).await.ok().flatten();
     let (code, message) = errors::ended(status.as_ref());
     sink.send(ExecMessage::Ended {
         session_id: id,
         code,
         message,
     });
-    drop(p.keep);
+    drop(keep);
+}
+
+async fn read_stdout(id: u32, mut stdout: Box<dyn AsyncRead + Send + Unpin>, sink: &ClosableExecSink) -> ReadEnd {
+    let mut buf = vec![0u8; READ_CHUNK];
+    loop {
+        match stdout.read(&mut buf).await {
+            Ok(0) | Err(_) => return ReadEnd::Eof,
+            Ok(n) => {
+                if !sink.send(ExecMessage::Output {
+                    session_id: id,
+                    data: encode_output(&buf[..n]),
+                }) {
+                    return ReadEnd::SinkGone;
+                }
+            }
+        }
+    }
+}
+
+/// Writes queued input in order; returns when a write fails (or the queue is gone).
+async fn write_stdin(mut stdin: Box<dyn AsyncWrite + Send + Unpin>, mut data: mpsc::UnboundedReceiver<Vec<u8>>) {
+    while let Some(bytes) = data.recv().await {
+        if stdin.write_all(&bytes).await.is_err() || stdin.flush().await.is_err() {
+            return;
+        }
+    }
+    // The queue only closes with `control`, which ends the pump first; never resolve here.
+    futures::future::pending::<()>().await
+}
+
+/// Routes the session's input queue: data to the stdin writer (order kept), sizes to the
+/// process. Returns once the queue closes, i.e. the session was stopped.
+async fn control(mut input: mpsc::UnboundedReceiver<Input>, data: mpsc::UnboundedSender<Vec<u8>>, mut resize: Resize) {
+    while let Some(msg) = input.recv().await {
+        match msg {
+            Input::Data(bytes) => {
+                let _ = data.send(bytes);
+            }
+            Input::Resize(cols, rows) => resize(cols, rows),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -358,6 +404,44 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(ends.resizes.lock().unwrap().as_slice(), &[(120, 40)]);
+    }
+
+    /// A TTY echoes what it reads; with kube's 1 KiB pipes a large paste must not stall the
+    /// session (stdout has to be drained while stdin is still being written).
+    #[tokio::test]
+    async fn a_large_paste_echoed_back_does_not_deadlock() {
+        let (s, mut ends_rx, mut rx, id) = setup(Behaviour::Open);
+        let ends = next(&mut ends_rx).await;
+        let (mut from_stdin, mut to_stdout) = (ends.stdin, ends.stdout);
+        let _echo = AbortOnDrop(tokio::spawn(async move {
+            let mut buf = [0u8; 512];
+            loop {
+                match from_stdin.read(&mut buf).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        if to_stdout.write_all(&buf[..n]).await.is_err() {
+                            break;
+                        }
+                    }
+                }
+            }
+        }));
+        let paste: Vec<u8> = (0..64 * 1024).map(|i| b'a' + (i % 26) as u8).collect();
+        s.input(id, paste[..40 * 1024].to_vec());
+        s.input(id, paste[40 * 1024..].to_vec());
+        let mut got = Vec::new();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        while got.len() < paste.len() {
+            let msg = tokio::time::timeout_at(deadline, rx.recv())
+                .await
+                .unwrap_or_else(|_| panic!("stalled after {} of {} bytes", got.len(), paste.len()))
+                .expect("open");
+            match msg {
+                ExecMessage::Output { data, .. } => got.extend(STANDARD.decode(data).unwrap()),
+                other => panic!("unexpected {other:?}"),
+            }
+        }
+        assert_eq!(got, paste);
     }
 
     #[tokio::test]

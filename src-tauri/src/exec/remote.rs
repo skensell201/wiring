@@ -10,6 +10,8 @@ use super::errors::start_error;
 use super::session::{ExecConnector, Process};
 use super::SHELL;
 
+const PIPE_BUF: usize = 64 * 1024;
+
 pub struct KubeExec {
     client: Client,
 }
@@ -25,7 +27,11 @@ impl ExecConnector for KubeExec {
         let api: Api<Pod> = Api::namespaced(self.client.clone(), namespace);
         let (pod, container) = (pod.to_string(), container.to_string());
         async move {
-            let params = AttachParams::interactive_tty().container(container);
+            // kube defaults to 1 KiB pipes; larger ones cut wakeups on pastes and bulk output.
+            let params = AttachParams::interactive_tty()
+                .container(container)
+                .max_stdin_buf_size(PIPE_BUF)
+                .max_stdout_buf_size(PIPE_BUF);
             let mut proc = api.exec(&pod, SHELL, &params).await.map_err(|e| start_error(&e))?;
             let stdin = proc.stdin().ok_or("the exec stream has no stdin")?;
             let stdout = proc.stdout().ok_or("the exec stream has no stdout")?;
