@@ -102,11 +102,16 @@ describe("NamespacePicker", () => {
     expect(selectScope).toHaveBeenCalledWith("all");
   });
 
-  it("takes free text instead of a list when namespaces cannot be listed", () => {
-    useAppStore.setState({ connection: { ...initialState().connection, context: "prod", namespaces: ["shop"], canListNamespaces: false, scope: null } });
-    render(<NamespacePicker />);
-    expect(screen.getByLabelText("Namespace").tagName).toBe("INPUT");
-    expect(screen.queryByRole("button", { name: "Namespace" })).toBeNull();
+  it("without namespace listing shows the known rows, no All row, and a free-text field", () => {
+    const selectScope = open(vi.fn(async () => {}), { namespaces: ["shop"], canListNamespaces: false });
+    expect(screen.queryByRole("button", { name: /All namespaces/ })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "shop" }));
+    expect(selectScope).toHaveBeenCalledWith(["shop"]);
+    fireEvent.click(screen.getByRole("button", { name: "Namespace" }));
+    const input = screen.getByLabelText("Add a namespace");
+    fireEvent.change(input, { target: { value: "team-a" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(selectScope).toHaveBeenLastCalledWith(["team-a"]);
   });
 
   it("filters the list", () => {

@@ -71,8 +71,8 @@ export function NamespacePicker() {
     void selectScope(next);
   };
 
-  if (namespaces.length === 0 || !canList) {
-    const valid = DNS_LABEL.test(draft.trim()) && draft.trim().length <= 63;
+  const valid = DNS_LABEL.test(draft.trim()) && draft.trim().length <= 63;
+  if (namespaces.length === 0) {
     return (
       <input aria-label="Namespace" aria-invalid={draft.trim() !== "" && !valid} className={FIELD} placeholder="namespace…" value={draft}
         onChange={(e) => setDraft(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && valid) apply([draft.trim()]); }} />
@@ -126,10 +126,12 @@ export function NamespacePicker() {
             className="fixed z-40 rounded-card border border-border bg-elevated p-2 text-sm">
             <input data-nav autoFocus aria-label="Filter namespaces" placeholder="Filter…" value={filter} onChange={(e) => setFilter(e.target.value)}
               className="mb-2 h-8 w-full rounded-lg border border-border-strong bg-surface px-2 text-sm text-text-hi outline-none focus:border-accent" />
-            <button type="button" data-nav className={`${ROW} w-full`} onClick={() => apply("all")}>
-              <span className="w-4">{scope === "all" && <Check className="size-4 text-accent" />}</span>
-              All namespaces ({namespaces.length})
-            </button>
+            {canList && (
+              <button type="button" data-nav className={`${ROW} w-full`} onClick={() => apply("all")}>
+                <span className="w-4">{scope === "all" && <Check className="size-4 text-accent" />}</span>
+                All namespaces ({namespaces.length})
+              </button>
+            )}
             <ul className="max-h-72 overflow-auto">
               {shown.map((ns) => (
                 <li key={ns} className="flex items-center gap-1 pl-2">
@@ -139,6 +141,12 @@ export function NamespacePicker() {
               ))}
               {shown.length === 0 && <li className="px-2 py-1.5 text-xs text-text-muted">No match.</li>}
             </ul>
+            {!canList && (
+              <input aria-label="Add a namespace" aria-invalid={draft.trim() !== "" && !valid} placeholder="Other namespace…" value={draft}
+                onChange={(e) => setDraft(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") { e.stopPropagation(); if (valid) apply([draft.trim()]); } }}
+                className="mt-2 h-8 w-full rounded-lg border border-border-strong bg-surface px-2 text-sm text-text-hi outline-none focus:border-accent" />
+            )}
             <div className="mt-2 flex items-center justify-between gap-2">
               <span className="text-xs text-text-muted">{full ? `Up to ${MAX_NAMESPACES} — or pick All namespaces` : ""}</span>
               <Button variant="primary" disabled={ticked.size === 0} onClick={() => apply([...ticked].sort())}>
