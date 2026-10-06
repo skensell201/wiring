@@ -89,7 +89,7 @@ A node whose `status` is `warn` or `err` may carry `problem: { reason, message, 
 
 ## Policies, RBAC and Nodes
 
-- `applies`: NetworkPolicy to each selected Pod (or PodGroup). `allows`: Pod (or PodGroup) to a NetworkPolicy that admits its ingress, i.e. the pod is selected by the policy and matches an ingress peer. Egress rules appear in Overview text only, with no edges.
+- `applies`: NetworkPolicy to each selected Pod (or PodGroup). `allows`: a Pod (or PodGroup) that matches an ingress peer (`podSelector` / `namespaceSelector`) to the NetworkPolicy that admits it. Peers that are `ipBlock`s or empty draw nothing. Egress rules appear in Overview text only, with no edges.
 - `grants`: RoleBinding / ClusterRoleBinding to its Role / ClusterRole. `subject`: binding to each ServiceAccount subject. `runsOn`: Pod (or PodGroup) to its Node.
 - ClusterRole, ClusterRoleBinding and Node appear only when connected to the scope (bound to a ServiceAccount or Role in it, or running one of its pods).
 - A Pod selected by any NetworkPolicy in its namespace carries the `policy` badge.
