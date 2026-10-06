@@ -3,3 +3,4 @@
 //! kept in the `Store`; they are fetched when a table or a details panel needs them.
 
 pub mod id;
+pub mod jsonpath;
