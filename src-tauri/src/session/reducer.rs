@@ -1,6 +1,5 @@
 //! Consumes StoreEvents, keeps the Store and last Graph, emits snapshots/deltas.
 
-use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
@@ -14,6 +13,7 @@ use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
 use super::emitter::{ConnectionState, Emitter, OutEvent};
+use super::scope::StreamId;
 use super::shared::Shared;
 use super::watch::StoreEvent;
 use crate::error::{AppError, ErrorKind};
@@ -31,7 +31,8 @@ pub enum ReducerMsg {
 
 #[derive(Debug, Clone)]
 pub struct ReducerConfig {
-    pub kinds: Vec<Kind>,
+    /// The watch streams whose initial lists make up the first snapshot.
+    pub streams: Vec<StreamId>,
     pub debounce: Duration,
     pub degraded_after: Duration,
     pub tick: Duration,
@@ -40,11 +41,34 @@ pub struct ReducerConfig {
 impl Default for ReducerConfig {
     fn default() -> Self {
         Self {
-            kinds: Kind::WATCHED.to_vec(),
+            streams: Kind::WATCHED.iter().map(|k| StreamId::from(*k)).collect(),
             debounce: Duration::from_millis(150),
             degraded_after: Duration::from_secs(30),
             tick: Duration::from_secs(5),
         }
+    }
+}
+
+/// What became of a stream the reducer waits for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StreamState {
+    /// Its initial list is not complete yet.
+    Pending,
+    /// Listed at least once.
+    Live,
+    /// Stopped for good (forbidden, API not served, or a panicked watcher).
+    Dead,
+}
+
+/// Mark `kind` denied when every one of its streams is dead, partial when only some are.
+fn mark_kind(shared: &Shared, streams: &HashMap<StreamId, StreamState>, kind: Kind) {
+    let states: Vec<StreamState> = streams.iter().filter(|(s, _)| s.kind == kind).map(|(_, st)| *st).collect();
+    let dead = states.iter().filter(|st| **st == StreamState::Dead).count();
+    if states.is_empty() || dead == states.len() {
+        shared.partial_kinds().remove(&kind);
+        shared.denied_kinds().insert(kind);
+    } else if dead > 0 {
+        shared.partial_kinds().insert(kind);
     }
 }
 
@@ -55,12 +79,12 @@ pub fn spawn_reducer(config: ReducerConfig, shared: Shared, emitter: Arc<dyn Emi
 }
 
 async fn run(config: ReducerConfig, shared: Shared, emitter: Arc<dyn Emitter>, mut rx: mpsc::Receiver<ReducerMsg>) {
-    let mut init_pending: HashSet<Kind> = config.kinds.iter().copied().collect();
-    // Keys not yet re-confirmed since the last `Restarted` of their kind.
-    let mut stale: HashMap<Kind, HashSet<ObjectKey>> = HashMap::new();
+    let mut streams: HashMap<StreamId, StreamState> = config.streams.iter().cloned().map(|s| (s, StreamState::Pending)).collect();
+    // Keys not yet re-confirmed since the last `Restarted` of their stream.
+    let mut stale: HashMap<StreamId, HashSet<ObjectKey>> = HashMap::new();
     let mut initialised = false;
     let mut flush_at: Option<Instant> = None;
-    let mut errored_since: HashMap<Kind, Instant> = HashMap::new();
+    let mut errored_since: HashMap<StreamId, Instant> = HashMap::new();
     let mut state = ConnectionState::Connected;
     // A fresh reducer starts from a known-good state; the frontend may still show
     // `degraded` from the previous namespace.
@@ -90,10 +114,10 @@ async fn run(config: ReducerConfig, shared: Shared, emitter: Arc<dyn Emitter>, m
                         fatal: true,
                         ..
                     }) if error.kind == ErrorKind::Auth => {
-                        // Expired/invalid credentials doom every watcher, not just this kind:
+                        // Expired/invalid credentials doom every watcher, not just this stream:
                         // report it once as a session-level failure and stop, instead of
-                        // reporting the same auth error kind-by-kind as the other 14 watchers
-                        // fail right behind it.
+                        // reporting the same auth error stream-by-stream as the other
+                        // watchers fail right behind it.
                         emitter.emit(OutEvent::ConnectionError(AppError::new(
                             ErrorKind::Auth,
                             format!("authentication failed: {}", error.message),
@@ -102,8 +126,8 @@ async fn run(config: ReducerConfig, shared: Shared, emitter: Arc<dyn Emitter>, m
                         return;
                     }
                     ReducerMsg::Store(ev) => {
-                        let changed = apply(&shared, ev, &mut init_pending, &mut stale, &mut errored_since, &emitter);
-                        if !initialised && init_pending.is_empty() {
+                        let changed = apply(&shared, ev, &mut streams, &mut stale, &mut errored_since, &emitter);
+                        if !initialised && !streams.values().any(|s| *s == StreamState::Pending) {
                             initialised = true;
                             flush_at = None;
                             let (graph, _) = shared.rebuild();
@@ -153,15 +177,15 @@ fn emit_rebuild(shared: &Shared, emitter: &Arc<dyn Emitter>) {
 fn apply(
     shared: &Shared,
     ev: StoreEvent,
-    init_pending: &mut HashSet<Kind>,
-    stale: &mut HashMap<Kind, HashSet<ObjectKey>>,
-    errored_since: &mut HashMap<Kind, Instant>,
+    streams: &mut HashMap<StreamId, StreamState>,
+    stale: &mut HashMap<StreamId, HashSet<ObjectKey>>,
+    errored_since: &mut HashMap<StreamId, Instant>,
     emitter: &Arc<dyn Emitter>,
 ) -> bool {
     let pod_related = matches!(&ev, StoreEvent::Applied(o) if o.kind() == Kind::Pod)
         || matches!(&ev, StoreEvent::Deleted(k) if k.kind == Kind::Pod)
-        || matches!(&ev, StoreEvent::InitDone(Kind::Pod));
-    let changed = apply_to_store(shared, ev, init_pending, stale, errored_since, emitter);
+        || matches!(&ev, StoreEvent::InitDone(s) if s.kind == Kind::Pod);
+    let changed = apply_to_store(shared, ev, streams, stale, errored_since, emitter);
     // `InitDone(Pod)` is `changed` only when the re-list swept something, which is exactly
     // when the pod set differs — so `changed` is the right gate for every pod event.
     if pod_related && changed {
@@ -173,34 +197,40 @@ fn apply(
 fn apply_to_store(
     shared: &Shared,
     ev: StoreEvent,
-    init_pending: &mut HashSet<Kind>,
-    stale: &mut HashMap<Kind, HashSet<ObjectKey>>,
-    errored_since: &mut HashMap<Kind, Instant>,
+    streams: &mut HashMap<StreamId, StreamState>,
+    stale: &mut HashMap<StreamId, HashSet<ObjectKey>>,
+    errored_since: &mut HashMap<StreamId, Instant>,
     emitter: &Arc<dyn Emitter>,
 ) -> bool {
     match ev {
         StoreEvent::Applied(obj) => {
-            let kind = obj.kind();
-            errored_since.remove(&kind);
-            if let Some(keys) = stale.get_mut(&kind) {
-                keys.remove(&obj.key());
+            let (kind, ns, key) = (obj.kind(), obj.namespace().map(str::to_owned), obj.key());
+            errored_since.retain(|s, _| !(s.kind == kind && s.covers(ns.as_deref())));
+            for (s, keys) in stale.iter_mut() {
+                if s.kind == kind && s.covers(ns.as_deref()) {
+                    keys.remove(&key);
+                }
             }
             upsert_if_changed(shared, obj)
         }
         StoreEvent::Deleted(key) => {
-            errored_since.remove(&key.kind);
+            errored_since.retain(|s, _| !(s.kind == key.kind && s.covers(key.namespace.as_deref())));
             shared.store().remove(&key).is_some()
         }
-        StoreEvent::Restarted(kind) => {
-            let keys: HashSet<ObjectKey> = shared.store().iter_kind(kind).map(|o| o.key()).collect();
-            stale.insert(kind, keys);
+        StoreEvent::Restarted(stream) => {
+            let keys: HashSet<ObjectKey> = shared
+                .store()
+                .iter_kind(stream.kind)
+                .filter(|o| stream.covers(o.namespace()))
+                .map(|o| o.key())
+                .collect();
+            stale.insert(stream, keys);
             false
         }
-        StoreEvent::InitDone(kind) => {
-            errored_since.remove(&kind);
-            init_pending.remove(&kind);
+        StoreEvent::InitDone(stream) => {
+            errored_since.remove(&stream);
             // Sweep whatever the re-list did not confirm.
-            match stale.remove(&kind) {
+            let swept = match stale.remove(&stream) {
                 Some(keys) if !keys.is_empty() => {
                     let mut store = shared.store();
                     for key in &keys {
@@ -209,25 +239,48 @@ fn apply_to_store(
                     true
                 }
                 _ => false,
-            }
+            };
+            streams.insert(stream, StreamState::Live);
+            swept
         }
-        StoreEvent::Recovered(kind) => {
-            errored_since.remove(&kind);
+        StoreEvent::Recovered(stream) => {
+            errored_since.remove(&stream);
             false
         }
-        StoreEvent::Failed { kind, error, fatal } => {
+        StoreEvent::Failed { stream, error, fatal } => {
             if fatal {
-                init_pending.remove(&kind);
-                errored_since.remove(&kind);
-                stale.remove(&kind);
-                shared.denied_kinds().insert(kind);
+                errored_since.remove(&stream);
+                stale.remove(&stream);
+                let kind = stream.kind;
+                streams.insert(stream, StreamState::Dead);
+                mark_kind(shared, streams, kind);
                 emit_kind_error(emitter, kind, &error);
-            } else if let Entry::Vacant(slot) = errored_since.entry(kind) {
+            } else if !errored_since.contains_key(&stream) {
                 // Report the first failure of an outage so the user learns why nothing
                 // arrives; the watcher keeps retrying, and repeats stay silent until the
-                // kind recovers (any Applied/Deleted/InitDone/Recovered clears the entry).
-                slot.insert(Instant::now());
-                emit_kind_error(emitter, kind, &error);
+                // stream recovers (any Applied/Deleted/InitDone/Recovered clears the entry).
+                // One outage of a kind across several namespaces is reported once.
+                let kind_already_out = errored_since.keys().any(|s| s.kind == stream.kind);
+                if !kind_already_out {
+                    emit_kind_error(emitter, stream.kind, &error);
+                }
+                errored_since.insert(stream, Instant::now());
+            }
+            false
+        }
+        StoreEvent::FellBack { kind, namespaces } => {
+            let cluster = StreamId::cluster(kind);
+            streams.remove(&cluster);
+            stale.remove(&cluster);
+            errored_since.remove(&cluster);
+            for ns in &namespaces {
+                streams.insert(StreamId::namespaced(kind, ns), StreamState::Pending);
+            }
+            if namespaces.is_empty() {
+                shared.partial_kinds().remove(&kind);
+                shared.denied_kinds().insert(kind);
+            } else {
+                shared.partial_kinds().insert(kind);
             }
             false
         }
@@ -289,7 +342,7 @@ mod tests {
 
     fn fast_config(kinds: &[Kind]) -> ReducerConfig {
         ReducerConfig {
-            kinds: kinds.to_vec(),
+            streams: kinds.iter().map(|k| StreamId::from(*k)).collect(),
             debounce: Duration::from_millis(20),
             degraded_after: Duration::from_millis(50),
             tick: Duration::from_millis(10),
@@ -336,10 +389,12 @@ mod tests {
         let shared = Shared::default();
         let (tx, handle, mut rx) = spawn_started(&[Kind::ConfigMap, Kind::Pod], shared.clone()).await;
         tx.send(ReducerMsg::Store(StoreEvent::Applied(cm("a")))).await.unwrap();
-        tx.send(ReducerMsg::Store(StoreEvent::InitDone(Kind::ConfigMap))).await.unwrap();
+        tx.send(ReducerMsg::Store(StoreEvent::InitDone(Kind::ConfigMap.into())))
+            .await
+            .unwrap();
         tokio::time::sleep(Duration::from_millis(60)).await;
         assert!(rx.try_recv().is_err(), "nothing before every kind is initialised");
-        tx.send(ReducerMsg::Store(StoreEvent::InitDone(Kind::Pod))).await.unwrap();
+        tx.send(ReducerMsg::Store(StoreEvent::InitDone(Kind::Pod.into()))).await.unwrap();
         match next(&mut rx).await {
             OutEvent::GraphSnapshot(g) => assert_eq!(g.nodes.len(), 1),
             other => panic!("expected snapshot, got {other:?}"),
@@ -352,7 +407,7 @@ mod tests {
     async fn changes_after_snapshot_are_debounced_into_one_delta() {
         let shared = Shared::default();
         let (tx, _h, mut rx) = spawn_started(&[Kind::Pod], shared.clone()).await;
-        tx.send(ReducerMsg::Store(StoreEvent::InitDone(Kind::Pod))).await.unwrap();
+        tx.send(ReducerMsg::Store(StoreEvent::InitDone(Kind::Pod.into()))).await.unwrap();
         assert!(matches!(next(&mut rx).await, OutEvent::GraphSnapshot(_)));
         tx.send(ReducerMsg::Store(StoreEvent::Applied(pod("a")))).await.unwrap();
         tx.send(ReducerMsg::Store(StoreEvent::Applied(pod("b")))).await.unwrap();
@@ -375,13 +430,13 @@ mod tests {
         let shared = Shared::default();
         let (tx, _h, mut rx) = spawn_started(&[Kind::Secret, Kind::Pod], shared.clone()).await;
         tx.send(ReducerMsg::Store(StoreEvent::Failed {
-            kind: Kind::Secret,
+            stream: Kind::Secret.into(),
             error: AppError::new(ErrorKind::Forbidden, "no"),
             fatal: true,
         }))
         .await
         .unwrap();
-        tx.send(ReducerMsg::Store(StoreEvent::InitDone(Kind::Pod))).await.unwrap();
+        tx.send(ReducerMsg::Store(StoreEvent::InitDone(Kind::Pod.into()))).await.unwrap();
         assert!(matches!(next(&mut rx).await, OutEvent::ConnectionError(_)));
         assert!(matches!(next(&mut rx).await, OutEvent::GraphSnapshot(_)));
         assert!(shared.denied_kinds().contains(&Kind::Secret));
@@ -391,10 +446,10 @@ mod tests {
     async fn prolonged_error_degrades_then_recovers_with_snapshot() {
         let shared = Shared::default();
         let (tx, _h, mut rx) = spawn_started(&[Kind::Pod], shared.clone()).await;
-        tx.send(ReducerMsg::Store(StoreEvent::InitDone(Kind::Pod))).await.unwrap();
+        tx.send(ReducerMsg::Store(StoreEvent::InitDone(Kind::Pod.into()))).await.unwrap();
         assert!(matches!(next(&mut rx).await, OutEvent::GraphSnapshot(_)));
         tx.send(ReducerMsg::Store(StoreEvent::Failed {
-            kind: Kind::Pod,
+            stream: Kind::Pod.into(),
             error: AppError::new(ErrorKind::Network, "eof"),
             fatal: false,
         }))
@@ -402,7 +457,7 @@ mod tests {
         .unwrap();
         assert!(matches!(next(&mut rx).await, OutEvent::ConnectionError(_)));
         assert_eq!(next(&mut rx).await, OutEvent::ConnectionState(ConnectionState::Degraded));
-        tx.send(ReducerMsg::Store(StoreEvent::Recovered(Kind::Pod))).await.unwrap();
+        tx.send(ReducerMsg::Store(StoreEvent::Recovered(Kind::Pod.into()))).await.unwrap();
         assert_eq!(next(&mut rx).await, OutEvent::ConnectionState(ConnectionState::Connected));
         assert!(matches!(next(&mut rx).await, OutEvent::GraphSnapshot(_)));
     }
@@ -411,11 +466,11 @@ mod tests {
     async fn first_non_fatal_failure_is_reported_once() {
         let shared = Shared::default();
         let (tx, _h, mut rx) = spawn_started(&[Kind::Pod], shared.clone()).await;
-        tx.send(ReducerMsg::Store(StoreEvent::InitDone(Kind::Pod))).await.unwrap();
+        tx.send(ReducerMsg::Store(StoreEvent::InitDone(Kind::Pod.into()))).await.unwrap();
         assert!(matches!(next(&mut rx).await, OutEvent::GraphSnapshot(_)));
         let fail = || {
             ReducerMsg::Store(StoreEvent::Failed {
-                kind: Kind::Pod,
+                stream: Kind::Pod.into(),
                 error: AppError::new(ErrorKind::Network, "connection reset"),
                 fatal: false,
             })
@@ -433,7 +488,7 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(5)).await;
         assert!(rx.try_recv().is_err(), "repeated failures of the same kind stay silent");
         // The kind is not degraded yet, so recovery is silent; the next outage is reported again.
-        tx.send(ReducerMsg::Store(StoreEvent::Recovered(Kind::Pod))).await.unwrap();
+        tx.send(ReducerMsg::Store(StoreEvent::Recovered(Kind::Pod.into()))).await.unwrap();
         tx.send(fail()).await.unwrap();
         assert!(matches!(next(&mut rx).await, OutEvent::ConnectionError(_)));
     }
@@ -444,12 +499,12 @@ mod tests {
         let (tx, _h, mut rx) = spawn_started(&[Kind::Pod], shared.clone()).await;
         tx.send(ReducerMsg::Store(StoreEvent::Applied(pod("a")))).await.unwrap();
         tx.send(ReducerMsg::Store(StoreEvent::Applied(pod("b")))).await.unwrap();
-        tx.send(ReducerMsg::Store(StoreEvent::InitDone(Kind::Pod))).await.unwrap();
+        tx.send(ReducerMsg::Store(StoreEvent::InitDone(Kind::Pod.into()))).await.unwrap();
         assert!(matches!(next(&mut rx).await, OutEvent::GraphSnapshot(g) if g.nodes.len() == 2));
         // Watcher re-lists; only "a" still exists on the server.
-        tx.send(ReducerMsg::Store(StoreEvent::Restarted(Kind::Pod))).await.unwrap();
+        tx.send(ReducerMsg::Store(StoreEvent::Restarted(Kind::Pod.into()))).await.unwrap();
         tx.send(ReducerMsg::Store(StoreEvent::Applied(pod("a")))).await.unwrap();
-        tx.send(ReducerMsg::Store(StoreEvent::InitDone(Kind::Pod))).await.unwrap();
+        tx.send(ReducerMsg::Store(StoreEvent::InitDone(Kind::Pod.into()))).await.unwrap();
         match next(&mut rx).await {
             OutEvent::GraphDelta(d) => assert_eq!(d.removed_nodes, vec!["Pod/n/b"]),
             other => panic!("expected delta removing b, got {other:?}"),
@@ -462,7 +517,7 @@ mod tests {
         let shared = Shared::default();
         let (tx, _h, mut rx) = spawn_started(&[Kind::Pod], shared.clone()).await;
         tx.send(ReducerMsg::Store(StoreEvent::Failed {
-            kind: Kind::Pod,
+            stream: Kind::Pod.into(),
             error: AppError::internal("Pod watcher panicked"),
             fatal: true,
         }))
@@ -479,7 +534,7 @@ mod tests {
         let shared = Shared::default();
         let (tx, handle, mut rx) = spawn_started(&[Kind::Pod, Kind::Secret], shared.clone()).await;
         tx.send(ReducerMsg::Store(StoreEvent::Failed {
-            kind: Kind::Pod,
+            stream: Kind::Pod.into(),
             error: AppError::new(ErrorKind::Auth, "Unauthorized"),
             fatal: true,
         }))
@@ -489,7 +544,7 @@ mod tests {
         // fatal Auth failure, so the second watcher's send can fail — that's expected.
         let _ = tx
             .send(ReducerMsg::Store(StoreEvent::Failed {
-                kind: Kind::Secret,
+                stream: Kind::Secret.into(),
                 error: AppError::new(ErrorKind::Auth, "Unauthorized"),
                 fatal: true,
             }))
@@ -534,11 +589,216 @@ mod tests {
         assert!(pods.try_recv().is_ok(), "the pod delete ticked");
     }
 
+    fn pod_in(ns: &str, name: &str) -> Object {
+        Object::Pod(Pod {
+            metadata: ObjectMeta {
+                name: Some(name.into()),
+                namespace: Some(ns.into()),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+    }
+
+    fn config_for(streams: &[StreamId]) -> ReducerConfig {
+        ReducerConfig {
+            streams: streams.to_vec(),
+            ..fast_config(&[])
+        }
+    }
+
+    async fn spawn_streams(
+        streams: &[StreamId],
+        shared: Shared,
+    ) -> (
+        mpsc::Sender<ReducerMsg>,
+        JoinHandle<()>,
+        tokio::sync::mpsc::UnboundedReceiver<OutEvent>,
+    ) {
+        let (emitter, mut rx) = ChannelEmitter::new();
+        let (tx, handle) = spawn_reducer(config_for(streams), shared, Arc::new(emitter));
+        assert_eq!(next(&mut rx).await, OutEvent::ConnectionState(ConnectionState::Connected));
+        (tx, handle, rx)
+    }
+
+    fn transient(stream: &StreamId) -> ReducerMsg {
+        ReducerMsg::Store(StoreEvent::Failed {
+            stream: stream.clone(),
+            error: AppError::new(ErrorKind::Network, "connection reset"),
+            fatal: false,
+        })
+    }
+
+    fn forbid(stream: &StreamId) -> ReducerMsg {
+        ReducerMsg::Store(StoreEvent::Failed {
+            stream: stream.clone(),
+            error: AppError::new(ErrorKind::Forbidden, "no"),
+            fatal: true,
+        })
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_relist_of_one_namespace_does_not_sweep_another() {
+        let a = StreamId::namespaced(Kind::Pod, "a");
+        let b = StreamId::namespaced(Kind::Pod, "b");
+        let shared = Shared::default();
+        let (tx, _h, mut rx) = spawn_streams(&[a.clone(), b.clone()], shared.clone()).await;
+        tx.send(ReducerMsg::Store(StoreEvent::Applied(pod_in("a", "x")))).await.unwrap();
+        tx.send(ReducerMsg::Store(StoreEvent::Applied(pod_in("b", "y")))).await.unwrap();
+        tx.send(ReducerMsg::Store(StoreEvent::InitDone(a.clone()))).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        assert!(rx.try_recv().is_err(), "no snapshot until every stream listed");
+        tx.send(ReducerMsg::Store(StoreEvent::InitDone(b.clone()))).await.unwrap();
+        assert!(matches!(next(&mut rx).await, OutEvent::GraphSnapshot(g) if g.nodes.len() == 2));
+        tx.send(ReducerMsg::Store(StoreEvent::Restarted(a.clone()))).await.unwrap();
+        tx.send(ReducerMsg::Store(StoreEvent::InitDone(a))).await.unwrap();
+        match next(&mut rx).await {
+            OutEvent::GraphDelta(d) => assert_eq!(d.removed_nodes, vec!["Pod/a/x"]),
+            other => panic!("expected only a's pod swept, got {other:?}"),
+        }
+        assert_eq!(shared.store().len(), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn one_forbidden_namespace_makes_the_kind_partial_all_make_it_denied() {
+        let a = StreamId::namespaced(Kind::Secret, "a");
+        let b = StreamId::namespaced(Kind::Secret, "b");
+        let shared = Shared::default();
+        let (tx, _h, mut rx) = spawn_streams(&[a.clone(), b.clone()], shared.clone()).await;
+        tx.send(forbid(&a)).await.unwrap();
+        assert!(matches!(next(&mut rx).await, OutEvent::ConnectionError(_)));
+        assert!(shared.partial_kinds().contains(&Kind::Secret));
+        assert!(!shared.denied_kinds().contains(&Kind::Secret));
+        tx.send(forbid(&b)).await.unwrap();
+        assert!(matches!(next(&mut rx).await, OutEvent::ConnectionError(_)));
+        assert!(shared.denied_kinds().contains(&Kind::Secret));
+        assert!(!shared.partial_kinds().contains(&Kind::Secret));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_forbidden_namespace_does_not_block_the_snapshot() {
+        let a = StreamId::namespaced(Kind::Pod, "a");
+        let b = StreamId::namespaced(Kind::Pod, "b");
+        let shared = Shared::default();
+        let (tx, _h, mut rx) = spawn_streams(&[a.clone(), b.clone()], shared.clone()).await;
+        tx.send(ReducerMsg::Store(StoreEvent::Applied(pod_in("a", "x")))).await.unwrap();
+        tx.send(ReducerMsg::Store(StoreEvent::InitDone(a))).await.unwrap();
+        tx.send(forbid(&b)).await.unwrap();
+        match next(&mut rx).await {
+            OutEvent::ConnectionError(e) => assert!(e.message.contains("Pod"), "{}", e.message),
+            other => panic!("expected b's error, got {other:?}"),
+        }
+        assert!(matches!(next(&mut rx).await, OutEvent::GraphSnapshot(g) if g.nodes.len() == 1));
+        assert!(shared.partial_kinds().contains(&Kind::Pod));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn one_erroring_namespace_degrades_while_the_other_keeps_updating() {
+        let a = StreamId::namespaced(Kind::Pod, "a");
+        let b = StreamId::namespaced(Kind::Pod, "b");
+        let shared = Shared::default();
+        let (tx, _h, mut rx) = spawn_streams(&[a.clone(), b.clone()], shared.clone()).await;
+        tx.send(ReducerMsg::Store(StoreEvent::InitDone(a.clone()))).await.unwrap();
+        tx.send(ReducerMsg::Store(StoreEvent::InitDone(b.clone()))).await.unwrap();
+        assert!(matches!(next(&mut rx).await, OutEvent::GraphSnapshot(_)));
+        tx.send(transient(&a)).await.unwrap();
+        assert!(matches!(next(&mut rx).await, OutEvent::ConnectionError(_)));
+        // b's updates neither clear a's outage nor stop flowing.
+        tx.send(ReducerMsg::Store(StoreEvent::Applied(pod_in("b", "y")))).await.unwrap();
+        match next(&mut rx).await {
+            OutEvent::GraphDelta(d) => assert_eq!(d.added_nodes.len(), 1),
+            other => panic!("expected b's pod, got {other:?}"),
+        }
+        assert_eq!(next(&mut rx).await, OutEvent::ConnectionState(ConnectionState::Degraded));
+        tx.send(ReducerMsg::Store(StoreEvent::Applied(pod_in("b", "z")))).await.unwrap();
+        assert!(matches!(next(&mut rx).await, OutEvent::GraphDelta(_)));
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        assert!(rx.try_recv().is_err(), "still degraded: a has not recovered");
+        // a's recovery clears the outage, with a fresh snapshot.
+        tx.send(ReducerMsg::Store(StoreEvent::Recovered(a))).await.unwrap();
+        assert_eq!(next(&mut rx).await, OutEvent::ConnectionState(ConnectionState::Connected));
+        assert!(matches!(next(&mut rx).await, OutEvent::GraphSnapshot(g) if g.nodes.len() == 2));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_object_of_one_namespace_recovers_only_its_own_stream() {
+        let a = StreamId::namespaced(Kind::Pod, "a");
+        let b = StreamId::namespaced(Kind::Pod, "b");
+        let shared = Shared::default();
+        let (tx, _h, mut rx) = spawn_streams(&[a.clone(), b.clone()], shared.clone()).await;
+        tx.send(ReducerMsg::Store(StoreEvent::InitDone(a.clone()))).await.unwrap();
+        tx.send(ReducerMsg::Store(StoreEvent::InitDone(b.clone()))).await.unwrap();
+        assert!(matches!(next(&mut rx).await, OutEvent::GraphSnapshot(_)));
+        tx.send(transient(&a)).await.unwrap();
+        tx.send(transient(&b)).await.unwrap();
+        assert!(matches!(next(&mut rx).await, OutEvent::ConnectionError(_)));
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        assert!(
+            rx.try_recv().is_err(),
+            "one outage of a kind is reported once, however many namespaces"
+        );
+        assert_eq!(next(&mut rx).await, OutEvent::ConnectionState(ConnectionState::Degraded));
+        // An object arriving from b recovers b, not a.
+        tx.send(ReducerMsg::Store(StoreEvent::Applied(pod_in("b", "y")))).await.unwrap();
+        assert!(matches!(next(&mut rx).await, OutEvent::GraphDelta(_)));
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        assert!(rx.try_recv().is_err(), "a is still out");
+        tx.send(ReducerMsg::Store(StoreEvent::Applied(pod_in("a", "x")))).await.unwrap();
+        // Recovery and the debounced delta race on the virtual clock; either order is fine.
+        let mut got = vec![next(&mut rx).await, next(&mut rx).await];
+        got.sort_by_key(|e| matches!(e, OutEvent::ConnectionState(_)));
+        assert!(matches!(got[0], OutEvent::GraphDelta(_) | OutEvent::GraphSnapshot(_)), "{got:?}");
+        assert!(got.contains(&OutEvent::ConnectionState(ConnectionState::Connected)), "{got:?}");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_fallback_waits_for_the_per_namespace_streams() {
+        let shared = Shared::default();
+        let (tx, _h, mut rx) = spawn_streams(&[StreamId::cluster(Kind::Pod)], shared.clone()).await;
+        tx.send(ReducerMsg::Store(StoreEvent::Restarted(StreamId::cluster(Kind::Pod))))
+            .await
+            .unwrap();
+        tx.send(ReducerMsg::Store(StoreEvent::FellBack {
+            kind: Kind::Pod,
+            namespaces: vec!["a".into(), "b".into()],
+        }))
+        .await
+        .unwrap();
+        tx.send(ReducerMsg::Store(StoreEvent::InitDone(StreamId::namespaced(Kind::Pod, "a"))))
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        assert!(rx.try_recv().is_err(), "b has not listed yet");
+        tx.send(ReducerMsg::Store(StoreEvent::InitDone(StreamId::namespaced(Kind::Pod, "b"))))
+            .await
+            .unwrap();
+        assert!(matches!(next(&mut rx).await, OutEvent::GraphSnapshot(_)));
+        assert!(shared.partial_kinds().contains(&Kind::Pod));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_fallback_with_no_namespace_denies_the_kind() {
+        let shared = Shared::default();
+        let (tx, _h, mut rx) = spawn_streams(&[StreamId::cluster(Kind::Pod), StreamId::cluster(Kind::ConfigMap)], shared.clone()).await;
+        tx.send(ReducerMsg::Store(StoreEvent::FellBack {
+            kind: Kind::Pod,
+            namespaces: vec![],
+        }))
+        .await
+        .unwrap();
+        tx.send(ReducerMsg::Store(StoreEvent::InitDone(Kind::ConfigMap.into())))
+            .await
+            .unwrap();
+        assert!(matches!(next(&mut rx).await, OutEvent::GraphSnapshot(_)));
+        assert!(shared.denied_kinds().contains(&Kind::Pod));
+        assert!(!shared.partial_kinds().contains(&Kind::Pod));
+    }
+
     #[tokio::test(start_paused = true)]
     async fn rebuild_message_forces_immediate_rebuild() {
         let shared = Shared::default();
         let (tx, _h, mut rx) = spawn_started(&[Kind::Pod], shared.clone()).await;
-        tx.send(ReducerMsg::Store(StoreEvent::InitDone(Kind::Pod))).await.unwrap();
+        tx.send(ReducerMsg::Store(StoreEvent::InitDone(Kind::Pod.into()))).await.unwrap();
         assert!(matches!(next(&mut rx).await, OutEvent::GraphSnapshot(_)));
         shared.store().upsert(pod("x")); // simulate an external change
         tx.send(ReducerMsg::Rebuild).await.unwrap();

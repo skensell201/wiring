@@ -28,6 +28,8 @@ pub struct Shared {
     graph: Arc<Mutex<Graph>>,
     expanded_groups: Arc<Mutex<HashSet<NodeId>>>,
     denied_kinds: Arc<Mutex<HashSet<Kind>>>,
+    /// Kinds watched in some namespaces but forbidden in others (or cluster-wide).
+    partial_kinds: Arc<Mutex<HashSet<Kind>>>,
     /// Fires after the reducer applied a Pod add/update/delete (or finished a Pod re-list);
     /// log sessions re-derive their targets on it. Payload-free: receivers re-read the store.
     pods_changed: broadcast::Sender<()>,
@@ -40,6 +42,7 @@ impl Default for Shared {
             graph: Arc::default(),
             expanded_groups: Arc::default(),
             denied_kinds: Arc::default(),
+            partial_kinds: Arc::default(),
             pods_changed: broadcast::channel(PODS_CHANGED_CAPACITY).0,
         }
     }
@@ -68,6 +71,10 @@ impl Shared {
 
     pub fn denied_kinds(&self) -> MutexGuard<'_, HashSet<Kind>> {
         lock(&self.denied_kinds)
+    }
+
+    pub fn partial_kinds(&self) -> MutexGuard<'_, HashSet<Kind>> {
+        lock(&self.partial_kinds)
     }
 
     fn build_options(&self) -> BuildOptions {

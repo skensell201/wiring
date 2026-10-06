@@ -200,7 +200,12 @@ impl Session {
         *self.shared.expanded_groups() = expanded_groups;
         self.ns_emitter = ClosableEmitter::new(self.emitter.clone());
 
-        let (reducer_tx, reducer_task) = spawn_reducer(ReducerConfig::default(), self.shared.clone(), Arc::new(self.ns_emitter.clone()));
+        let plan = scope::watch_plan(&scope::NamespaceScope::single(namespace));
+        let config = ReducerConfig {
+            streams: plan,
+            ..Default::default()
+        };
+        let (reducer_tx, reducer_task) = spawn_reducer(config, self.shared.clone(), Arc::new(self.ns_emitter.clone()));
         let (store_tx, mut store_rx) = mpsc::channel(4096);
         // Bridge StoreEvent -> ReducerMsg so watchers do not know about the reducer.
         let bridge_tx = reducer_tx.clone();
