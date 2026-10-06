@@ -57,7 +57,7 @@ Wiring reads your kubeconfig from `~/.kube/config`, or from `KUBECONFIG` when it
 **Navigator.** The left sidebar lists every kubeconfig context and the resources of the selected namespace by category: Workloads, Config, Network (with Network Policies), Storage, Access Control (Service Accounts, Roles and Role Bindings, Cluster Roles and Cluster Role Bindings) and Cluster (Nodes), followed by Custom Resources and Helm. Each kind shows a live count and the worst status among its objects. Kinds your RBAC role cannot read are struck through instead of failing. The sidebar collapses to an icon rail.
 
 **Empty and error states.** When Wiring has nothing to show, the centre pane says why and offers the next step:
-- While connecting, the pane and the header show which cluster Wiring is dialling; *Cancel* stops it.
+- While connecting, the pane and the header show which cluster Wiring is dialling; **Cancel** stops it.
 - A failed connection names the cause, with **Retry** and **Choose another cluster**. The cause is one of: the cluster can't be reached, its certificate isn't trusted, the cluster didn't accept your credentials, a login helper isn't installed (with how to install it) or can't be run, or the cluster didn't answer within 20 seconds.
 - A namespace with no objects, a namespace you have no access to (RBAC), every kind hidden by the chips, and a search with no matches each get their own message and button. When there are too many objects to draw, the graph switches to tables and says so.
 - Tables of kinds you can read in only some namespaces say so above the rows.
