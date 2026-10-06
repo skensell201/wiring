@@ -5,7 +5,7 @@ import { graphEmptyState, NAMESPACED_KINDS, type GraphEmptyInput } from "./graph
 const n = (name: string, kind: Kind = "Pod"): GraphNode => ({ id: `${kind}/shop/${name}`, kind, namespace: "shop", name, status: "ok", badges: [], group: null });
 const input = (over: Partial<GraphEmptyInput> = {}): GraphEmptyInput => ({
   context: "prod", scope: ["shop"], namespaces: ["shop"], canListNamespaces: true, graphReady: true, tooLarge: null,
-  deniedKinds: new Set(), nodes: new Map([["Pod/shop/web", n("web")]]), hiddenKinds: new Set(), search: "", ...over,
+  deniedKinds: new Set(), partialKinds: new Set(), deniedLoaded: true, nodes: new Map([["Pod/shop/web", n("web")]]), hiddenKinds: new Set(), search: "", ...over,
 });
 const allDenied = new Set<Kind>(NAMESPACED_KINDS);
 
@@ -33,11 +33,22 @@ describe("graphEmptyState", () => {
     expect(NAMESPACED_KINDS).not.toContain("Node");
     // One readable kind is enough to call it merely empty.
     const someDenied = new Set<Kind>(NAMESPACED_KINDS.filter((k) => k !== "ConfigMap"));
-    expect(graphEmptyState(input({ deniedKinds: someDenied, nodes: new Map() }))).toEqual({ type: "empty", scope: "shop" });
+    expect(graphEmptyState(input({ deniedKinds: someDenied, nodes: new Map() }))).toEqual({ type: "empty", scope: "shop", restricted: true });
+  });
+
+  it("keeps loading an empty scope until its denied kinds are known", () => {
+    expect(graphEmptyState(input({ deniedLoaded: false, nodes: new Map() }))).toEqual({ type: "loading", scope: "shop" });
+    expect(graphEmptyState(input({ deniedLoaded: true, deniedKinds: allDenied, nodes: new Map() }))).toEqual({ type: "noAccess", scope: "shop" });
+    // Objects on screen need no wait.
+    expect(graphEmptyState(input({ deniedLoaded: false }))).toBeNull();
+  });
+
+  it("says an empty scope is restricted when some kinds are only partly listed", () => {
+    expect(graphEmptyState(input({ partialKinds: new Set(["Pod"]), nodes: new Map() }))).toEqual({ type: "empty", scope: "shop", restricted: true });
   });
 
   it("labels several namespaces like the header", () => {
-    expect(graphEmptyState(input({ scope: ["shop", "blog"], nodes: new Map() }))).toEqual({ type: "empty", scope: "shop, blog" });
+    expect(graphEmptyState(input({ scope: ["shop", "blog"], nodes: new Map() }))).toEqual({ type: "empty", scope: "shop, blog", restricted: false });
   });
 
   it("says all kinds are hidden before search misses", () => {

@@ -9,8 +9,11 @@ export function GraphEmpty({ state }: { state: GraphSituation }) {
   const a = useAppStore(useShallow((s) => ({
     openNamespacePicker: s.openNamespacePicker, openCreate: s.openCreate, showAllKinds: s.showAllKinds,
     setSearch: s.setSearch, showTable: s.showTable, lastTableKind: s.lastTableKind,
+    canListNamespaces: s.connection.canListNamespaces,
   })));
   const pick = (label: string) => ({ label, onClick: a.openNamespacePicker });
+  // Without the right to list namespaces the picker takes a typed name.
+  const another = pick(a.canListNamespaces ? "Pick another namespace" : "Enter another namespace");
   switch (state.type) {
     case "noNamespace":
       return <EmptyState overlay icon={Layers} title="Choose a namespace" primary={pick("Choose a namespace")}>{noNamespaceBody(state.canListNamespaces)}</EmptyState>;
@@ -25,14 +28,14 @@ export function GraphEmpty({ state }: { state: GraphSituation }) {
       );
     case "noAccess":
       return (
-        <EmptyState overlay icon={ShieldOff} title="No access" primary={pick("Pick another namespace")}>
+        <EmptyState overlay icon={ShieldOff} title="No access" primary={another}>
           {`You can't list any resources in ${state.scope} (RBAC). Ask your cluster admin, or pick another namespace.`}
         </EmptyState>
       );
     case "empty":
       return (
-        <EmptyState overlay icon={Inbox} title="Nothing here yet" primary={{ label: "+ Create", onClick: () => a.openCreate() }} secondary={pick("Pick another namespace")}>
-          {`${state.scope} has no resources.`}
+        <EmptyState overlay icon={Inbox} title="Nothing here yet" primary={{ label: "+ Create", onClick: () => a.openCreate() }} secondary={another}>
+          {`${state.scope} has no resources.${state.restricted ? " Some kinds are hidden from you (RBAC)." : ""}`}
         </EmptyState>
       );
     case "allHidden":

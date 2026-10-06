@@ -131,6 +131,9 @@ export interface AppState extends GraphState {
   deniedKinds: Set<Kind>;
   /** Kinds listed only in some of the namespaces (forbidden cluster-wide, or in some of them). */
   partialKinds: Set<Kind>;
+  /** Whether `deniedKinds`/`partialKinds` have been fetched for the current scope (they arrive
+   *  after the switch, so an empty graph cannot tell "empty" from "no access" before). */
+  deniedLoaded: boolean;
   /** Set instead of `nodes` when the scope has too many objects for a graph. */
   tooLarge: TooLarge | null;
   search: string;
@@ -302,6 +305,7 @@ export function initialState(): Omit<AppState, keyof Actions> {
     hiddenKinds: new Set(DEFAULT_HIDDEN_KINDS),
     deniedKinds: new Set(),
     partialKinds: new Set(),
+    deniedLoaded: false,
     tooLarge: null,
     search: "",
     toasts: [],
@@ -596,13 +600,13 @@ export const useAppStore = create<AppState>()((set, get) => ({
     const before = get();
     const previous = {
       nodes: before.nodes, edges: before.edges, graphReady: before.graphReady, tooLarge: before.tooLarge,
-      deniedKinds: before.deniedKinds, partialKinds: before.partialKinds, tables: before.tables, scope: before.connection.scope,
+      deniedKinds: before.deniedKinds, partialKinds: before.partialKinds, deniedLoaded: before.deniedLoaded, tables: before.tables, scope: before.connection.scope,
       customTables: before.customTables, customTableErrors: before.customTableErrors, helmReleases: before.helmReleases,
       helmSelected: before.helmSelected, helmDetails: before.helmDetails, highlightIds: before.highlightIds,
     };
     set((s) => ({
       nodes: new Map(), edges: new Map(), graphReady: false, tooLarge: null, selectedId: null, details: null, hoveredId: null,
-      deniedKinds: new Set(), partialKinds: new Set(), tables: new Map(), focusRequest: null, connection: { ...s.connection, scope },
+      deniedKinds: new Set(), partialKinds: new Set(), deniedLoaded: false, tables: new Map(), focusRequest: null, connection: { ...s.connection, scope },
       customTables: new Map(), customTableErrors: new Map(), helmReleases: null,
       helmSelected: null, helmDetails: null, highlightIds: new Set(),
       deleteDialog: initialState().deleteDialog, discardDialog: initialState().discardDialog, detailsMaximized: false,
@@ -622,10 +626,12 @@ export const useAppStore = create<AppState>()((set, get) => ({
     try {
       const [denied, partial] = await Promise.all([commands.deniedKinds(), commands.partialKinds()]);
       // Only if this is still the current selection - a newer one owns these sets now.
-      if (get().connection.scope === scope) set({ deniedKinds: new Set(denied), partialKinds: new Set(partial) });
+      if (get().connection.scope === scope) set({ deniedKinds: new Set(denied), partialKinds: new Set(partial), deniedLoaded: true });
       // An open table is refetched by the graph_snapshot handler once the backend has the new
       // objects; fetching here would race the watchers and land an empty table.
     } catch (e) {
+      // Unknown then: stop waiting, so an empty scope reads as empty rather than loading forever.
+      if (get().connection.scope === scope) set({ deniedLoaded: true });
       get().toast(toAppError(e));
     }
   },

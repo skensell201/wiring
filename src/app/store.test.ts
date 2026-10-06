@@ -171,6 +171,23 @@ describe("actions", () => {
     expect(invoke).toHaveBeenCalledWith("select_namespaces", { namespaces: ["payments"], expandedGroups: [] });
     expect([...s.deniedKinds]).toEqual(["Secret"]);
     expect([...s.partialKinds]).toEqual(["Pod"]);
+    expect(s.deniedLoaded).toBe(true);
+  });
+
+  it("selectNamespace marks the denied kinds unknown until the backend answers", async () => {
+    useAppStore.setState({ deniedLoaded: true, connection: { ...initialState().connection, context: "prod" } });
+    const pending = useAppStore.getState().selectNamespace("payments");
+    expect(useAppStore.getState().deniedLoaded).toBe(false);
+    await pending;
+    expect(useAppStore.getState().deniedLoaded).toBe(true);
+  });
+
+  it("selectNamespace stops waiting for denied kinds when asking for them fails", async () => {
+    useAppStore.setState({ connection: { ...initialState().connection, context: "prod" } });
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => { if (cmd === "denied_kinds") throw { kind: "network", message: "down" }; return null; });
+    await useAppStore.getState().selectNamespace("payments");
+    vi.mocked(invoke).mockImplementation(baseInvoke);
+    expect(useAppStore.getState().deniedLoaded).toBe(true);
   });
 
   it("selectScope watches several namespaces and remembers them", async () => {

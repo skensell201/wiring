@@ -25,18 +25,48 @@ describe("Canvas", () => {
 
   it("shows the empty-namespace state for an empty snapshot, with + Create", () => {
     useAppStore.setState({
-      ...applySnapshot(initialState(), { nodes: [], edges: [] }),
+      ...applySnapshot(initialState(), { nodes: [], edges: [] }), deniedLoaded: true,
       connection: { ...initialState().connection, context: "prod", state: "connected", scope: ["payments"] },
     });
     render(<Canvas />);
     expect(screen.getByRole("status", { name: "Nothing here yet" })).toHaveTextContent("payments has no resources.");
+    expect(screen.getByRole("status", { name: "Nothing here yet" })).not.toHaveTextContent("RBAC");
     fireEvent.click(screen.getByRole("button", { name: "+ Create" }));
     expect(useAppStore.getState().createDialog.open).toBe(true);
   });
 
+  it("keeps loading an empty snapshot until the denied kinds are known", () => {
+    useAppStore.setState({
+      ...applySnapshot(initialState(), { nodes: [], edges: [] }),
+      connection: { ...initialState().connection, context: "prod", state: "connected", scope: ["payments"] },
+    });
+    render(<Canvas />);
+    expect(screen.getByText(/loading payments/i)).toBeInTheDocument();
+    expect(screen.queryByText("Nothing here yet")).not.toBeInTheDocument();
+  });
+
+  it("says some kinds are hidden from you when an empty namespace is partly denied", () => {
+    useAppStore.setState({
+      ...applySnapshot(initialState(), { nodes: [], edges: [] }), deniedLoaded: true, deniedKinds: new Set(["Secret"]),
+      connection: { ...initialState().connection, context: "prod", state: "connected", scope: ["payments"] },
+    });
+    render(<Canvas />);
+    expect(screen.getByRole("status", { name: "Nothing here yet" })).toHaveTextContent("payments has no resources. Some kinds are hidden from you (RBAC).");
+  });
+
+  it("offers to enter another namespace when namespaces cannot be listed", () => {
+    useAppStore.setState({
+      ...applySnapshot(initialState(), { nodes: [], edges: [] }), deniedLoaded: true,
+      connection: { ...initialState().connection, context: "prod", state: "connected", scope: ["payments"], canListNamespaces: false },
+    });
+    render(<Canvas />);
+    expect(screen.getByRole("button", { name: "Enter another namespace" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Pick another namespace" })).not.toBeInTheDocument();
+  });
+
   it("says no access when every namespaced kind is denied", () => {
     useAppStore.setState({
-      ...applySnapshot(initialState(), { nodes: [], edges: [] }), deniedKinds: new Set(NAMESPACED_KINDS),
+      ...applySnapshot(initialState(), { nodes: [], edges: [] }), deniedLoaded: true, deniedKinds: new Set(NAMESPACED_KINDS),
       connection: { ...initialState().connection, context: "prod", state: "connected", scope: ["payments"] },
     });
     render(<Canvas />);

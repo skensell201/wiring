@@ -33,7 +33,7 @@ function CanvasInner() {
   const s = useAppStore(
     useShallow((s) => ({
       nodes: s.nodes, edges: s.edges, tooLarge: s.tooLarge, graphReady: s.graphReady, hiddenKinds: s.hiddenKinds,
-      deniedKinds: s.deniedKinds, canListNamespaces: s.connection.canListNamespaces,
+      deniedKinds: s.deniedKinds, partialKinds: s.partialKinds, deniedLoaded: s.deniedLoaded, canListNamespaces: s.connection.canListNamespaces,
       search: s.search, hoveredId: s.hoveredId, selectedId: s.selectedId, expandedGroups: s.expandedGroups, highlightIds: s.highlightIds,
       scope: s.connection.scope, namespaces: s.connection.namespaces, context: s.connection.context, focusRequest: s.focusRequest,
       select: s.select, openActionsMenu: s.openActionsMenu, setHovered: s.setHovered, toggleGroup: s.toggleGroup,
@@ -103,7 +103,11 @@ function CanvasInner() {
   const onNodeMouseLeave = useCallback(() => s.setHovered(null), [s.setHovered]);
   const onPaneClick = useCallback(() => { if (s.selectedId !== null) void s.select(null); }, [s.selectedId, s.select]);
 
-  const empty = graphEmptyState(s);
+  // Memoized on its inputs: the canvas re-renders on every hover.
+  const empty = useMemo(() => graphEmptyState(s), [
+    s.context, s.scope, s.namespaces, s.canListNamespaces, s.graphReady, s.tooLarge,
+    s.deniedKinds, s.partialKinds, s.deniedLoaded, s.nodes, s.hiddenKinds, s.search,
+  ]);
 
   return (
     <div className="relative h-full w-full bg-space">
