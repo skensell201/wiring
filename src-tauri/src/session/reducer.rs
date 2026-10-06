@@ -408,21 +408,49 @@ fn apply_to_store(
 /// on every write, so two observations of the same key with equal resource versions must have
 /// identical content — skip the (more expensive) full JSON comparison in that case. Falls back
 /// to the JSON compare when either side lacks a resourceVersion (e.g. in tests).
+///
+/// Nodes are special: the kubelet's heartbeat rewrites `conditions[].lastHeartbeatTime` (and
+/// often `status.images`) every ~10 s, bumping the resourceVersion with nothing the app shows.
+/// Such an update is stored silently — it does not count as a change and requests no rebuild.
 fn upsert_if_changed(shared: &Shared, obj: Object) -> bool {
     let mut store = shared.store();
     let key = obj.key();
-    let same = match store.get(&key) {
-        Some(existing) => match (existing.meta().resource_version.as_ref(), obj.meta().resource_version.as_ref()) {
-            (Some(a), Some(b)) if a == b => true,
-            _ => existing.to_json_value() == obj.to_json_value(),
-        },
-        None => false,
+    let Some(existing) = store.get(&key) else {
+        store.upsert(obj);
+        return true;
     };
-    if same {
-        return false;
+    if let (Some(a), Some(b)) = (existing.meta().resource_version.as_ref(), obj.meta().resource_version.as_ref()) {
+        if a == b {
+            return false;
+        }
     }
+    let changed = if key.kind == Kind::Node {
+        normalised_node(existing) != normalised_node(&obj)
+    } else {
+        existing.to_json_value() != obj.to_json_value()
+    };
     store.upsert(obj);
-    true
+    changed
+}
+
+/// A Node's JSON without what its heartbeat changes: `metadata.resourceVersion`,
+/// `metadata.managedFields` (already stripped by `to_json_value`), `status.images` and
+/// `status.conditions[].lastHeartbeatTime`.
+fn normalised_node(obj: &Object) -> serde_json::Value {
+    let mut v = obj.to_json_value();
+    if let Some(meta) = v.get_mut("metadata").and_then(|m| m.as_object_mut()) {
+        meta.remove("resourceVersion");
+        meta.remove("managedFields");
+    }
+    if let Some(status) = v.get_mut("status").and_then(|s| s.as_object_mut()) {
+        status.remove("images");
+        if let Some(conditions) = status.get_mut("conditions").and_then(|c| c.as_array_mut()) {
+            for c in conditions.iter_mut().filter_map(|c| c.as_object_mut()) {
+                c.remove("lastHeartbeatTime");
+            }
+        }
+    }
+    v
 }
 
 #[cfg(test)]
@@ -495,6 +523,108 @@ mod tests {
             Ok(OutEvent::GraphSnapshot(g)) => assert!(g.too_large.is_some()),
             other => panic!("expected a too-large snapshot so the tables refresh, got {other:?}"),
         }
+    }
+
+    /// A Node as the kubelet reports it: `rv` and `beat` change on every heartbeat.
+    fn node(rv: &str, beat: &str, ready: &str) -> Object {
+        use k8s_openapi::api::core::v1::{ContainerImage, Node, NodeCondition, NodeStatus};
+        use k8s_openapi::apimachinery::pkg::apis::meta::v1::{ManagedFieldsEntry, Time};
+        let at = |s: &str| Some(Time(s.parse().unwrap()));
+        Object::Node(Node {
+            metadata: ObjectMeta {
+                name: Some("worker".into()),
+                resource_version: Some(rv.into()),
+                managed_fields: Some(vec![ManagedFieldsEntry {
+                    manager: Some("kubelet".into()),
+                    time: at(beat),
+                    ..Default::default()
+                }]),
+                ..Default::default()
+            },
+            status: Some(NodeStatus {
+                conditions: Some(vec![NodeCondition {
+                    type_: "Ready".into(),
+                    status: ready.into(),
+                    last_heartbeat_time: at(beat),
+                    last_transition_time: at("2026-10-01T00:00:00Z"),
+                    ..Default::default()
+                }]),
+                images: Some(vec![ContainerImage {
+                    names: Some(vec![format!("img@{rv}")]),
+                    size_bytes: Some(1),
+                }]),
+                ..Default::default()
+            }),
+            ..Default::default()
+        })
+    }
+
+    /// Feed one node through the reducer as `Applied` and say whether anything went out.
+    async fn heartbeat_round(too_large: bool) {
+        let shared = Shared::default();
+        if too_large {
+            for i in 0..=crate::graph::MAX_GRAPH_NODES {
+                shared.store().upsert(cm(&format!("c{i}")));
+            }
+        }
+        // A Node is only drawn while it hosts a pod in scope.
+        let Object::Pod(mut p) = pod("p") else { unreachable!() };
+        p.spec = Some(k8s_openapi::api::core::v1::PodSpec {
+            node_name: Some("worker".into()),
+            ..Default::default()
+        });
+        shared.store().upsert(Object::Pod(p));
+        let (tx, _h, mut rx) = spawn_started(&[Kind::Node], shared.clone()).await;
+        tx.send(ReducerMsg::Store(StoreEvent::Applied(node("1", "2026-10-06T10:00:00Z", "True"))))
+            .await
+            .unwrap();
+        tx.send(ReducerMsg::Store(StoreEvent::InitDone(Kind::Node.into()))).await.unwrap();
+        assert!(matches!(next(&mut rx).await, OutEvent::GraphSnapshot(_)));
+        tx.send(ReducerMsg::Store(StoreEvent::Applied(node("2", "2026-10-06T10:00:10Z", "True"))))
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        assert!(rx.try_recv().is_err(), "a heartbeat-only update emits nothing");
+        let stored = shared
+            .store()
+            .get(&node("2", "2026-10-06T10:00:10Z", "True").key())
+            .cloned()
+            .unwrap();
+        assert_eq!(stored.meta().resource_version.as_deref(), Some("2"), "but it is stored");
+        tx.send(ReducerMsg::Store(StoreEvent::Applied(node("3", "2026-10-06T10:00:20Z", "False"))))
+            .await
+            .unwrap();
+        match next(&mut rx).await {
+            OutEvent::GraphSnapshot(g) => assert_eq!(g.too_large.is_some(), too_large),
+            OutEvent::GraphDelta(d) => {
+                assert!(!too_large);
+                assert!(
+                    d.updated_nodes.iter().any(|n| n.id == "Node//worker"),
+                    "Ready→NotReady changes the node's status"
+                );
+            }
+            other => panic!("expected a rebuild for Ready→NotReady, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_node_heartbeat_is_stored_without_counting_as_a_change() {
+        let shared = Shared::default();
+        assert!(upsert_if_changed(&shared, node("1", "2026-10-06T10:00:00Z", "True")));
+        assert!(!upsert_if_changed(&shared, node("2", "2026-10-06T10:00:10Z", "True")));
+        let key = node("2", "2026-10-06T10:00:10Z", "True").key();
+        assert_eq!(shared.store().get(&key).unwrap().meta().resource_version.as_deref(), Some("2"));
+        assert!(upsert_if_changed(&shared, node("3", "2026-10-06T10:00:20Z", "False")));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_node_heartbeat_requests_no_rebuild() {
+        heartbeat_round(false).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_node_heartbeat_emits_nothing_while_too_large() {
+        heartbeat_round(true).await;
     }
 
     fn pod(name: &str) -> Object {
