@@ -469,8 +469,12 @@ where
     }
 }
 
-/// `"Kind/ns/name"`; cluster-scoped `"Kind//name"`; PodGroup `"PodGroup/ns/OwnerKind/ownerName"`.
+/// `"Kind/ns/name"`; cluster-scoped `"Kind//name"`; PodGroup `"PodGroup/ns/OwnerKind/ownerName"`;
+/// custom resources `"Custom/group/version/kind/ns/name"` (see `custom::id`).
 pub fn parse_node_id(id: &str) -> AppResult<(Kind, Option<String>, String)> {
+    if let Some(c) = crate::custom::id::CustomId::of(id)? {
+        return Ok((Kind::Custom, c.namespace, c.name));
+    }
     let mut parts = id.splitn(3, '/');
     let (Some(kind), Some(ns), Some(name)) = (parts.next(), parts.next(), parts.next()) else {
         return Err(AppError::new(ErrorKind::NotFound, format!("malformed node id `{id}`")));
@@ -779,6 +783,19 @@ mod tests {
         );
         assert!(parse_node_id("garbage").is_err());
         assert!(parse_node_id("Namespace/x/y").is_err());
+    }
+
+    #[test]
+    fn parses_custom_node_ids() {
+        assert_eq!(
+            parse_node_id("Custom/cert-manager.io/v1/Certificate/shop/web-tls").unwrap(),
+            (Kind::Custom, Some("shop".to_string()), "web-tls".to_string())
+        );
+        assert_eq!(
+            parse_node_id("Custom/x.io/v1/Thing//t").unwrap(),
+            (Kind::Custom, None, "t".to_string())
+        );
+        assert!(parse_node_id("Custom/x.io/v1").is_err());
     }
 
     #[test]

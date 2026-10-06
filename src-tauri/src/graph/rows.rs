@@ -205,7 +205,7 @@ pub fn columns(kind: Kind) -> Vec<TableColumn> {
             col("pods", "Pods", true),
             age_c(),
         ],
-        Kind::PodGroup => vec![],
+        Kind::PodGroup | Kind::Custom => vec![],
     }
 }
 

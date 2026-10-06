@@ -275,7 +275,7 @@ where
 
 /// Whether `spawn_stream` has a watcher for `kind`.
 fn is_spawnable(kind: Kind) -> bool {
-    kind != Kind::PodGroup
+    kind != Kind::PodGroup && kind != Kind::Custom
 }
 
 fn spawn_stream(client: &Client, stream: &StreamId, namespaces: &[String], tx: &mpsc::Sender<StoreEvent>) -> JoinHandle<()> {
@@ -306,7 +306,7 @@ fn spawn_stream(client: &Client, stream: &StreamId, namespaces: &[String], tx: &
         Kind::ClusterRoleBinding => spawn_watch(Api::<rbac::ClusterRoleBinding>::all(client.clone()), stream.clone(), tx.clone()),
         Kind::Node => spawn_watch(Api::<core::Node>::all(client.clone()), stream.clone(), tx.clone()),
         // Never planned (see `watch_plan`); a finished task keeps the caller's bookkeeping simple.
-        Kind::PodGroup => tokio::spawn(async {}),
+        Kind::PodGroup | Kind::Custom => tokio::spawn(async {}),
     }
 }
 

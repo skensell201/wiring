@@ -53,7 +53,7 @@ fn api_resource(kind: Kind) -> Option<ApiResource> {
         Kind::ClusterRole => erase!(ClusterRole),
         Kind::ClusterRoleBinding => erase!(ClusterRoleBinding),
         Kind::Node => erase!(Node),
-        Kind::PodGroup => None,
+        Kind::PodGroup | Kind::Custom => None,
     }
 }
 
@@ -276,6 +276,7 @@ mod tests {
             assert_eq!(ar.kind, kind.as_str());
         }
         assert!(api_resource(Kind::PodGroup).is_none());
+        assert!(api_resource(Kind::Custom).is_none());
         let dep = api_resource(Kind::Deployment).unwrap();
         assert_eq!(dep.api_version, "apps/v1");
         assert_eq!(dep.plural, "deployments");

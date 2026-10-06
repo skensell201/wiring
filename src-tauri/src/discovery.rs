@@ -129,6 +129,17 @@ pub fn classify(found: &[Discovered], crds: Option<&[CrdInfo]>) -> Vec<CustomKin
     kinds
 }
 
+/// The custom kind `group`/`kind`, addressed at `version` when one is given (an ownerReference
+/// or a manifest may name a served version other than the one discovery recommends; plural and
+/// scope are the same in every version).
+pub fn find_kind(kinds: &[CustomKind], group: &str, version: &str, kind: &str) -> Option<CustomKind> {
+    let mut found = kinds.iter().find(|k| k.resource.group == group && k.resource.kind == kind)?.clone();
+    if !version.is_empty() {
+        found.resource.version = version.to_owned();
+    }
+    Some(found)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -252,5 +263,18 @@ mod tests {
         let ids: Vec<String> = kinds.iter().map(|k| format!("{}/{}", k.resource.group, k.resource.kind)).collect();
         assert_eq!(ids, vec!["a.example.com/Alpha", "a.example.com/Beta", "b.example.com/Zed"]);
         assert_eq!(kinds[0].resource.version, "v1", "the first (preferred) version wins");
+    }
+
+    #[test]
+    fn find_kind_matches_group_and_kind_and_takes_the_ids_version() {
+        let kinds = classify(&[found("argoproj.io", "v1alpha1", "Rollout", "rollouts", true, LW)], None);
+        let k = find_kind(&kinds, "argoproj.io", "v1beta1", "Rollout").unwrap();
+        assert_eq!(k.resource.version, "v1beta1");
+        assert_eq!(k.resource.plural, "rollouts");
+        assert_eq!(
+            find_kind(&kinds, "argoproj.io", "", "Rollout").unwrap().resource.version,
+            "v1alpha1"
+        );
+        assert!(find_kind(&kinds, "other.io", "v1", "Rollout").is_none());
     }
 }
