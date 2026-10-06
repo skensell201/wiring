@@ -29,6 +29,29 @@ describe("settings", () => {
     expect(mem.get("lastNamespace")).toEqual({ prod: "shop" });
   });
 
+  it("remembers the last scope per context", async () => {
+    await settings.setLastScope("ctx", ["a", "b"]);
+    expect(await settings.getLastScope("ctx")).toEqual(["a", "b"]);
+    await settings.setLastScope("ctx", "all");
+    expect(await settings.getLastScope("ctx")).toBe("all");
+    expect(await settings.getLastScope("other")).toBeNull();
+  });
+
+  it("reads a legacy lastNamespace as a one-namespace scope", async () => {
+    mem.set("lastNamespace", { ctx: "shop" });
+    expect(await settings.getLastScope("ctx")).toEqual(["shop"]);
+  });
+
+  it("falls back to the legacy value or null on a garbage scope", async () => {
+    mem.set("lastScope", { ctx: 42 });
+    expect(await settings.getLastScope("ctx")).toBeNull();
+    mem.set("lastNamespace", { ctx: "shop" });
+    expect(await settings.getLastScope("ctx")).toEqual(["shop"]);
+    mem.set("lastScope", { ctx: [] });
+    mem.delete("lastNamespace");
+    expect(await settings.getLastScope("ctx")).toBeNull();
+  });
+
   it("stores the last context", async () => {
     await settings.set("lastContext", "prod");
     expect(await settings.get<string>("lastContext")).toBe("prod");

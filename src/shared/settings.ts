@@ -1,4 +1,5 @@
 import { load, type Store } from "@tauri-apps/plugin-store";
+import type { NamespaceScope } from "./ipc/types";
 
 const FILE = "settings.json";
 let store: Promise<Store> | null = null;
@@ -14,15 +15,20 @@ async function readNamespaces(): Promise<NamespaceMap> {
   return isNamespaceMap(v) ? v : {}; // a pre-map single string is simply forgotten
 }
 
+type ScopeMap = Record<string, NamespaceScope>;
+const isScope = (v: unknown): v is NamespaceScope =>
+  v === "all" || (Array.isArray(v) && v.length > 0 && v.every((x) => typeof x === "string"));
+const isMap = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
+
 export const settings = {
-  async get<T>(key: "lastContext" | "lastNamespace"): Promise<T | null> {
+  async get<T>(key: "lastContext" | "lastNamespace" | "lastScope"): Promise<T | null> {
     try {
       return (await (await open()).get<T>(key)) ?? null;
     } catch {
       return null;
     }
   },
-  async set(key: "lastContext" | "lastNamespace", value: unknown): Promise<void> {
+  async set(key: "lastContext" | "lastNamespace" | "lastScope", value: unknown): Promise<void> {
     try {
       await (await open()).set(key, value);
     } catch {
@@ -34,6 +40,19 @@ export const settings = {
   },
   async setLastNamespace(context: string, namespace: string): Promise<void> {
     await settings.set("lastNamespace", { ...(await readNamespaces()), [context]: namespace });
+  },
+  /** The context's remembered scope; a pre-scope `lastNamespace` string counts as a one-namespace scope. */
+  async getLastScope(context: string): Promise<NamespaceScope | null> {
+    const scopes = await settings.get<unknown>("lastScope");
+    const remembered = isMap(scopes) ? scopes[context] : undefined;
+    if (isScope(remembered)) return remembered;
+    const legacy = (await readNamespaces())[context];
+    return typeof legacy === "string" && legacy !== "" ? [legacy] : null;
+  },
+  async setLastScope(context: string, scope: NamespaceScope): Promise<void> {
+    const scopes = await settings.get<unknown>("lastScope");
+    const map: ScopeMap = isMap(scopes) ? (Object.fromEntries(Object.entries(scopes).filter(([, v]) => isScope(v))) as ScopeMap) : {};
+    await settings.set("lastScope", { ...map, [context]: scope });
   },
   async getSidebarCollapsed(): Promise<boolean> {
     try {

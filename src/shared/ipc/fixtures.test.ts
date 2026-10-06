@@ -7,6 +7,7 @@ import execMessage from "./fixtures/exec_message.json";
 import execPod from "./fixtures/exec_pod.json";
 import forward from "./fixtures/forward.json";
 import graph from "./fixtures/graph.json";
+import graphTooLarge from "./fixtures/graph_too_large.json";
 import graphDelta from "./fixtures/graph_delta.json";
 import logMessage from "./fixtures/log_message.json";
 import metricsUpdated from "./fixtures/metrics_updated.json";
@@ -28,6 +29,8 @@ describe("IPC fixtures match the TypeScript types", () => {
   it("context_info", () => expect(isContextInfo(contextInfo)).toBe(true));
   it("connect_info", () => expect(isConnectInfo(connectInfo)).toBe(true));
   it("graph", () => expect(isGraph(graph)).toBe(true));
+  it("graph_too_large", () => expect(isGraph(graphTooLarge)).toBe(true));
+  it("rejects a graph with a broken tooLarge", () => expect(isGraph({ nodes: [], edges: [], tooLarge: { nodes: "many", kinds: [] } })).toBe(false));
   it("graph_delta", () => expect(isGraphDelta(graphDelta)).toBe(true));
   it("object_details", () => expect(isObjectDetails(objectDetails)).toBe(true));
   it("object_events", () => expect(isObjectEvents(objectEvents)).toBe(true));

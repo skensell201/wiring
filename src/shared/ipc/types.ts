@@ -42,7 +42,14 @@ export interface GraphNode {
 
 export interface GraphEdge { id: string; source: NodeId; target: NodeId; relation: Relation }
 
-export interface Graph { nodes: GraphNode[]; edges: GraphEdge[] }
+/** Which namespaces the session watches: all of them, or a non-empty list. */
+export type NamespaceScope = "all" | string[];
+
+export interface KindStat { kind: Kind; count: number; worst: Status }
+/** Sent instead of the nodes of a graph with more than 1 500 nodes. */
+export interface TooLarge { nodes: number; kinds: KindStat[] }
+
+export interface Graph { nodes: GraphNode[]; edges: GraphEdge[]; tooLarge?: TooLarge }
 
 export interface GraphDelta {
   addedNodes: GraphNode[];
@@ -144,8 +151,14 @@ export function isGraphNode(v: unknown): v is GraphNode {
 export function isGraphEdge(v: unknown): v is GraphEdge {
   return isObj(v) && isStr(v.id) && isStr(v.source) && isStr(v.target) && oneOf(RELATIONS, v.relation);
 }
+function isKindStat(v: unknown): v is KindStat {
+  return isObj(v) && oneOf(KINDS, v.kind) && typeof v.count === "number" && oneOf(STATUSES, v.worst);
+}
+export function isTooLarge(v: unknown): v is TooLarge {
+  return isObj(v) && typeof v.nodes === "number" && arrayOf(v.kinds, isKindStat);
+}
 export function isGraph(v: unknown): v is Graph {
-  return isObj(v) && arrayOf(v.nodes, isGraphNode) && arrayOf(v.edges, isGraphEdge);
+  return isObj(v) && arrayOf(v.nodes, isGraphNode) && arrayOf(v.edges, isGraphEdge) && (v.tooLarge === undefined || isTooLarge(v.tooLarge));
 }
 export function isGraphDelta(v: unknown): v is GraphDelta {
   return isObj(v) && arrayOf(v.addedNodes, isGraphNode) && arrayOf(v.updatedNodes, isGraphNode)

@@ -1,5 +1,5 @@
 import { Channel, invoke } from "./tauri";
-import type { ConnectInfo, ContextInfo, ExecMessage, ExecPod, ExecRequest, Forward, Kind, LogMessage, LogRequest, NodeId, ObjectDetails, PortOption, Revision, Table, UpdateCheck } from "./types";
+import type { ConnectInfo, ContextInfo, ExecMessage, ExecPod, ExecRequest, Forward, Kind, LogMessage, LogRequest, NamespaceScope, NodeId, ObjectDetails, PortOption, Revision, Table, UpdateCheck } from "./types";
 import { toAppError } from "./types";
 
 async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
@@ -16,6 +16,9 @@ export const commands = {
   connect: (context: string) => call<ConnectInfo>("connect", { context }),
   disconnect: () => call<null>("disconnect"),
   selectNamespace: (namespace: string, expandedGroups: NodeId[]) => call<null>("select_namespace", { namespace, expandedGroups }),
+  selectNamespaces: (scope: NamespaceScope, expandedGroups: NodeId[]) =>
+    call<null>("select_namespaces", { namespaces: scope === "all" ? null : scope, expandedGroups }),
+  partialKinds: () => call<Kind[]>("partial_kinds"),
   setExpandedGroups: (expandedGroups: NodeId[]) => call<null>("set_expanded_groups", { expandedGroups }),
   getObject: (nodeId: NodeId) => call<ObjectDetails>("get_object", { nodeId }),
   watchEvents: (nodeId: NodeId | null) => call<null>("watch_events", { nodeId }),
