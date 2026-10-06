@@ -73,7 +73,7 @@ const DNS_SUBDOMAIN_MAX: usize = 253;
 /// alphanumerics, `-` and `.`, at most 253 characters, starting and ending alphanumeric.
 /// Catching it here gives a clearer message than the server's and never builds a URL from a
 /// name containing `/`.
-fn validate_dns_subdomain(field: &str, value: &str) -> AppResult<()> {
+pub(crate) fn validate_dns_subdomain(field: &str, value: &str) -> AppResult<()> {
     let alnum = |c: char| c.is_ascii_lowercase() || c.is_ascii_digit();
     let ok = value.len() <= DNS_SUBDOMAIN_MAX
         && value.chars().all(|c| alnum(c) || c == '-' || c == '.')

@@ -4,6 +4,7 @@ pub mod emitter;
 pub mod metrics;
 pub mod reducer;
 pub mod rollout;
+pub mod scope;
 pub mod shared;
 pub mod watch;
 pub mod write;
