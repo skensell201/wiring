@@ -100,6 +100,29 @@ fn namespaces_or_fallback(listed: Result<Vec<String>, kube::Error>, context_name
     }
 }
 
+/// `None` when the list did not answer within `limit`.
+async fn list_within(
+    limit: Duration,
+    fut: impl Future<Output = Result<Vec<String>, kube::Error>>,
+) -> Option<Result<Vec<String>, kube::Error>> {
+    tokio::time::timeout(limit, fut).await.ok()
+}
+
+/// A list that timed out is treated like a forbidden one: the version probe answered, so the
+/// server is up and the context's namespace is still browsable.
+fn namespaces_after_list(
+    listed: Option<Result<Vec<String>, kube::Error>>,
+    context_namespace: Option<&str>,
+) -> AppResult<(Vec<String>, bool)> {
+    match listed {
+        Some(listed) => namespaces_or_fallback(listed, context_namespace),
+        None => {
+            tracing::warn!("listing namespaces timed out; falling back to the context namespace");
+            Ok((context_namespace.map(str::to_owned).into_iter().collect(), false))
+        }
+    }
+}
+
 /// Map a client error, naming the exec plugin on `Auth` failures so the user learns which
 /// binary is missing or broken (spec §8) — kube's own message only carries the OS error.
 fn app_error_from_client(e: &kube::Error, exec_command: Option<&str>) -> AppError {
@@ -216,19 +239,22 @@ impl Session {
             .map_err(|e| AppError::internal(format!("client setup task failed: {e}")))?
             .map_err(|e| app_error_from_client(&e, exec_command.as_deref()))?;
 
-        let probe = async {
-            let version = client
+        let version = within(limit, &server, async {
+            client
                 .apiserver_version()
                 .await
-                .map_err(|e| app_error_from_client(&e, exec_command.as_deref()))?;
-            let listed = Api::<Namespace>::all(client.clone())
+                .map_err(|e| app_error_from_client(&e, exec_command.as_deref()))
+        })
+        .await?;
+        let namespaces_api = Api::<Namespace>::all(client.clone());
+        let listed = list_within(limit, async {
+            namespaces_api
                 .list(&ListParams::default())
                 .await
-                .map(|list| list.items.into_iter().filter_map(|n| n.metadata.name).collect::<Vec<_>>());
-            Ok::<_, AppError>((version, listed))
-        };
-        let (version, listed) = within(limit, &server, probe).await?;
-        let (namespaces, can_list_namespaces) = namespaces_or_fallback(listed, context_namespace.as_deref())?;
+                .map(|list| list.items.into_iter().filter_map(|n| n.metadata.name).collect::<Vec<_>>())
+        })
+        .await;
+        let (namespaces, can_list_namespaces) = namespaces_after_list(listed, context_namespace.as_deref())?;
 
         let info = ConnectInfo {
             context: context.to_string(),
@@ -846,6 +872,8 @@ mod tests {
     fn server_label_drops_credentials_and_trailing_slash() {
         assert_eq!(server_label("https://u:p@10.0.0.1:6443/"), "https://10.0.0.1:6443");
         assert_eq!(server_label("https://10.0.0.1:6443/"), "https://10.0.0.1:6443");
+        assert_eq!(server_label("https://u:p@[::1]:6443"), "https://[::1]:6443");
+        assert_eq!(server_label("10.0.0.1:6443/"), "10.0.0.1:6443");
     }
 
     #[tokio::test]
@@ -868,6 +896,21 @@ mod tests {
         assert_eq!(err.message, format!("timed out after 300 ms waiting for https://127.0.0.1:{port}"));
         assert!(started.elapsed() < Duration::from_secs(5), "{:?}", started.elapsed());
         drop(listener);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_namespace_list_timeout_falls_back_to_the_context_namespace() {
+        let listed = list_within(CONNECT_TIMEOUT, std::future::pending::<Result<Vec<String>, kube::Error>>()).await;
+        assert!(listed.is_none());
+        assert_eq!(
+            namespaces_after_list(listed, Some("team-a")).unwrap(),
+            (vec!["team-a".to_string()], false)
+        );
+        let answered = list_within(CONNECT_TIMEOUT, async { Ok(vec!["a".to_string()]) }).await;
+        assert_eq!(
+            namespaces_after_list(answered, Some("team-a")).unwrap(),
+            (vec!["a".to_string()], true)
+        );
     }
 
     #[test]
