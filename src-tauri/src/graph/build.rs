@@ -371,11 +371,12 @@ fn link_causes(nodes: &mut HashMap<NodeId, Node>, edges: &[Edge]) {
             let relation = match n.kind {
                 Kind::Deployment | Kind::StatefulSet | Kind::DaemonSet | Kind::ReplicaSet | Kind::Job | Kind::CronJob => Relation::Owns,
                 Kind::Service => Relation::Selects,
-                // A pod stuck because its node is down: the node is the cause.
+                // A pod stuck because its node is down: the node is the cause. Pods on a
+                // NotReady node usually stay Running but not Ready, or hang in Terminating.
                 Kind::Pod
                     if n.problem
                         .as_ref()
-                        .is_some_and(|p| matches!(p.reason.as_str(), "Pending" | "Unknown")) =>
+                        .is_some_and(|p| matches!(p.reason.as_str(), "Pending" | "Unknown" | "Not ready" | "Terminating")) =>
                 {
                     Relation::RunsOn
                 }
@@ -422,6 +423,50 @@ mod tests {
         assert_eq!(p.cause.as_deref(), Some("Node//node-b"));
         let other = g.nodes.iter().find(|n| n.id == "Pod/t/other-1").and_then(|n| n.problem.as_ref());
         assert!(other.is_none_or(|p| p.cause.is_none()), "a healthy node causes nothing");
+    }
+
+    #[test]
+    fn a_running_not_ready_or_terminating_pod_on_a_not_ready_node_points_at_the_node() {
+        use crate::store::Object;
+        use k8s_openapi::api::core::v1::{PodCondition, PodStatus};
+        use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
+        let base = Store::from_fixture("graph-extras").unwrap();
+        let client = || {
+            let Some(Object::Pod(p)) = base
+                .iter_kind(Kind::Pod)
+                .find(|o| o.meta().name.as_deref() == Some("client-1"))
+                .cloned()
+            else {
+                panic!("client-1 in the fixture")
+            };
+            p
+        };
+        let cause = |pod| {
+            let mut s = base.clone();
+            s.upsert(Object::Pod(pod));
+            let g = build(&s, &BuildOptions::default());
+            let p = g
+                .nodes
+                .iter()
+                .find(|n| n.id == "Pod/s/client-1")
+                .and_then(|n| n.problem.clone())
+                .unwrap();
+            (p.reason, p.cause)
+        };
+        let mut running = client();
+        running.status = Some(PodStatus {
+            phase: Some("Running".into()),
+            conditions: Some(vec![PodCondition {
+                type_: "Ready".into(),
+                status: "False".into(),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        });
+        assert_eq!(cause(running.clone()), ("Not ready".into(), Some("Node//node-b".into())));
+        let mut terminating = running;
+        terminating.metadata.deletion_timestamp = Some(Time("2026-10-06T10:00:00Z".parse().unwrap()));
+        assert_eq!(cause(terminating), ("Terminating".into(), Some("Node//node-b".into())));
     }
 
     fn edge_ids(g: &Graph) -> Vec<&str> {
