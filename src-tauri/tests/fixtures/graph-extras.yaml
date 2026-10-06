@@ -110,3 +110,7 @@ spec: { unschedulable: true }
 status:
   nodeInfo: { architecture: arm64, bootID: b, containerRuntimeVersion: c, kernelVersion: k, kubeProxyVersion: v1.36.1, kubeletVersion: v1.36.1, machineID: m, operatingSystem: linux, osImage: Linux, systemUUID: u }
   conditions: [ { type: Ready, status: "True" } ]
+---
+apiVersion: v1
+kind: Node
+metadata: { name: node-e }

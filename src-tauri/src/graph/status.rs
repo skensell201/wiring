@@ -91,8 +91,8 @@ fn node_pressure(n: &Node) -> Option<&NodeCondition> {
         .find(|c| NODE_PRESSURE.contains(&c.type_.as_str()) && c.status == "True")
 }
 
-/// Not ready -> err; a pressure condition or a cordon -> warn. A node without a Ready condition (hand-written
-/// fixtures) counts as ok.
+/// Not ready -> err; a pressure condition or a cordon -> warn. A node without a Ready condition
+/// (just registered, or hand-written fixtures) is unknown.
 fn node(n: &Node) -> (Status, Badges) {
     let not_ready = node_conditions(n).iter().any(|c| c.type_ == "Ready" && c.status != "True");
     let mut badges = vec![super::rows::node_ready_text(n)];
@@ -107,12 +107,16 @@ fn node(n: &Node) -> (Status, Badges) {
     if cordoned {
         badges.push("SchedulingDisabled".into());
     }
+    let reports_ready = node_conditions(n).iter().any(|c| c.type_ == "Ready");
     let status = if not_ready {
         Status::Err
     } else if pressure.is_some() || cordoned {
         Status::Warn
-    } else {
+    } else if reports_ready {
         Status::Ok
+    } else {
+        // No Ready condition (yet): its label says "Unknown", so its colour does too.
+        Status::Unknown
     };
     (status, badges)
 }
@@ -998,6 +1002,15 @@ mod tests {
         );
         let get = |key: &str| summary(node).into_iter().find(|(k, _)| k == key).map(|(_, v)| v);
         assert_eq!(get("Status").as_deref(), Some("Ready,SchedulingDisabled"));
+    }
+
+    #[test]
+    fn a_node_without_a_ready_condition_is_unknown() {
+        let s = Store::from_fixture("graph-extras").unwrap();
+        let node = s.find(Kind::Node, None, "node-e").unwrap();
+        let (st, badges) = describe(node, &s);
+        assert_eq!((st, badges[0].as_str()), (Status::Unknown, "Unknown"));
+        assert_eq!(problem(node, st, &s), None, "Unknown is below Warn: no problem");
     }
 
     #[test]

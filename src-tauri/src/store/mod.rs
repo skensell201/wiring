@@ -397,7 +397,7 @@ mod tests {
     fn the_extras_fixture_loads() {
         let s = Store::from_fixture("graph-extras").unwrap();
         assert_eq!(s.iter_kind(Kind::NetworkPolicy).count(), 2);
-        assert_eq!(s.iter_kind(Kind::Node).count(), 4);
+        assert_eq!(s.iter_kind(Kind::Node).count(), 5);
         assert!(
             s.find(Kind::ClusterRole, Some("ignored"), "view").is_some(),
             "cluster-scoped lookups ignore the namespace"
