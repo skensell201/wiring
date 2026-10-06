@@ -11,6 +11,8 @@ The JSON fixtures in `src/shared/ipc/fixtures/` are the authoritative payload sh
 | `Relation` | `owns`, `selects`, `routes`, `mounts`, `envFrom`, `claims`, `binds`, `usesSA`, `scales`, `applies`, `allows`, `grants`, `subject`, `runsOn` |
 | `ErrorKind` | `auth`, `network`, `forbidden`, `notFound`, `conflict`, `invalid`, `internal` — `conflict` is HTTP 409 (stale `resourceVersion` on a write); `invalid` is HTTP 400/422 (the message is the server's, listing the bad fields) |
 | `ConnectionState` | `connected`, `degraded`, `disconnected` |
+| `SourceOrigin` | `env`, `default`, `added` |
+| `SourceState` | `ok`, `missing`, `invalid`, `empty` |
 
 ## Commands (`invoke`)
 
@@ -182,7 +184,7 @@ never logged.
 
 `contexts` counts the file's own contexts, before the first-file-wins merge that `list_contexts` does. `error` is a short description of why the file could not be read: the OS error (e.g. `permission denied`), or `not a valid kubeconfig (line N, column M)`; it never contains the file's content. It is `null` unless `state` is `invalid`.
 
-On macOS and Linux the backend sets its `PATH` at startup from the login shell: it runs `$SHELL -i -l -c` (falling back to `/bin/zsh` on macOS and `/bin/sh` on Linux; fish gets its list-valued `$PATH` joined with `:`) and gives it 3 s. The resulting `PATH` is the login shell's entries first, then the app's own, then those of the common tool directories that exist (`/opt/homebrew/bin`, `/usr/local/bin`, `~/.local/bin`, `~/google-cloud-sdk/bin`), without duplicates. When the shell fails or does not answer in time, only the app's own entries and the common directories are used. The shell is skipped the same way when the app was started from a terminal, which already has that shell's `PATH`. Any processes the shell leaves behind are killed. This way kubeconfig exec plugins are found when the app is started from the Dock or a launcher.
+On macOS and Linux the backend takes the login shell's `PATH` at startup, so kubeconfig exec plugins are found when the app is started from the Dock or a launcher (details in `src-tauri/src/shell_path.rs`).
 
 ## Settings file
 

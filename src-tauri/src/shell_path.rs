@@ -4,6 +4,15 @@
 //! exec plugins installed with Homebrew or a cloud SDK (`gke-gcloud-auth-plugin`, `aws`,
 //! `kubelogin`) are not found. At startup, before any kubeconfig is read, the app asks the
 //! user's login shell for its `PATH` and merges it into its own.
+//!
+//! The shell is run as `$SHELL -i -l -c` (`/bin/zsh` on macOS and `/bin/sh` elsewhere when `SHELL`
+//! is unset; fish gets `string join : $PATH` because its `PATH` is a list) and has
+//! [`SHELL_TIMEOUT`] to answer. The result is the login shell's entries first, then the app's own,
+//! then those of the common tool directories that exist, without duplicates. When the shell fails
+//! or times out, only the app's entries and the common directories are used. The shell is skipped
+//! the same way when stdout is a terminal (the app was started from a shell that already has its
+//! `PATH`). The shell's whole process group is killed on timeout and after a successful answer, so
+//! background jobs from its rc files cannot linger.
 
 use std::collections::HashSet;
 use std::io::{IsTerminal, Read};

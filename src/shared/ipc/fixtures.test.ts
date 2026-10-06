@@ -47,6 +47,10 @@ describe("IPC fixtures match the TypeScript types", () => {
   it("context_info", () => expect(isContextInfo(contextInfo)).toBe(true));
   it("kubeconfig_source", () => expect(isKubeconfigSource(kubeconfigSource)).toBe(true));
   it("rejects a kubeconfig source with an unknown state", () => expect(isKubeconfigSource({ ...kubeconfigSource, state: "broken" })).toBe(false));
+  it("rejects a kubeconfig source with a negative or fractional context count", () => {
+    expect(isKubeconfigSource({ ...kubeconfigSource, contexts: -1 })).toBe(false);
+    expect(isKubeconfigSource({ ...kubeconfigSource, contexts: 1.5 })).toBe(false);
+  });
   it("connect_info", () => expect(isConnectInfo(connectInfo)).toBe(true));
   it("graph", () => expect(isGraph(graph)).toBe(true));
   it("accepts a graph with policies, RBAC and nodes", () => expect(isGraph(graphExtras)).toBe(true));

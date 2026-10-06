@@ -206,7 +206,7 @@ export function isConnectInfo(v: unknown): v is ConnectInfo {
 }
 export function isKubeconfigSource(v: unknown): v is KubeconfigSource {
   return isObj(v) && isStr(v.path) && oneOf(SOURCE_ORIGINS, v.origin) && oneOf(SOURCE_STATES, v.state)
-    && typeof v.contexts === "number" && isStrOrNull(v.error);
+    && Number.isInteger(v.contexts) && (v.contexts as number) >= 0 && isStrOrNull(v.error);
 }
 export function isObjectDetails(v: unknown): v is ObjectDetails {
   return isObj(v) && isStr(v.yaml) && Array.isArray(v.summary)
