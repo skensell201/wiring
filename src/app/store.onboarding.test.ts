@@ -176,6 +176,8 @@ describe("too-large switch notice", () => {
     expect(useAppStore.getState().view).toEqual({ name: "table", kind: "Deployment" });
     expect(notices()).toHaveLength(1);
     expect(notices()[0]).toMatchObject({ kind: "info", message: expect.stringContaining("1,873 objects") });
+    // One namespace cannot be narrowed further, so the toast does not suggest it.
+    expect(notices()[0].message).not.toContain("Pick fewer");
 
     // Back to the graph, another rebuild of the same scope: switched again, not said again.
     useAppStore.getState().showGraph();
@@ -193,5 +195,11 @@ describe("too-large switch notice", () => {
     useAppStore.setState({ view: { name: "table", kind: "Pod" }, connection: { ...initialState().connection, context: "prod", state: "connected", scope: ["shop"] } });
     useAppStore.getState().applySnapshot(big);
     expect(notices()).toHaveLength(0);
+  });
+
+  it("suggests fewer namespaces only when there are several", () => {
+    useAppStore.setState({ connection: { ...initialState().connection, context: "prod", state: "connected", scope: ["shop", "blog"] } });
+    useAppStore.getState().applySnapshot(big);
+    expect(notices()[0].message).toContain("Pick fewer namespaces to see the graph.");
   });
 });

@@ -10,7 +10,7 @@ import type {
   HelmRelease, HelmReleaseDetails, KubeconfigSource, ResourceRef, Status, Table, TooLarge,
 } from "../shared/ipc/types";
 import { toAppError } from "../shared/ipc/types";
-import { firstNamespace, inScope } from "../shared/scope";
+import { firstNamespace, inScope, isMulti } from "../shared/scope";
 import { settings } from "../shared/settings";
 import { cancelTableRefresh } from "./tableRefresh";
 import { connectContext } from "../features/cluster/connectContext";
@@ -477,7 +477,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
         set({ tooLargeNotified: key });
         get().toast({
           kind: "info",
-          message: `${s.tooLarge.nodes.toLocaleString("en-US")} objects are too many to draw, so Wiring shows tables. Pick fewer namespaces to see the graph.`,
+          message: `${s.tooLarge.nodes.toLocaleString("en-US")} objects are too many to draw, so Wiring shows tables.${isMulti(sc) ? " Pick fewer namespaces to see the graph." : ""}`,
         });
       }
     }

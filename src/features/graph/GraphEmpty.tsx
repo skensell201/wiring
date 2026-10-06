@@ -19,13 +19,20 @@ export function GraphEmpty({ state }: { state: GraphSituation }) {
       return <EmptyState overlay icon={Layers} title="Choose a namespace" primary={pick("Choose a namespace")}>{noNamespaceBody(state.canListNamespaces)}</EmptyState>;
     case "loading":
       return <EmptyState overlay spinning icon={LoaderCircle} title={`Loading ${state.scope}…`} />;
-    case "tooLarge":
-      return (
-        <EmptyState overlay icon={Network} title="Too many objects to draw" primary={pick("Pick fewer namespaces")}
-          secondary={{ label: "Open tables", onClick: () => void a.showTable(a.lastTableKind ?? "Deployment") }}>
-          {`${state.count.toLocaleString("en-US")} objects in ${state.scope}. Use the tables, or pick fewer namespaces.`}
+    case "tooLarge": {
+      const openTables = { label: "Open tables", onClick: () => void a.showTable(a.lastTableKind ?? "Deployment") };
+      const count = `${state.count.toLocaleString("en-US")} objects in ${state.scope}.`;
+      // One namespace cannot be narrowed: the tables are the way out.
+      return state.canNarrow ? (
+        <EmptyState overlay icon={Network} title="Too many objects to draw" primary={pick("Pick fewer namespaces")} secondary={openTables}>
+          {`${count} Use the tables, or pick fewer namespaces.`}
+        </EmptyState>
+      ) : (
+        <EmptyState overlay icon={Network} title="Too many objects to draw" primary={openTables}>
+          {`${count} Use the tables.`}
         </EmptyState>
       );
+    }
     case "noAccess":
       return (
         <EmptyState overlay icon={ShieldOff} title="No access" primary={another}>

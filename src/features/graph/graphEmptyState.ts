@@ -1,5 +1,5 @@
 import { KINDS, type GraphNode, type Kind, type NamespaceScope, type NodeId, type TooLarge } from "../../shared/ipc/types";
-import { scopeLabel } from "../../shared/scope";
+import { isMulti, scopeLabel } from "../../shared/scope";
 import { matchesSearch } from "./toFlow";
 
 /** Kinds that live outside any namespace: their RBAC and rows do not depend on the scope. */
@@ -19,7 +19,8 @@ export function noNamespaceBody(canListNamespaces: boolean): string {
 export type GraphSituation =
   | { type: "noNamespace"; canListNamespaces: boolean }
   | { type: "loading"; scope: string }
-  | { type: "tooLarge"; count: number; scope: string }
+  /** `canNarrow`: the scope has several namespaces, so picking fewer is a way out. */
+  | { type: "tooLarge"; count: number; scope: string; canNarrow: boolean }
   | { type: "noAccess"; scope: string }
   /** `restricted`: some kinds are denied or only partly listed, so "empty" may not be the whole story. */
   | { type: "empty"; scope: string; restricted: boolean }
@@ -50,7 +51,7 @@ export function graphEmptyState(i: GraphEmptyInput): GraphSituation | null {
   if (i.scope === null) return { type: "noNamespace", canListNamespaces: i.canListNamespaces };
   const scope = scopeLabel(i.scope, i.namespaces) ?? "";
   if (!i.graphReady) return { type: "loading", scope };
-  if (i.tooLarge) return { type: "tooLarge", count: i.tooLarge.nodes, scope };
+  if (i.tooLarge) return { type: "tooLarge", count: i.tooLarge.nodes, scope, canNarrow: isMulti(i.scope) };
   if (i.nodes.size === 0) {
     // Denied kinds arrive after the snapshot; until then "empty" might really be "no access".
     if (!i.deniedLoaded) return { type: "loading", scope };

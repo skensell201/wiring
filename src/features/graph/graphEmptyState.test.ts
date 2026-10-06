@@ -25,7 +25,11 @@ describe("graphEmptyState", () => {
 
   it("puts too large before no access", () => {
     expect(graphEmptyState(input({ tooLarge: { nodes: 1873, kinds: [] }, deniedKinds: allDenied, nodes: new Map() })))
-      .toEqual({ type: "tooLarge", count: 1873, scope: "shop" });
+      .toEqual({ type: "tooLarge", count: 1873, scope: "shop", canNarrow: false });
+    // Only a scope of several namespaces can be narrowed.
+    const big = { nodes: 1873, kinds: [] };
+    expect(graphEmptyState(input({ tooLarge: big, scope: ["shop", "blog"], namespaces: ["shop", "blog"] }))).toMatchObject({ type: "tooLarge", canNarrow: true });
+    expect(graphEmptyState(input({ tooLarge: big, scope: "all", namespaces: ["shop", "blog"] }))).toMatchObject({ type: "tooLarge", canNarrow: true });
   });
 
   it("says no access when every namespaced kind is denied, before empty", () => {
