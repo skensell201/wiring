@@ -13,6 +13,25 @@ Windows signing uses Azure Artifact Signing. Since June 2023, code-signing certi
 >
 > If you are not eligible, buy an OV or EV code-signing certificate from a CA that offers cloud signing, such as SSL.com eSigner or DigiCert KeyLocker. Then replace the `signCommand` written by the *Configure Windows signing* step in the workflow with that CA's signing tool. Tauri runs whatever command you give it, with `%1` replaced by the file to sign.
 
+## Checking what is configured
+
+The workflow needs no change to start signing: it looks for the secrets and picks them up. Only the secrets are missing, and they can be set at any time — the next release after that is signed.
+
+```bash
+gh secret list              # the secret names GitHub holds (their values stay hidden)
+gh variable list            # the variables: the Azure endpoints and the certificate profile
+```
+
+| Secret | Signs |
+|---|---|
+| `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY` | The macOS app, with a Developer ID |
+| `APPLE_ID`, `APPLE_PASSWORD`, `APPLE_TEAM_ID` | The macOS app's notarization |
+| `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`, `AZURE_TENANT_ID` | The Windows app and both installers |
+
+Without the three notarization secrets the app is signed but not notarized, and Gatekeeper still blocks it. The run log says which of the two happened.
+
+Until macOS is signed, the first-launch workarounds in the [README's install section](../README.md#install) are the way past the Gatekeeper dialog.
+
 ## macOS
 
 ### 1. Create the certificate

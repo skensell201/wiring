@@ -49,10 +49,30 @@ Download the latest installer from [**Releases**](https://github.com/skensell201
 
 | Platform | File | First launch |
 |---|---|---|
-| macOS (Apple Silicon and Intel) | `Wiring_<version>_universal.dmg` | The build is unsigned. After copying to Applications, run `xattr -d com.apple.quarantine /Applications/Wiring.app`, or right-click the app and choose **Open**. |
+| macOS (Apple Silicon and Intel) | `Wiring_<version>_universal.dmg` | The build is unsigned, so macOS asks you to confirm it the first time. See [macOS asks you to confirm the app](#macos-asks-you-to-confirm-the-app). |
 | Windows 10/11 | `Wiring_<version>_x64_en-US.msi` or `Wiring_<version>_x64-setup.exe` | The build is unsigned. When SmartScreen appears, choose **More info → Run anyway**. |
 
 The Windows installer wears Wiring's own dark theme.
+
+### macOS asks you to confirm the app
+
+Wiring for macOS is not signed with a Developer ID yet, so Gatekeeper stops the app the first time you open it and says that the file could not be verified, that Apple could not check it for malicious software. That is the expected message for an unsigned build, not a damaged download. Three ways past it, easiest first:
+
+- **Right-click, then Open.** In the Finder, right-click `Wiring.app` in Applications and choose **Open**. The follow-up dialog has an **Open** button too, and the app opens without asking again.
+- **Clear the quarantine flag.** The browser marks the download; this clears the mark:
+
+  ```bash
+  xattr -dr com.apple.quarantine /Applications/Wiring.app
+  ```
+
+- **Download it from a terminal.** The quarantine mark is set by the browser, not by the download itself, so fetching the `.dmg` with `curl` leaves it off and the app opens without any prompt:
+
+  ```bash
+  curl -L -O https://github.com/skensell201/wiring/releases/download/v<version>/Wiring_<version>_universal.dmg
+  hdiutil attach Wiring_<version>_universal.dmg
+  cp -R /Volumes/Wiring*/Wiring.app /Applications/
+  hdiutil detach /Volumes/Wiring*
+  ```
 
 <!-- #endregion install -->
 
