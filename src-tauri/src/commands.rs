@@ -71,6 +71,13 @@ fn all_kubeconfig_paths(app: &AppHandle) -> Vec<PathBuf> {
     all_kubeconfig_sources(app).into_iter().map(|(p, _)| p).collect()
 }
 
+/// The running app's version, as the bundle carries it. The title bar shows it, so it comes
+/// from the bundle rather than from a constant the frontend could drift away from.
+#[tauri::command]
+pub fn app_version(app: AppHandle) -> String {
+    app.package_info().version.to_string()
+}
+
 #[tauri::command]
 pub fn list_contexts(app: AppHandle) -> AppResult<Vec<ContextInfo>> {
     kubeconfig::list_contexts(&all_kubeconfig_paths(&app))
@@ -468,6 +475,7 @@ pub fn register(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wr
         .manage(AppState::default())
         .manage(crate::updates::UpdateState::default())
         .invoke_handler(tauri::generate_handler![
+            app_version,
             list_contexts,
             add_kubeconfig,
             kubeconfig_sources,

@@ -3,6 +3,21 @@
 The notes of every release. The release workflow copies the section of the tagged version into
 the GitHub release, and the app shows those notes before it installs an update.
 
+## 0.6.1
+
+- The MSI carries the icon again. The .ico files held PNG images, and the Windows Installer
+  reads the icon out of an MSI with the old icon API, which cannot decode a PNG: it fell back to
+  the generic installer icon. The icons now carry BMP payloads, which is what the installer, the
+  app and the Windows shell all read.
+- The title bar has no navigator button any more: the navigator collapses from its own footer,
+  next to the version. The brand in the middle of the title bar no longer changes when the
+  navigator collapses, so it stays where it is instead of swapping itself for a letter.
+- The version moved to the navigator's footer and comes from the bundle, so it is the version
+  that is actually running.
+- The site's badge takes the version and the headline from the published release, so it cannot
+  fall behind the release it points at.
+- The title bar's controls are all the same height now.
+
 ## 0.6.0
 
 - The YAML editor works again. The built app gave the page a content-security nonce, and a nonce

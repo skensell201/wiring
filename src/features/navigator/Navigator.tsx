@@ -1,6 +1,8 @@
 import { ChevronsLeft, ChevronsRight, Waypoints } from "lucide-react";
+import { useEffect, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { useAppStore } from "../../app/store";
+import { commands } from "../../shared/ipc/commands";
 import { Dot } from "../../shared/ui/Dot";
 import { Button } from "../../shared/ui/Button";
 import { useUpdateStore } from "../update/updateStore";
@@ -10,6 +12,25 @@ import { SECTION_ICONS } from "./sectionIcons";
 
 const RAIL_BTN = "grid size-8 place-items-center rounded-lg text-text-muted hover:bg-surface hover:text-text-hi";
 
+/** The running app's version, from the bundle. The build-time constant is the fallback, so the
+ *  label is there even when the call fails. */
+function useAppVersion(): string {
+  const [version, setVersion] = useState<string | null>(null);
+  useEffect(() => {
+    let live = true;
+    void commands
+      .appVersion()
+      .then((v) => {
+        if (live) setVersion(v);
+      })
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, []);
+  return version ?? __APP_VERSION__;
+}
+
 /** Left sidebar: the resource tree and a collapse toggle. Collapses to a 48 px icon rail. */
 export function Navigator() {
   const { collapsed, context, state, view, toggleSidebar, showGraph } = useAppStore(
@@ -18,6 +39,7 @@ export function Navigator() {
       toggleSidebar: s.toggleSidebar, showGraph: s.showGraph,
     })),
   );
+  const version = useAppVersion();
 
   if (collapsed) {
     const activeSection = view.name === "table" ? sectionOf(view.kind)?.id : undefined;
@@ -51,19 +73,17 @@ export function Navigator() {
       <div className="min-h-0 flex-1 overflow-y-auto px-1 pb-3 pt-2">
         {context ? <ResourceTree /> : <EmptyZone />}
       </div>
-      <RailToggle collapsed={false} onClick={() => void toggleSidebar()} />
+      <RailToggle collapsed={false} version={version} onClick={() => void toggleSidebar()} />
     </aside>
   );
 }
 
-/** The navigator's empty space: no cluster yet, so it carries the version and the update check
- *  instead of a tree. */
+/** The navigator's empty space: no cluster yet, so it carries the update check instead of a tree. */
 function EmptyZone() {
   return (
     <div className="px-4 pt-6">
       <p className="text-sm text-text-muted">Choose a cluster in the header to browse its resources.</p>
-      <div className="mt-6 flex items-center justify-between gap-2 border-t border-border pt-4">
-        <span className="text-xs text-text-muted">Version {__APP_VERSION__}</span>
+      <div className="mt-6 border-t border-border pt-4">
         <Button className="px-3 py-1 text-xs" onClick={() => void useUpdateStore.getState().check(true)}>
           Check for updates
         </Button>
@@ -72,11 +92,12 @@ function EmptyZone() {
   );
 }
 
-function RailToggle({ collapsed, onClick }: { collapsed: boolean; onClick: () => void }) {
+function RailToggle({ collapsed, version, onClick }: { collapsed: boolean; version?: string; onClick: () => void }) {
   const label = collapsed ? "Expand navigator" : "Collapse navigator";
   const Icon = collapsed ? ChevronsRight : ChevronsLeft;
   return (
-    <div className={`flex shrink-0 border-t border-border p-3 ${collapsed ? "justify-center" : "justify-end"}`}>
+    <div className={`flex shrink-0 items-center gap-2 border-t border-border p-3 ${collapsed ? "justify-center" : "justify-between"}`}>
+      {!collapsed && version && <span className="truncate text-xs text-text-muted">Version {version}</span>}
       <button type="button" title={label} aria-label={label} onClick={onClick} className={RAIL_BTN}>
         <Icon className="size-4" />
       </button>

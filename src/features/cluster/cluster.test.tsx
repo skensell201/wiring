@@ -252,28 +252,27 @@ describe("Header", () => {
     expect(reconnect).toHaveBeenCalled();
   });
 
-  it("the navigator toggle collapses and expands the navigator", () => {
-    const toggleSidebar = vi.fn(async () => {});
-    useAppStore.setState({ contexts: [], connection: { ...initialState().connection }, toggleSidebar });
-    const { unmount } = render(<Header />);
-    fireEvent.click(screen.getByRole("button", { name: /collapse navigator/i }));
-    expect(toggleSidebar).toHaveBeenCalledTimes(1);
-    unmount();
-
-    useAppStore.setState({ sidebarCollapsed: true });
-    render(<Header />);
-    fireEvent.click(screen.getByRole("button", { name: /expand navigator/i }));
-    expect(toggleSidebar).toHaveBeenCalledTimes(2);
-  });
-
-  it("the navigator toggle says whether the navigator is open", () => {
+  it("has no navigator toggle in the title bar", () => {
+    // The navigator collapses from its own footer, so the title bar stays a place for the
+    // session and the search, and the brand never moves.
     useAppStore.setState({ sidebarCollapsed: false });
     const { unmount } = render(<Header />);
-    expect(screen.getByRole("button", { name: /collapse navigator/i })).toHaveAttribute("aria-expanded", "true");
+    expect(screen.queryByRole("button", { name: /navigator/i })).not.toBeInTheDocument();
     unmount();
     useAppStore.setState({ sidebarCollapsed: true });
     render(<Header />);
-    expect(screen.getByRole("button", { name: /expand navigator/i })).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByRole("button", { name: /navigator/i })).not.toBeInTheDocument();
+  });
+
+  it("keeps the brand the same whether the navigator is collapsed", () => {
+    useAppStore.setState({ sidebarCollapsed: false });
+    const { unmount } = render(<Header />);
+    const open = screen.getByText("Wiring");
+    unmount();
+    useAppStore.setState({ sidebarCollapsed: true });
+    render(<Header />);
+    expect(screen.getByText("Wiring")).toBeTruthy();
+    expect(open).toBeTruthy();
   });
 
   it("+ Create opens the create dialog, and is disabled until a namespace is selected", () => {

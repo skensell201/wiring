@@ -66,7 +66,7 @@ export function ForwardsIndicator() {
   return (
     <div className="no-drag relative">
       <button ref={button} type="button" aria-label="Port forwards" aria-haspopup="dialog" aria-expanded={open} onClick={() => setOpen(!open)}
-        className="flex items-center gap-1.5 rounded-xl border border-border-strong bg-surface px-3 py-1.5 text-sm font-medium text-text-hi hover:bg-muted">
+        className="flex h-9 items-center gap-1.5 rounded-xl border border-border-strong bg-surface px-3 text-sm font-medium text-text-hi hover:bg-muted">
         <ArrowLeftRight className="size-4" /> {forwards.length}
       </button>
       {shown && createPortal(

@@ -20,6 +20,7 @@ Argument names are camelCase on the JS side; Tauri maps them to the Rust snake_c
 
 | Command | Args | Returns |
 |---|---|---|
+| `app_version` | — | `string` — the running app's version, as the bundle carries it (e.g. `"0.6.1"`). The navigator's footer shows it |
 | `list_contexts` | — | `ContextInfo[]` |
 | `add_kubeconfig` | `{ path }` | `ContextInfo[]` — rejects with `AppError` when the file is missing (`notFound`: "`<path>` does not exist"), unreadable or unparseable (`internal`: "`<path>`: invalid kubeconfig (`<reason>`)", the reason as in `KubeconfigSource.error`), defines no contexts (`invalid`: "`<file name>` has no contexts") or is already loaded, as a `$KUBECONFIG` entry, `~/.kube/config` or a file added before (`invalid`: "`<file name>` is already loaded"; paths compare canonicalised where they exist); a rejected file is not saved |
 | `kubeconfig_sources` | — | `KubeconfigSource[]` — one per kubeconfig path, in load order (see [Kubeconfig sources](#kubeconfig-sources)) |
@@ -50,7 +51,7 @@ Argument names are camelCase on the JS side; Tauri maps them to the Rust snake_c
 
 Every session-scoped command — `select_namespaces`, `set_expanded_groups`, `get_object`, `watch_events`, `denied_kinds`, `partial_kinds`, `list_rows`, `custom_kinds`, `refresh_custom_kinds`, `list_custom`, `stop_custom`, `helm_releases`, `helm_release`, `update_object`, `create_object`, `delete_object`, `scale_object`, `restart_object`, `rollout_history`, `rollback_object`, `start_logs`, `stop_logs`, `exec_pods`, `start_exec`, `exec_input`, `exec_resize`, `stop_exec`, `forward_ports` and `start_forward` — rejects with `internal` ("not connected") when there is no active session.
 
-The commands that work without one: `list_contexts`, `kubeconfig_sources`, `add_kubeconfig`, `connect`, `disconnect`, `save_text` and `suggest_local_port` (a pure function). `stop_forward` is a no-op without a session (the forward is gone either way) and `open_forward` rejects with `notFound`, naming the forward it could not find.
+The commands that work without one: `app_version`, `list_contexts`, `kubeconfig_sources`, `add_kubeconfig`, `connect`, `disconnect`, `save_text` and `suggest_local_port` (a pure function). `stop_forward` is a no-op without a session (the forward is gone either way) and `open_forward` rejects with `notFound`, naming the forward it could not find.
 
 ### Writes
 

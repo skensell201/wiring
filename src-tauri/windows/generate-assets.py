@@ -16,11 +16,16 @@ Requires Google Chrome (headless) and sips (macOS). The script writes:
     src-tauri/windows/wiring-btn-next.bmp   88x26    what NSIS embeds
     src-tauri/windows/wiring-btn-finish.png 88x26    primary action, "Finish"
     src-tauri/windows/wiring-btn-finish.bmp 88x26    what NSIS embeds
-    src-tauri/icons/icon-flat.ico           16/24/32/48/64/256, flat mark, PNG payloads
+    src-tauri/icons/icon-flat.ico           16/24/32/48/64/256, flat mark, BMP payloads
 
 NSIS cannot load PNG branding images and rejects top-down bitmaps
 (!pragma verifyloadimage), so every bitmap is also written as a bottom-up
 24-bit Windows bitmap.
+
+The .ico files carry BMP payloads, not PNG ones: the Windows Installer reads
+the icon out of an MSI with the old icon API, which cannot decode a PNG, and
+falls back to the generic installer icon when it finds one. Explorer itself
+reads PNG icons fine, so the bug only shows on the MSI.
 """
 
 import base64
@@ -28,6 +33,7 @@ import os
 import struct
 import subprocess
 import sys
+import zlib
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 WIN = os.path.join(REPO, "src-tauri", "windows")
@@ -141,19 +147,91 @@ def png_to_bottom_up_bmp(png_path: str, bmp_path: str) -> None:
     open(bmp_path, "wb").write(bytes(out))
 
 
-def pack_ico(paths: list[tuple[int, str]], ico_path: str) -> None:
-    """Pack PNG payloads into an ICO container (6-byte header + 16-byte entries)."""
-    images = []
-    for size, png in paths:
-        images.append((size, open(png, "rb").read()))
-    images.sort(key=lambda item: item[0])
+def decode_png(data: bytes) -> tuple[int, int, bytes]:
+    """The pixels of an 8-bit PNG (RGB or RGBA), as RGBA rows. Chrome writes those."""
+    if data[:8] != b"\x89PNG\r\n\x1a\n":
+        raise SystemExit("not a PNG")
+    pos = 8
+    idat = b""
+    width = height = 0
+    color = 0
+    while pos + 8 <= len(data):
+        length = int.from_bytes(data[pos : pos + 4], "big")
+        kind = data[pos + 4 : pos + 8]
+        chunk = data[pos + 8 : pos + 8 + length]
+        pos += 12 + length
+        if kind == b"IHDR":
+            width = int.from_bytes(chunk[0:4], "big")
+            height = int.from_bytes(chunk[4:8], "big")
+            depth, color, _, _, interlace = chunk[8], chunk[9], chunk[10], chunk[11], chunk[12]
+            if depth != 8 or interlace != 0:
+                raise SystemExit("only 8-bit, non-interlaced PNGs")
+            if color not in (2, 6):
+                raise SystemExit("only RGB and RGBA PNGs")
+        elif kind == b"IDAT":
+            idat += chunk
+        elif kind == b"IEND":
+            break
 
-    header = struct.pack("<HHH", 0, 1, len(images))
-    offset = 6 + 16 * len(images)
-    entries = bytearray()
+    channels = 3 if color == 2 else 4
+    stride = width * channels
+    raw = zlib.decompress(idat)
+    out = bytearray()
+    prev = bytearray(stride)
+    at = 0
+    for _ in range(height):
+        f = raw[at]
+        at += 1
+        line = bytearray(raw[at : at + stride])
+        at += stride
+        for i in range(stride):
+            a = line[i - channels] if i >= channels else 0
+            b = prev[i]
+            c = prev[i - channels] if i >= channels else 0
+            x = line[i]
+            if f == 1:
+                x += a
+            elif f == 2:
+                x += b
+            elif f == 3:
+                x += (a + b) // 2
+            elif f == 4:
+                p = a + b - c
+                pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
+                x += a if (pa <= pb and pa <= pc) else (b if pb <= pc else c)
+            line[i] = x & 0xFF
+        out += line
+        prev = line
+
+    rgba = bytearray()
+    for y in range(height):
+        row = out[y * stride : (y + 1) * stride]
+        for x in range(width):
+            px = row[x * channels : (x + 1) * channels]
+            rgba += bytes(px) + (b"\xff" if channels == 3 else b"")
+    return width, height, bytes(rgba)
+
+
+def ico_bmp_payload(width: int, height: int, rgba: bytes) -> bytes:
+    """One ICO entry as a 32-bit DIB: the header, the pixels bottom-up, and an empty mask."""
+    header = struct.pack("<IiiHHIIiiII", 40, width, height * 2, 1, 32, 0, 0, 0, 0, 0, 0)
+    xor = bytearray()
+    for y in range(height - 1, -1, -1):  # bottom-up
+        for x in range(width):
+            r, g, b, a = rgba[(y * width + x) * 4 : (y * width + x) * 4 + 4]
+            xor += bytes((b, g, r, a))
+    mask = bytes(((width + 31) // 32) * 4 * height)
+    return header + bytes(xor) + mask
+
+
+def pack_ico_bmp(entries: list[tuple[int, bytes]], ico_path: str) -> None:
+    """Pack ICO entries given as (size, DIB payload) pairs."""
+    header = struct.pack("<HHH", 0, 1, len(entries))
+    offset = 6 + 16 * len(entries)
+    directory = bytearray()
     payloads = bytearray()
-    for size, payload in images:
-        entries += struct.pack(
+    for size, payload in entries:
+        directory += struct.pack(
             "<BBBBHHII",
             0 if size >= 256 else size,
             0 if size >= 256 else size,
@@ -166,7 +244,35 @@ def pack_ico(paths: list[tuple[int, str]], ico_path: str) -> None:
         )
         payloads += payload
         offset += len(payload)
-    open(ico_path, "wb").write(header + bytes(entries) + bytes(payloads))
+    open(ico_path, "wb").write(header + bytes(directory) + bytes(payloads))
+
+
+def ico_png_to_bmp(ico_path: str) -> bool:
+    """Rewrite an .ico so that its PNG entries become BMP ones. The pixels do not change.
+
+    The Windows Installer cannot read a PNG icon and falls back to the generic installer
+    icon, so an .ico that is meant for an MSI has to carry BMP payloads. Entries that are
+    already BMP are kept as they are.
+    """
+    data = open(ico_path, "rb").read()
+    reserved, kind, count = struct.unpack("<HHH", data[:6])
+    if reserved != 0 or kind != 1:
+        raise SystemExit(f"{ico_path}: not an icon file")
+    entries: list[tuple[int, bytes]] = []
+    changed = False
+    at = 6
+    for _ in range(count):
+        width, height, _, _, planes, _, size, offset = struct.unpack("<BBBBHHII", data[at : at + 16])
+        at += 16
+        payload = data[offset : offset + size]
+        if payload[:8] == b"\x89PNG\r\n\x1a\n":
+            w, h, rgba = decode_png(payload)
+            payload = ico_bmp_payload(w, h, rgba)
+            changed = True
+        entries.append((width or 256, payload))
+    if changed:
+        pack_ico_bmp(entries, ico_path)
+    return changed
 
 
 def main() -> int:
@@ -211,14 +317,22 @@ def main() -> int:
         png_to_bottom_up_bmp(png, os.path.join(WIN, f"{name}.bmp"))
 
     # -- the flat mark, for the installer .ico ---------------------------------
+    # BMP payloads, not PNG ones: the Windows Installer cannot decode a PNG icon.
     entries = []
     for size in (16, 24, 32, 48, 64, 256):
         body = f"""
 <div class="mark" style="position:absolute;left:0;top:0;width:{size}px;height:{size}px">{mark}</div>
 """
         png = screenshot(f"wiring-mark-{size}", page(body, size, size), size, size, transparent=True)
-        entries.append((size, png))
-    pack_ico(entries, os.path.join(ICONS, "icon-flat.ico"))
+        w, h, rgba = decode_png(open(png, "rb").read())
+        entries.append((size, ico_bmp_payload(w, h, rgba)))
+    pack_ico_bmp(entries, os.path.join(ICONS, "icon-flat.ico"))
+
+    # -- the Windows application icon (the plate) --------------------------------
+    # The plate's source image is not in the repository, so the committed .ico is rewritten
+    # in place: same pixels, BMP payloads, so the MSI that carries it shows the mark.
+    app_ico = os.path.join(ICONS, "icon.ico")
+    print("icon.ico:", "rewritten with BMP payloads" if ico_png_to_bmp(app_ico) else "already BMP")
 
     # -- the flat mark as PNGs: Linux takes its icons from these, and the desktop
     #    entry points at them. The plate stays in the .icns (macOS) and the .ico

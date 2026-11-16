@@ -89,7 +89,7 @@ The graph updates live from Kubernetes watches:
 
 <!-- #region navigator -->
 
-The left sidebar lists the resources of the selected namespace by category: Workloads, Config, Network (with Network Policies), Storage, Access Control (Service Accounts, Roles and Role Bindings, Cluster Roles and Cluster Role Bindings) and Cluster (Nodes), followed by Custom Resources and Helm. Each kind shows a live count and the worst status among its objects. The sidebar collapses to an icon rail. The clusters themselves are in the header: the button that shows the connected cluster opens a menu of your kubeconfig contexts, with **Add kubeconfig…** as its last entry.
+The left sidebar lists the resources of the selected namespace by category: Workloads, Config, Network (with Network Policies), Storage, Access Control (Service Accounts, Roles and Role Bindings, Cluster Roles and Cluster Role Bindings) and Cluster (Nodes), followed by Custom Resources and Helm. Each kind shows a live count and the worst status among its objects. The sidebar collapses to an icon rail, from the button in its footer, where the running version stands. The clusters themselves are in the header: the button that shows the connected cluster opens a menu of your kubeconfig contexts, with **Add kubeconfig…** as its last entry.
 
 <!-- #endregion navigator -->
 

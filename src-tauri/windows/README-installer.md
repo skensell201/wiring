@@ -20,10 +20,21 @@ reference: the classic wizard, every surface repainted, no new binary.
 | `generate-assets.py` | Renders every bitmap from `src/assets/mark.svg` and the app's tokens, and packs `src-tauri/icons/icon-flat.ico`. |
 
 `src-tauri/icons/icon-flat.ico` is the flat mark at 16, 24, 32, 48, 64 and 256 px
-(PNG payloads inside a plain ICO container). It is what the installer and the
+(BMP payloads inside a plain ICO container). It is what the installer and the
 uninstaller show in Explorer's Downloads list and in Add/Remove Programs. The
 macOS-style plate (`icons/icon.ico`) is still the *application* icon and is left
 alone in `bundle.icon`.
+
+The payloads are BMP, not PNG: the Windows Installer reads the icon out of an
+MSI with the old icon API, which cannot decode a PNG, and falls back to the
+generic installer icon when it finds one. Explorer reads PNG icons fine, so the
+fault only shows on the MSI. `generate-assets.py` writes the flat mark as BMP
+and rewrites the committed `icon.ico` the same way, keeping its pixels.
+
+The MSI carries the plate, not the flat mark: Tauri takes the MSI's icon from
+`bundle.icon`, and there is only one `.ico` for the Windows application. It is
+the same icon the installed app and its Start menu shortcut show, which is
+worth more than the flat mark at the 16 px the Explorer's file list uses.
 
 ## Colours: NSIS is BGR, not RGB
 

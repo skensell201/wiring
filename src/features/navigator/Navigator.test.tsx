@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { applySnapshot, initialState, useAppStore } from "../../app/store";
+import { invoke } from "../../shared/ipc/tauri";
 import type { GraphNode } from "../../shared/ipc/types";
 import { Navigator } from "./Navigator";
 
@@ -110,6 +111,17 @@ describe("Navigator rail", () => {
     expect(screen.getByRole("complementary").className).toMatch(/\bw-64\b/);
     fireEvent.click(screen.getByRole("button", { name: /collapse navigator/i }));
     expect(toggleSidebar).toHaveBeenCalled();
+  });
+
+  it("shows the app version in the footer, taken from the bundle", async () => {
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => (cmd === "app_version" ? "9.9.9" : null) as never);
+    useAppStore.setState({ contexts, connection: connected() });
+    render(<Navigator />);
+    expect(await screen.findByText("Version 9.9.9")).toBeInTheDocument();
+    // The collapsed rail is 48 px wide: the version does not fit there.
+    useAppStore.setState({ sidebarCollapsed: true });
+    render(<Navigator />);
+    expect(screen.queryByText("Version 9.9.9")).toBeNull();
   });
 
 describe("Navigator across namespaces", () => {

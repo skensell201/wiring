@@ -1,4 +1,4 @@
-import { ChevronsLeft, ChevronsRight, Plus, Search } from "lucide-react";
+import { Plus, Search } from "lucide-react";
 import { useEffect, useRef } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { useAppStore } from "../../app/store";
@@ -12,10 +12,10 @@ import { ClusterPicker } from "./ClusterPicker";
 import { NamespacePicker } from "./NamespacePicker";
 
 export function Header() {
-  const { connection, search, sidebarCollapsed, setSearch, reconnect, toggleSidebar, openCreate } = useAppStore(
+  const { connection, search, setSearch, reconnect, openCreate } = useAppStore(
     useShallow((s) => ({
-      connection: s.connection, search: s.search, sidebarCollapsed: s.sidebarCollapsed,
-      setSearch: s.setSearch, reconnect: s.reconnect, toggleSidebar: s.toggleSidebar, openCreate: s.openCreate,
+      connection: s.connection, search: s.search,
+      setSearch: s.setSearch, reconnect: s.reconnect, openCreate: s.openCreate,
     })),
   );
   const searchRef = useRef<HTMLInputElement>(null);
@@ -43,15 +43,10 @@ export function Header() {
     <header className={`drag-region flex h-16 shrink-0 items-center gap-4 border-b border-border bg-space/80 backdrop-blur-md ${pad}`}>
       {/* Two halves of equal weight around the brand keep it in the middle of the window. */}
       <div className="flex min-w-0 flex-1 items-center gap-3">
-        <button type="button" className="no-drag grid size-9 place-items-center rounded-xl border border-border-strong bg-surface text-text-hi hover:bg-muted"
-          onClick={() => void toggleSidebar()}
-          title={sidebarCollapsed ? "Expand navigator" : "Collapse navigator"} aria-expanded={!sidebarCollapsed}>
-          {sidebarCollapsed ? <ChevronsRight aria-hidden className="size-4" /> : <ChevronsLeft aria-hidden className="size-4" />}
-        </button>
         <ClusterPicker />
         {session && <NamespacePicker />}
         {session && (
-          <Button className="flex items-center gap-1.5" disabled={connection.scope === null} onClick={() => openCreate()}
+          <Button className="flex h-9 items-center gap-1.5" disabled={connection.scope === null} onClick={() => openCreate()}
             title={connection.scope === null ? "Select a namespace first" : "Create an object in this namespace"}>
             <Plus className="size-4" /> Create
           </Button>
@@ -71,7 +66,7 @@ export function Header() {
           <span className="text-xs text-status-warn" title="Some resources can't be watched right now; Wiring keeps retrying.">Reconnecting…</span>
         )}
         {connection.context && (
-          <Button disabled={connection.busy} onClick={() => void reconnect()}>Reconnect</Button>
+          <Button className="h-9" disabled={connection.busy} onClick={() => void reconnect()}>Reconnect</Button>
         )}
       </div>
     </header>

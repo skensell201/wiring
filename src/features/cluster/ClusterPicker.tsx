@@ -82,7 +82,7 @@ export function ClusterPicker() {
   return (
     <div className="no-drag relative">
       <button ref={button} type="button" aria-haspopup="dialog" aria-expanded={open} onClick={onClick}
-        className="flex items-center gap-2 rounded-xl border border-border-strong bg-surface px-4 py-1.5 text-sm font-medium text-text-hi hover:bg-muted">
+        className="flex h-9 items-center gap-2 rounded-xl border border-border-strong bg-surface px-4 text-sm font-medium text-text-hi hover:bg-muted">
         <span aria-hidden>⎈</span>
         <span className="max-w-56 truncate">{label}</span>
         {connecting !== null

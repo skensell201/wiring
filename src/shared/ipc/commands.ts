@@ -11,6 +11,8 @@ async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
 }
 
 export const commands = {
+  /** The running app's version, from the bundle. */
+  appVersion: () => call<string>("app_version"),
   listContexts: () => call<ContextInfo[]>("list_contexts"),
   addKubeconfig: (path: string) => call<ContextInfo[]>("add_kubeconfig", { path }),
   kubeconfigSources: () => call<KubeconfigSource[]>("kubeconfig_sources"),
