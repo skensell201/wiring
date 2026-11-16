@@ -30,8 +30,8 @@ Cross-cluster views, saved namespace sets, label-based namespace filters, per-na
 - The store already keys objects by namespace; relations are computed within a namespace except the existing PV ↔ PVC binding. Graph nodes carry their namespace (already in the id).
 - Metrics poller: `All` → one cluster-wide `PodMetrics` list; `Set` → one list per namespace per tick.
 - Graph build gains lane metadata: each node's `namespace` is already present; the frontend lays lanes out. The 1 500-node guard is applied in the backend snapshot (`tooLarge: true` with the count, nodes omitted) so huge graphs never cross IPC.
-- `denied_kinds` reports `partial` kinds alongside denied ones.
-- Settings: last selection per context (`settings.json`, `namespacesByContext`).
+- `denied_kinds` reports the kinds that could not be watched at all; a second command, `partial_kinds`, reports the kinds watched in some namespaces but forbidden in others (or forbidden cluster-wide and watched per namespace instead). The frontend fetches both: a denied kind gets the struck-through chip, a partial kind gets the note above the rows.
+- Settings: last selection per context (`settings.json`, the `lastScope` key; a pre-scope `lastNamespace` string is read once as a one-namespace scope for migration).
 
 ## 5. Frontend
 

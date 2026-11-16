@@ -25,7 +25,7 @@ Argument names are camelCase on the JS side; Tauri maps them to the Rust snake_c
 | `kubeconfig_sources` | — | `KubeconfigSource[]` — one per kubeconfig path, in load order (see [Kubeconfig sources](#kubeconfig-sources)) |
 | `connect` | `{ context }` | `ConnectInfo` — a **rejected promise** carries the `AppError`; no `connection_error` event is sent for connect failures. The version probe has its own 20 s limit: when the API server does not answer in time, connect rejects with `network` "timed out after 20 s waiting for `<server>`" (the server URL without credentials or a trailing slash). A namespace list that does not answer within 20 s is treated like any other list error: the session falls back to the context's namespace and `canListNamespaces` is `false` |
 | `disconnect` | — | `null` |
-| `select_namespaces` | `{ namespaces: string[] \| null, expandedGroups: string[] }` | `null` — `null` watches all namespaces (refused with `invalid` when `ConnectInfo.canListNamespaces` is false); a list watches those (trimmed, deduplicated, each a DNS-1123 label, at most 20; an empty or longer list rejects with `invalid`: "pick up to 20 namespaces, or All namespaces"). The graph arrives via events. |
+| `select_namespaces` | `{ namespaces: string[] \| null, expandedGroups: string[] }` | `null` — `null` watches all namespaces (refused with `invalid` when `ConnectInfo.canListNamespaces` is false); a list watches those (trimmed, deduplicated, each a DNS-1123 label, at most 20). An empty list rejects with `invalid` ("pick at least one namespace"); a longer one rejects with `invalid` ("pick up to 20 namespaces, or All namespaces"). The graph arrives via events. |
 | `set_expanded_groups` | `{ expandedGroups: string[] }` | `null` |
 | `get_object` | `{ nodeId }` | `ObjectDetails` (`summary` is an ordered `[string, string][]`) |
 | `watch_events` | `{ nodeId: string \| null }` | `null` — `null` stops the current watcher |
@@ -47,6 +47,10 @@ Argument names are camelCase on the JS side; Tauri maps them to the Rust snake_c
 | `rollback_object` | `{ nodeId, revision }` | `ObjectDetails` |
 
 `ConnectInfo.namespaces` may be **empty** when the user cannot list namespaces (namespace-scoped RBAC); offer a free-text namespace input in that case. If the kubeconfig context has a default namespace it is included. `ConnectInfo.canListNamespaces` is `true` only when `namespaces` came from listing them; when it is `false` (listing was forbidden, so the list is just the context namespace) do not offer *All namespaces* — the backend refuses it.
+
+Every session-scoped command — `select_namespaces`, `set_expanded_groups`, `get_object`, `watch_events`, `denied_kinds`, `partial_kinds`, `list_rows`, `custom_kinds`, `refresh_custom_kinds`, `list_custom`, `stop_custom`, `helm_releases`, `helm_release`, `update_object`, `create_object`, `delete_object`, `scale_object`, `restart_object`, `rollout_history`, `rollback_object`, `start_logs`, `stop_logs`, `exec_pods`, `start_exec`, `exec_input`, `exec_resize`, `stop_exec`, `forward_ports` and `start_forward` — rejects with `internal` ("not connected") when there is no active session.
+
+The commands that work without one: `list_contexts`, `kubeconfig_sources`, `add_kubeconfig`, `connect`, `disconnect`, `save_text` and `suggest_local_port` (a pure function). `stop_forward` is a no-op without a session (the forward is gone either way) and `open_forward` rejects with `notFound`, naming the forward it could not find.
 
 ### Writes
 
@@ -159,8 +163,9 @@ returns `HelmReleaseDetails` `{ release, description, firstDeployed, lastDeploye
 first (`{ revision, chart, appVersion, status, health, updated, description }`), and `resources` are the node
 ids of the release's objects in the store (Helm's `meta.helm.sh/release-*` annotations, or
 `app.kubernetes.io/managed-by: Helm` + `app.kubernetes.io/instance`). Both read the watched Secrets: the frontend
-re-reads them on `helm_changed` and on every `graph_snapshot`. Release values can hold credentials and are
-never logged.
+re-reads them on `helm_changed` and on a `graph_snapshot` when the Helm view is open (or when the list was already
+loaded once, to keep the navigator's count fresh); an open `helm_release` is re-read too. Release values can hold
+credentials and are never logged.
 
 ## Metrics
 
@@ -239,7 +244,7 @@ Like logs, a shell streams through a Tauri `Channel` passed to `start_exec`.
 |---|---|---|
 | `exec_pods` | `{ nodeId }` | `ExecPod[]` (`{ name, containers }`) — running pods of a Pod / Deployment / StatefulSet / DaemonSet / Job / PodGroup with their regular containers; other kinds `invalid` |
 | `start_exec` | `{ nodeId, pod, container, cols, rows, onMessage: Channel<ExecMessage> }` | `number` session id |
-| `exec_input` | `{ sessionId, data }` | `null` — `data` is base64 keystrokes; not base64 → `invalid` |
+| `exec_input` | `{ sessionId, data }` | `null` — `data` is base64 keystrokes; not base64 → `invalid`, and more than 1 048 576 decoded bytes → `invalid` ("terminal input is larger than 1048576 bytes") |
 | `exec_resize` | `{ sessionId, cols, rows }` | `null` |
 | `stop_exec` | `{ sessionId }` | `null` — nothing reaches the channel afterwards |
 
@@ -258,7 +263,7 @@ Input sent before the connection is up is queued. Sessions end with the namespac
 | Command | Args | Returns |
 |---|---|---|
 | `forward_ports` | `{ nodeId }` | `PortOption[]` — `{ port, label }`: container ports (TCP) of a Pod or a workload's template, `port → targetPort` of a Service |
-| `suggest_local_port` | `{ port }` | `number` — `port` if ≥ 1024 and free on 127.0.0.1, else the first free port from 8080 |
+| `suggest_local_port` | `{ port }` | `number` — `port` if ≥ 1024 and free on 127.0.0.1, else the first free port from 8080; `0` when no port in 8080…65535 is free |
 | `start_forward` | `{ nodeId, remotePort, localPort }` | `Forward` — returns immediately with `status: active` and `pod: null`; the first pod resolution happens in the background and is reported through `forwards_changed` |
 | `stop_forward` | `{ id }` | `null` — unknown ids are a no-op; the local port is released when the call returns |
 | `open_forward` | `{ id }` | `null` — opens `http://127.0.0.1:<localPort>` in the default browser; unknown id is `notFound` |
@@ -276,9 +281,9 @@ Each accepted local connection picks its pod at that moment: a Pod target itself
 | Command | Args | Returns |
 |---|---|---|
 | `check_update` | — | `UpdateCheck { current, update: UpdateInfo \| null }`; `UpdateInfo = { version, date: string \| null (YYYY-MM-DD), notes: string \| null }`. Rejects `network` when the feed is unreachable or no published release has a `latest.json`. |
-| `install_update` | — | Downloads, verifies and installs the update found by the last `check_update`, then relaunches — the promise never resolves on success. Rejects `notFound` without a prior offer, `network` / `internal` on download, signature or install failures. |
+| `install_update` | — | Downloads, verifies and installs the update found by the last `check_update`, then relaunches — the promise never resolves on success. Rejects `notFound` without a prior offer, `conflict` when an update is already installing, and `network` / `internal` on download, signature or install failures. |
 
 | Event | Payload | Notes |
 |---|---|---|
 | `update_progress` | `{ downloaded, total: number \| null }` | During `install_update`, at most every 256 KiB and for the last chunk. |
-| `menu_check_updates` | `null` | **Check for Updates…** was chosen in the app menu. |
+| `menu_check_updates` | `null` | **Check for Updates…** was chosen in the app menu. The menu and this event exist on macOS only; on Windows the event never fires. |

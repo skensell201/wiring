@@ -7,7 +7,7 @@ import { wireEvents } from "./app/wireEvents";
 import { Header } from "./features/cluster/Header";
 import { DetailsPanel } from "./features/details/DetailsPanel";
 import { CreateDialog } from "./features/editor/CreateDialog";
-import { Canvas } from "./features/graph/Canvas";
+import { LazyCanvas } from "./features/graph/LazyCanvas";
 import { ViewHeader } from "./features/graph/ViewHeader";
 import { HelmView } from "./features/helm/HelmView";
 import { Navigator } from "./features/navigator/Navigator";
@@ -43,28 +43,33 @@ export function App() {
   }, []);
 
   return (
-    <div className="relative flex h-full">
-      <ErrorBoundary name="navigator"><Navigator /></ErrorBoundary>
-      <div className="flex min-w-0 flex-1 flex-col">
-        <Header />
-        {/* A maximised details panel takes the whole column; the view under it is unmounted, not hidden,
-            so a busy graph stops rendering while logs fill the screen. */}
-        {/* A connection pane takes the column even over a maximised panel: the session the panel
-            showed is gone or being replaced, so the panel is unmounted with the views. */}
-        {pane && (
-          <main className="min-h-0 flex-1">
-            <ErrorBoundary name="connection pane"><ConnectionPane pane={pane} /></ErrorBoundary>
-          </main>
-        )}
-        {!maximized && !pane && (
-          <>
-            <ViewHeader />
+    <div className="relative flex h-full flex-col">
+      {/* The bar spans the whole window; below it the navigator and the content sit side by side.
+          The navigator no longer reaches under the title bar, so nothing crosses the window's
+          traffic lights. */}
+      <Header />
+      <div className="flex min-h-0 flex-1">
+        <ErrorBoundary name="navigator"><Navigator /></ErrorBoundary>
+        <div className="flex min-w-0 flex-1 flex-col">
+          {/* A maximised details panel takes the whole column; the view under it is unmounted, not hidden,
+              so a busy graph stops rendering while logs fill the screen. */}
+          {/* A connection pane takes the column even over a maximised panel: the session the panel
+              showed is gone or being replaced, so the panel is unmounted with the views. */}
+          {pane && (
             <main className="min-h-0 flex-1">
-              <ErrorBoundary name="main view">{viewName === "graph" ? <Canvas /> : viewName === "custom" ? <CustomTableView key={customKey} /> : viewName === "helm" ? <HelmView /> : <TableView />}</ErrorBoundary>
+              <ErrorBoundary name="connection pane"><ConnectionPane pane={pane} /></ErrorBoundary>
             </main>
-          </>
-        )}
-        {!pane && <ErrorBoundary name="details panel"><DetailsPanel /></ErrorBoundary>}
+          )}
+          {!maximized && !pane && (
+            <>
+              <ViewHeader />
+              <main className="min-h-0 flex-1">
+                <ErrorBoundary name="main view">{viewName === "graph" ? <LazyCanvas /> : viewName === "custom" ? <CustomTableView key={customKey} /> : viewName === "helm" ? <HelmView /> : <TableView />}</ErrorBoundary>
+              </main>
+            </>
+          )}
+          {!pane && <ErrorBoundary name="details panel"><DetailsPanel /></ErrorBoundary>}
+        </div>
       </div>
       {/* The dialogs sit outside the columns; a failure in one (the lazily loaded editor, say) must not blank the app. */}
       <ErrorBoundary name="create dialog"><CreateDialog /></ErrorBoundary>

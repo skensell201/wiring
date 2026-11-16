@@ -73,23 +73,21 @@ describe("welcome pane", () => {
 });
 
 describe("other panes", () => {
-  it("points to the navigator when there are contexts but no connection", () => {
+  it("points to the header when there are contexts but no connection", () => {
     render(<ConnectionPane pane={{ type: "choose", contexts: 2 }} />);
-    expect(screen.getByRole("status", { name: "Choose a cluster" })).toHaveTextContent("Pick one of your 2 kubeconfig contexts in the navigator.");
+    expect(screen.getByRole("status", { name: "Choose a cluster" })).toHaveTextContent("Pick one of your 2 kubeconfig contexts from the header.");
   });
 
-  it("offers Add kubeconfig… first while the navigator is open", () => {
+  it("offers Choose a cluster, which opens the header's menu", () => {
     render(<ConnectionPane pane={{ type: "choose", contexts: 2 }} />);
-    expect(screen.getAllByRole("button").map((b) => b.textContent)).toEqual(["Add kubeconfig…"]);
+    expect(screen.getAllByRole("button").map((b) => b.textContent)).toEqual(["Choose a cluster", "Add kubeconfig…"]);
+    const before = useAppStore.getState().clusterPickerSeq;
+    fireEvent.click(screen.getByRole("button", { name: "Choose a cluster" }));
+    expect(useAppStore.getState().clusterPickerSeq).toBe(before + 1);
   });
 
-  it("offers Show navigator first, then Add kubeconfig…, while the navigator is collapsed", async () => {
-    const toggleSidebar = vi.fn(async () => {});
-    useAppStore.setState({ sidebarCollapsed: true, toggleSidebar });
+  it("offers Add kubeconfig… too", async () => {
     render(<ConnectionPane pane={{ type: "choose", contexts: 2 }} />);
-    expect(screen.getAllByRole("button").map((b) => b.textContent)).toEqual(["Show navigator", "Add kubeconfig…"]);
-    fireEvent.click(screen.getByRole("button", { name: "Show navigator" }));
-    expect(toggleSidebar).toHaveBeenCalledTimes(1);
     fireEvent.click(screen.getByRole("button", { name: "Add kubeconfig…" }));
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("add_kubeconfig", { path: "/tmp/team.yaml" }));
   });

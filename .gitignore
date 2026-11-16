@@ -27,3 +27,6 @@ dist-ssr
 
 # vitest reporter output
 .vitest/
+
+# vitest coverage report
+coverage/

@@ -1,7 +1,7 @@
 {
   "name": "wiring",
   "private": true,
-  "version": "0.5.1",
+  "version": "0.6.0",
   "license": "MIT",
   "type": "module",
   "scripts": {
@@ -10,11 +10,13 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
     "typecheck": "tsc --noEmit",
     "tauri": "tauri"
   },
   "dependencies": {
     "@codemirror/lang-yaml": "^6.1",
+    "@codemirror/view": "6.43.12",
     "@fontsource-variable/geist": "^5",
     "@lezer/highlight": "^1.2",
     "@shikijs/langs": "^4",
@@ -45,6 +47,7 @@
     "@types/react": "^19.1.8",
     "@types/react-dom": "^19.1.6",
     "@vitejs/plugin-react": "^6.0.2",
+    "@vitest/coverage-v8": "^5.0.1",
     "jsdom": "^30",
     "tailwindcss": "^4",
     "typescript": "~6.0.3",

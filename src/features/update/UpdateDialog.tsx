@@ -33,9 +33,11 @@ export function UpdateDialog() {
       <div role="dialog" aria-modal="true" aria-labelledby={titleId} className="w-[480px] rounded-card border border-border bg-elevated p-8">
         <h2 id={titleId} className="mb-1 text-2xl font-semibold leading-[1.33] text-text-hi">Wiring {info.version} is available</h2>
         {sub && <p className="mb-4 text-sm text-text-muted">{sub}</p>}
-        {info.notes && (
-          <pre className="selectable mb-6 max-h-56 overflow-auto whitespace-pre-wrap break-words rounded-xl border border-border bg-surface p-3 font-sans text-sm text-text-dim">{info.notes}</pre>
-        )}
+        {/* The notes come before the install button: an update is a decision, and the decision
+            needs to say what changes. */}
+        <pre className="selectable mb-6 max-h-56 overflow-auto whitespace-pre-wrap break-words rounded-xl border border-border bg-surface p-3 font-sans text-sm text-text-dim">
+          {info.notes || "This release came without notes."}
+        </pre>
         {installing && (
           <div className="mb-6">
             <div role="progressbar" aria-label="Download" aria-valuemin={0} aria-valuemax={100} aria-valuenow={pct ?? undefined}

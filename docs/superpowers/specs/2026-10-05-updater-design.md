@@ -22,7 +22,7 @@ Delta updates, release channels (beta), forced updates, background installs with
 
 ## 4. Backend
 
-- `tauri-plugin-updater` and `tauri-plugin-process` (relaunch) are added and initialised in `lib.rs`.
+- `tauri-plugin-updater` is added and initialised in `lib.rs`. The relaunch after an update uses Tauri's built-in `AppHandle::restart()`; the `tauri-plugin-process` plugin is not a dependency.
 - `tauri.conf.json` → `plugins.updater`: `pubkey` = the contents of `~/.tauri/wiring-updater.key.pub` (generated for this project; the private key and its password are stored as the GitHub secrets `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`), `endpoints` = `["https://github.com/skensell201/wiring/releases/latest/download/latest.json"]`. On Windows `installMode: "passive"`.
 - `bundle.createUpdaterArtifacts` is **not** set in the committed config (local builds have no key); the release workflow passes it with `--config '{"bundle":{"createUpdaterArtifacts":true}}'` and exposes the two secrets as env vars to tauri-action, which then uploads the `.app.tar.gz` / installer signatures and `latest.json` to the draft release.
 - Commands (Rust-side, so the webview needs no updater/process capabilities):

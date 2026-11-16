@@ -114,6 +114,25 @@ jobs:
           echo '{ "bundle": { "createUpdaterArtifacts": true } }' > "$CONF"
           echo "UPDATER_ARGS=--config $CONF" >> "$GITHUB_ENV"
 
+      # The release body is the release's own notes: the app shows them before it installs an
+      # update, so the section of CHANGELOG.md for the tagged version becomes the body. A manual
+      # run has no version and falls back to the plain installer line.
+      - name: Release notes
+        id: notes
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          NOTES=""
+          if [ -n "$VERSION" ] && [ -f CHANGELOG.md ]; then
+            NOTES="$(awk -v v="$VERSION" '$0 == "## " v { found = 1; next } found && /^## / { exit } found { print }' CHANGELOG.md)"
+          fi
+          {
+            echo "notes<<__WIRING_EOF__"
+            if [ -n "$NOTES" ]; then printf '%s\n' "$NOTES"; echo; fi
+            echo "Installers for macOS (universal .dmg) and Windows (.msi, -setup.exe). Install notes: https://github.com/${{ github.repository }}#install"
+            echo "__WIRING_EOF__"
+          } >> "$GITHUB_OUTPUT"
+
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -123,7 +142,7 @@ jobs:
           # Without a tag (a manual run) tauri-action only builds; nothing is released.
           tagName: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
           releaseName: "Wiring ${{ github.ref_name }}"
-          releaseBody: "Installers for macOS (universal .dmg) and Windows (.msi, -setup.exe). Install notes: https://github.com/${{ github.repository }}#install"
+          releaseBody: ${{ steps.notes.outputs.notes }}
           releaseDraft: true
           # The NSIS -setup.exe is the updatable Windows installer.
           updaterJsonPreferNsis: true

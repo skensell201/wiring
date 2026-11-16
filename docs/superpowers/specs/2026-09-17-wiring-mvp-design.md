@@ -12,7 +12,9 @@ The MVP answers one question well: *"What is connected to what in this namespace
 
 Targets: **macOS and Windows** from the first release. Development happens on macOS; Windows builds come from CI.
 
-Visual style: the n8n design system (dark, violet-black surfaces, ember-gradient primary buttons, blue→violet gradient connections). Dark theme only.
+Visual style: the **Doppler** palette ("violet-lit vault at midnight") — violet-tinted near-black surfaces, one lavender accent for brand voice, one signal green rationed to the action a screen is asking for, and hairline separators. Dark theme only.
+
+> **Superseded.** This spec originally described the n8n design system (ember-gradient primary buttons, blue→violet gradient connections, Inter). The shipped design is the Doppler palette, applied in `src/styles/theme.css`; the n8n token table below was replaced when the theme changed. The n8n wording is kept only where it still describes behaviour.
 
 ## 2. Non-goals (deferred to later specs)
 
@@ -24,7 +26,7 @@ Pod logs, exec/shell, port-forward, YAML editing, metrics, "all namespaces" view
 |---|---|
 | Shell | Tauri 2 |
 | Backend | Rust (stable), `kube` + `kube-runtime`, `tokio`, `serde`, `tracing`, `tauri-plugin-store` |
-| Frontend | React 19, TypeScript, Vite, `@xyflow/react` (React Flow), `elkjs` in a web worker, `zustand`, Tailwind CSS, `shiki` for YAML highlighting |
+| Frontend | React 19, TypeScript, Vite, `@xyflow/react` (React Flow), `zustand`, Tailwind CSS, `shiki` for YAML highlighting. The graph layout is a hand-written deterministic layered (Sugiyama) pass in `src/features/graph/layout.ts`, running synchronously on the main thread — no `elkjs`, no web worker |
 | Package manager | pnpm; Node 22 |
 | Tests | Rust `cargo test`; Vitest for the frontend; `kind`-based smoke test in CI |
 | CI | GitHub Actions, `tauri-action`, matrix `macos-latest` (universal .dmg) + `windows-latest` (.msi via WiX, .exe via NSIS) |
@@ -45,7 +47,7 @@ wiring/
 ┌──────────────── Tauri 2 window ─────────────────────────┐
 │  Frontend (React)                                       │
 │  ├─ features/cluster   context + namespace selection    │
-│  ├─ features/graph     canvas, node cards, ELK layout   │
+│  ├─ features/graph     canvas, node cards, layered layout   │
 │  ├─ features/details   bottom panel: Overview/YAML/Events│
 │  ├─ shared/ipc         typed invoke()/listen() wrappers │
 │  └─ shared/theme       design tokens                    │
@@ -208,7 +210,7 @@ Clicking a node → `get_object(id)` → panel shows Overview (summary key/value
 Kind filter chips and search live entirely in the frontend. Filtering hides nodes and their edges from layout; search matches node name or kind (case-insensitive substring); matches are highlighted, the rest dimmed. Neither touches the backend.
 
 ### 6.6 Reconnect
-`kube_runtime::watcher` reconnects with exponential backoff on its own. If any kind has been in error continuously for 30 s, the session emits `connection_state: "degraded"` (yellow dot in the header); the first transient error per kind is reported once as `connection_error`, and repeats of the same kind's outage stay silent until it recovers. 403, and 404 on the initial list, are fatal for that kind (watching stops, it is reported via `denied_kinds`), while 401 is fatal for the whole session (reported once as `connection_error` followed by `disconnected`; the user must reconnect); other errors are left to the watcher's own backoff. When every watcher is healthy again the session emits `"connected"` and a fresh `graph_snapshot`. The header's **Reconnect** button (ember gradient) tears down and rebuilds the session.
+`kube_runtime::watcher` reconnects with exponential backoff on its own. If any kind has been in error continuously for 30 s, the session emits `connection_state: "degraded"` (yellow dot in the header); the first transient error per kind is reported once as `connection_error`, and repeats of the same kind's outage stay silent until it recovers. 403, and 404 on the initial list, are fatal for that kind (watching stops, it is reported via `denied_kinds`), while 401 is fatal for the whole session (reported once as `connection_error` followed by `disconnected`; the user must reconnect); other errors are left to the watcher's own backoff. When every watcher is healthy again the session emits `"connected"` and a fresh `graph_snapshot`. The header's **Reconnect** button (a ghost button with a `border-strong` border) tears down and rebuilds the session.
 
 ## 7. UI
 
@@ -230,30 +232,34 @@ Layout (chosen from three mockups; see `.superpowers/brainstorm/` for the origin
 └────────────────────────────────────────────────────────┘
 ```
 
-**Design tokens** (from the n8n style):
+**Design tokens** (the Doppler palette, defined as Tailwind v4 `@theme` variables in `src/styles/theme.css`):
 
-| Token | Value |
-|---|---|
-| `bg-void` | `#0e0918` |
-| `bg-surface` | `#1a1624` |
-| `bg-panel` | `#1b1728` |
-| `bg-muted` | `#2c2834` (chips, badges) |
-| `border` | `#3e3a46` |
-| `text` | `#d1cece` |
-| `text-muted` | `#9d9797` |
-| `text-hi` | `#ffffff` |
-| `accent-ember` | `linear-gradient(30deg, #fd8925, #ff0c00)` |
-| `accent-current` | `linear-gradient(141deg, #077ac7, #6b21ef)` |
-| `status-ok` | `#2ecc71` |
-| `status-warn` | `#fd8925` |
-| `status-err` | `#ff0c00` |
-| radius | inputs/buttons 8, nodes 12, cards 16, pills 9999 |
-| font | Inter (Geomanist is the style's primary but is commercial; Inter is its documented fallback) |
+| Token | Value | Used for |
+|---|---|---|
+| `void` / `space` / `panel` | `#1c1624` (Midnight Plum) | navigator and page canvas, header, graph, tables, details panel |
+| `surface` | `#2d2734` (Shadow Plum) | cards, nodes, inputs, the log and YAML bodies |
+| `elevated` / `muted` | `#3a3340` (Elevated Panel) | dialogs, popovers, hover fills, chips and badges |
+| `border` | `rgb(229 231 235 / 0.12)` (Fog Line, 12 %) | every hairline |
+| `border-strong` | `#55505b` (Iron Edge) | input borders at rest, the Reconnect button |
+| `text` / `text-muted` | `#d0c9c4` (Ash Veil) / `#a5a2a5` (Mid Ash) | body text / secondary text |
+| `text-hi` | `#f1f0ec` (Bone White) | headings and names — never pure white |
+| `accent` | `#b997ff` (Lavender Spark) | brand voice, active states, focus, selected node ring |
+| `primary` | `#00f575` (Signal Green) | the one action a screen is asking for (apply, create, save) |
+| `status-ok` | `#00f575` | healthy objects |
+| `status-warn` | `#ffb547` | degraded objects — not a Doppler colour, added because a warning colour is needed |
+| `status-err` | `#ff5632` (Ember Orange) | failing objects |
+| `status-unknown` | `#a5a2a5` | objects with no status |
+| brand gradient | `linear-gradient(135deg, #6b13f5, #b997ff)` (Neon Violet → Lavender Spark) | the kind icon tile on graph nodes |
+| radius | nodes and cards 20 px (`rounded-node`, `rounded-card`), toasts 12 px, buttons and inputs 12 px (`rounded-xl`), chips 8 px (`rounded-lg`), pills `rounded-full` |
+| font | Geist Variable (self-hosted via `@fontsource-variable/geist`), with Inter and the system stack as fallbacks; monospace is the platform stack |
+| type | 14 px body at weight 450 |
 | spacing | 8 px base |
 
-**Node card** (medium density): kind icon (gradient square with a letter, or a colored dot for Pod), kind label (uppercase, muted), name (white), then a row of 0–2 pill badges. Selected: ember outline + soft glow. Hovering a node brightens its edges and dims the rest. Edges: 1.5 px, `accent-current` gradient, smooth bezier; `owns` edges solid, all others dashed.
+**Node card** (medium density): kind icon (a 28 px rounded tile carrying the kind's letter on the brand gradient for workloads, on `muted` otherwise; a Pod shows a status dot instead), kind label (uppercase, muted), name (`text-hi`), then a row of 0–2 pill badges (`rounded-full`). Selected: an accent border with a 1 px accent ring. On a problem path the card takes the status colour for both border and ring. Hovering a node brightens its edges and dims the rest.
 
-**Canvas**: dot grid on `bg-void`, React Flow controls bottom-left and minimap bottom-right, pan/zoom with mouse and trackpad. Double-click on a PodGroup expands it (double-click zoom is disabled).
+**Edges**: 1.5 px, a solid stroke in `border-strong` at rest — not a gradient. A highlighted edge is 2 px in `accent`; a problem path is 2 px in the status colour. Smooth bezier curves, routed through the layout's dummy slots so a multi-column edge passes through empty rows instead of behind the cards in between. `owns` edges are solid, `runsOn` dotted, `allows` dash-dot, all others dashed.
+
+**Canvas**: dot grid on `space` (the React Flow background is set to the canvas colour, not React Flow's own near-black), React Flow controls bottom-left and minimap bottom-right, pan/zoom with mouse and trackpad. Double-click on a PodGroup expands it (double-click zoom is disabled).
 
 **Bottom panel**: tabs Overview · YAML · Events; header shows name and kind; Events tab marks `Warning` rows with `status-warn`. Empty selection: "Select a node to see details".
 
@@ -290,7 +296,7 @@ Layout (chosen from three mockups; see `.superpowers/brainstorm/` for the origin
 |---|---|---|
 | MVP focus | Graph first | Mini-Lens first; graph + tables together |
 | Stack | Tauri 2 + React + Rust/kube-rs | Electron + Node; .NET WinUI/Avalonia |
-| Graph layout | Hierarchical left→right (ELK layered) | Force-directed; radial focus mode |
+| Graph layout | Hierarchical left→right, a hand-written layered (Sugiyama) pass in `src/features/graph/layout.ts` | ELK layered (`elkjs` in a worker); force-directed; radial focus mode |
 | Window layout | Canvas top, details panel bottom | Three columns; full-screen canvas with overlay panel |
 | Relationships | Full set (owners, selectors, ingress, mounts/env, PVC/PV, SA, HPA) | Reduced set; plus NetworkPolicy/RBAC |
 | Updates | Live via watch | Manual refresh; live statuses only |

@@ -114,14 +114,14 @@ describe("connecting and the last error", () => {
     await useAppStore.getState().retryConnect();
     expect(called()).not.toContain("connect");
     expect(useAppStore.getState().connection.lastError).toBeNull();
-    expect(useAppStore.getState().sidebarCollapsed).toBe(false);
+    expect(useAppStore.getState().clusterPickerSeq).toBe(1);
   });
 
-  it("dismissConnectError clears the error and opens a collapsed navigator", async () => {
+  it("dismissConnectError clears the error and asks for the cluster menu", async () => {
     useAppStore.setState({ sidebarCollapsed: true, connection: { ...initialState().connection, lastError: { context: "prod", error: { kind: "auth", message: "no" } } } });
     await useAppStore.getState().dismissConnectError();
     expect(useAppStore.getState().connection.lastError).toBeNull();
-    expect(useAppStore.getState().sidebarCollapsed).toBe(false);
+    expect(useAppStore.getState().clusterPickerSeq).toBe(1);
   });
 });
 

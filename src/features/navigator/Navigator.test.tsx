@@ -1,8 +1,7 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { applySnapshot, initialState, useAppStore } from "../../app/store";
 import type { GraphNode } from "../../shared/ipc/types";
-import { settings } from "../../shared/settings";
 import { Navigator } from "./Navigator";
 
 vi.mock("../../shared/ipc/tauri", () => ({ invoke: vi.fn(async () => null), listen: vi.fn(async () => () => {}), Channel: class { onmessage: (m: unknown) => void = () => {}; } }));
@@ -22,39 +21,15 @@ const connected = () => ({ ...initialState().connection, context: "prod", state:
 
 beforeEach(() => useAppStore.setState(initialState()));
 
-describe("Navigator clusters", () => {
-  it("lists contexts, marks the connected one and connects on click", async () => {
-    const connect = vi.fn(async () => true);
-    const selectNamespace = vi.fn(async () => {});
-    useAppStore.setState({ contexts, connection: connected(), connect, selectNamespace });
-    render(<Navigator />);
-    const prod = screen.getByRole("button", { name: /prod/ });
-    expect(within(prod).getByTestId("status-dot")).toHaveAttribute("data-status", "connected");
-    expect(within(screen.getByRole("button", { name: /staging/ })).queryByTestId("status-dot")).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: /staging/ }));
-    expect(connect).toHaveBeenCalledWith("staging");
-    await waitFor(() => expect(settings.set).toHaveBeenCalledWith("lastContext", "staging"));
-  });
-
-  it("selects the context's default namespace after connecting", async () => {
-    const connect = vi.fn(async () => true);
-    const selectNamespace = vi.fn(async () => {});
-    useAppStore.setState({ contexts, connect, selectNamespace });
-    render(<Navigator />);
-    fireEvent.click(screen.getByRole("button", { name: /prod/ }));
-    await waitFor(() => expect(selectNamespace).toHaveBeenCalledWith("shop"));
-  });
-
-  it("adds a kubeconfig through the file dialog", async () => {
-    const addKubeconfig = vi.fn(async () => {});
-    useAppStore.setState({ contexts, addKubeconfig });
-    render(<Navigator />);
-    fireEvent.click(screen.getByRole("button", { name: /add kubeconfig/i }));
-    await waitFor(() => expect(addKubeconfig).toHaveBeenCalledWith("/tmp/extra.kubeconfig"));
-  });
-});
-
 describe("Navigator tree", () => {
+  it("has no cluster section: the header's menu holds the clusters", () => {
+    useAppStore.setState({ contexts, connection: connected() });
+    render(<Navigator />);
+    expect(screen.queryByText("Clusters")).toBeNull();
+    expect(screen.queryByRole("button", { name: /add kubeconfig/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /staging/ })).toBeNull();
+  });
+
   it("shows sections with kind rows, counts and the worst status", () => {
     useAppStore.setState({
       ...applySnapshot(initialState(), {

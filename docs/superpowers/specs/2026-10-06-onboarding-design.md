@@ -35,7 +35,7 @@ Other changes:
 - **Partial access in tables.** A built-in table of a `partial` kind shows a one-line note above the rows: "Some namespaces are missing: no access (RBAC)."
 - **Toasts.** Error toasts get a human title per kind (*Network error*, *Authentication failed*, *Access denied*, *Not found*, *Conflict*, *Invalid*, *Something went wrong*) instead of the raw kind string.
 - **Adding a kubeconfig.** Success toast "Added `<file>`: N contexts". A valid file with no contexts gets an error toast "`<file>` has no contexts" and is not saved.
-- The undismissable "Choose a cluster" modal on first launch is removed: situation 1 is the centre pane, and the navigator's Clusters section keeps its own Add button.
+- The undismissable "Choose a cluster" modal on first launch is removed: situation 1 is the centre pane, and the cluster list (with its own Add button) is the header's cluster menu.
 
 ## 4. Backend
 

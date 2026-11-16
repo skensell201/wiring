@@ -126,6 +126,8 @@ export interface AppState extends GraphState {
   kubeconfigSources: KubeconfigSource[] | null;
   /** Bumped by `openNamespacePicker`; the header's picker opens on every change. */
   namespacePickerSeq: number;
+  /** Bumped by `openClusterPicker`; the header's cluster menu opens on every change. */
+  clusterPickerSeq: number;
   connection: Connection;
   hoveredId: NodeId | null;
   expandedGroups: Set<NodeId>;
@@ -194,6 +196,8 @@ export interface AppState extends GraphState {
   dismissConnectError: () => Promise<void>;
   /** Ask the header's namespace picker to open (an empty state's "Choose a namespace"). */
   openNamespacePicker: () => void;
+  /** Ask the header's cluster menu to open (an empty state's "Choose a cluster"). */
+  openClusterPicker: () => void;
   /** Turn every kind chip on. */
   showAllKinds: () => void;
   addKubeconfig: (path: string) => Promise<void>;
@@ -296,6 +300,7 @@ export function initialState(): Omit<AppState, keyof Actions> {
     contextsLoaded: false,
     kubeconfigSources: null,
     namespacePickerSeq: 0,
+    clusterPickerSeq: 0,
     connection: { state: "disconnected", context: null, serverVersion: null, namespaces: [], canListNamespaces: true, scope: null, busy: false, connecting: null, lastError: null },
     nodes: new Map(),
     edges: new Map(),
@@ -348,7 +353,7 @@ export function disconnectedState(s: AppState): Omit<AppState, keyof Actions> {
   const lost = lostEditsToast(s);
   return {
     ...initialState(), contexts: s.contexts, contextsLoaded: s.contextsLoaded, hiddenKinds: s.hiddenKinds, toasts: lost ? [...s.toasts, { id: ++toastSeq, ...lost }] : s.toasts,
-    sidebarCollapsed: s.sidebarCollapsed, kubeconfigSources: s.kubeconfigSources,
+    sidebarCollapsed: s.sidebarCollapsed, kubeconfigSources: s.kubeconfigSources, clusterPickerSeq: s.clusterPickerSeq,
   };
 }
 
@@ -360,7 +365,7 @@ function lostEditsToast(s: Pick<AppState, "details">): Omit<Toast, "id"> | null 
 
 type Actions = Pick<AppState,
   | "applySnapshot" | "applyDelta" | "setObjectEvents" | "setConnectionState" | "loadContexts" | "addKubeconfig" | "connect"
-  | "loadKubeconfigSources" | "rescanKubeconfigs" | "retryConnect" | "dismissConnectError" | "openNamespacePicker" | "showAllKinds"
+  | "loadKubeconfigSources" | "rescanKubeconfigs" | "retryConnect" | "dismissConnectError" | "openNamespacePicker" | "openClusterPicker" | "showAllKinds"
   | "reconnect" | "disconnect" | "selectNamespace" | "selectScope" | "select" | "setHovered" | "toggleGroup" | "toggleKind" | "setSearch" | "toast"
   | "dismissToast" | "showGraph" | "showTable" | "refreshTable" | "setIncludeHelmStorage"
   | "loadCustomKinds" | "showCustom" | "refreshCustom" | "applyCustomTable" | "showHelm" | "refreshHelm" | "selectRelease" | "clearRelease" | "focusInGraph" | "clearFocusRequest"
@@ -535,10 +540,13 @@ export const useAppStore = create<AppState>()((set, get) => ({
 
   dismissConnectError: async () => {
     set((s) => ({ connection: { ...s.connection, lastError: null } }));
-    if (get().sidebarCollapsed) await get().toggleSidebar();
+    // The cluster list is in the header now, so the way back to it is the header's menu.
+    get().openClusterPicker();
   },
 
   openNamespacePicker: () => set((s) => ({ namespacePickerSeq: s.namespacePickerSeq + 1 })),
+
+  openClusterPicker: () => set((s) => ({ clusterPickerSeq: s.clusterPickerSeq + 1 })),
 
   showAllKinds: () => set({ hiddenKinds: new Set() }),
 
@@ -573,6 +581,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
         kubeconfigSources: get().kubeconfigSources,
         hiddenKinds: get().hiddenKinds,
         sidebarCollapsed: get().sidebarCollapsed,
+        clusterPickerSeq: get().clusterPickerSeq,
         connection: {
           state: "connected", context: info.context, serverVersion: info.serverVersion, namespaces: info.namespaces,
           canListNamespaces: info.canListNamespaces, scope: null, busy: false, connecting: null, lastError: null,

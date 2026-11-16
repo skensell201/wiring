@@ -4,7 +4,9 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Wiring</title>
-    <style>html,body{background:#1c1624}</style>
+    <!-- No inline style or script element here: Tauri gives the page a nonce whenever it finds
+         one, and a nonce in `style-src` makes 'unsafe-inline' ineffective (CSP 3), which would
+         block the styles CodeMirror injects at runtime. The canvas colour lives in theme.css. -->
   </head>
   <body>
     <div id="root"></div>

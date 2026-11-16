@@ -12,6 +12,11 @@ verifies its signature, installs it and relaunches; **Later** hides the offer un
 On Windows the update is the NSIS `-setup.exe` (the workflow sets `updaterJsonPreferNsis`), run in
 passive mode (`plugins.updater.windows.installMode`).
 
+The dialog shows the release's notes **before** the install button, because an update is a
+decision and the decision needs to say what changes. The notes are the body of the GitHub
+release, and the workflow fills that body with the section of `CHANGELOG.md` for the tagged
+version. Write the notes before the tag: a release without them says so in the dialog.
+
 ## Signing
 
 Update packages are signed with Wiring's own updater key (minisign, made by
@@ -34,5 +39,6 @@ as on a fork, it warns and builds exactly as before with no update packages. Loc
 1. Run the workflow by hand (`gh workflow run release.yml`) and check the artifacts contain
    `Wiring.app.tar.gz` + `.sig` (macOS) and `.msi.sig` / `-setup.exe.sig` (Windows). `latest.json`
    appears only for a tagged run.
-2. Tag `vX.Y.Z`, review the draft (it has `latest.json`), publish it.
+2. Write the section for the version in `CHANGELOG.md`, tag `vX.Y.Z`, review the draft (it has
+   `latest.json`), publish it.
 3. An installed earlier version shows **Update X.Y.Z** in the header within 10 s of its next launch.

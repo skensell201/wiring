@@ -1,16 +1,16 @@
 import { ChevronsLeft, ChevronsRight, Waypoints } from "lucide-react";
 import { useShallow } from "zustand/react/shallow";
 import { useAppStore } from "../../app/store";
-import { isMac } from "../../shared/platform";
 import { Dot } from "../../shared/ui/Dot";
-import { ClustersSection } from "./ClustersSection";
+import { Button } from "../../shared/ui/Button";
+import { useUpdateStore } from "../update/updateStore";
 import { ResourceTree } from "./ResourceTree";
 import { SECTIONS, sectionOf } from "./kindTree";
 import { SECTION_ICONS } from "./sectionIcons";
 
 const RAIL_BTN = "grid size-8 place-items-center rounded-lg text-text-muted hover:bg-surface hover:text-text-hi";
 
-/** Left sidebar: clusters, the resource tree and a collapse toggle. Collapses to a 48 px icon rail. */
+/** Left sidebar: the resource tree and a collapse toggle. Collapses to a 48 px icon rail. */
 export function Navigator() {
   const { collapsed, context, state, view, toggleSidebar, showGraph } = useAppStore(
     useShallow((s) => ({
@@ -18,14 +18,11 @@ export function Navigator() {
       toggleSidebar: s.toggleSidebar, showGraph: s.showGraph,
     })),
   );
-  // The top strip lines up with the header; on macOS it is where the traffic lights live.
-  const strip = <div className={`drag-region h-16 shrink-0 border-b border-border ${isMac ? "pl-20" : ""}`} />;
 
   if (collapsed) {
     const activeSection = view.name === "table" ? sectionOf(view.kind)?.id : undefined;
     return (
       <aside aria-label="Navigator" className="flex w-12 shrink-0 flex-col border-r border-border bg-void">
-        {strip}
         <div className="flex min-h-0 flex-1 flex-col items-center gap-1 overflow-hidden py-2">
           <button type="button" title={context ?? "No cluster"} aria-label={context ?? "No cluster"} onClick={() => void toggleSidebar()} className={RAIL_BTN}>
             <Dot status={context ? state : "disconnected"} className="size-2.5" />
@@ -51,13 +48,27 @@ export function Navigator() {
 
   return (
     <aside aria-label="Navigator" className="flex w-64 shrink-0 flex-col border-r border-border bg-void">
-      {strip}
       <div className="min-h-0 flex-1 overflow-y-auto px-1 pb-3 pt-2">
-        <ClustersSection />
-        {context ? <ResourceTree /> : <p className="px-4 pt-6 text-sm text-text-muted">Pick a cluster to browse its resources.</p>}
+        {context ? <ResourceTree /> : <EmptyZone />}
       </div>
       <RailToggle collapsed={false} onClick={() => void toggleSidebar()} />
     </aside>
+  );
+}
+
+/** The navigator's empty space: no cluster yet, so it carries the version and the update check
+ *  instead of a tree. */
+function EmptyZone() {
+  return (
+    <div className="px-4 pt-6">
+      <p className="text-sm text-text-muted">Choose a cluster in the header to browse its resources.</p>
+      <div className="mt-6 flex items-center justify-between gap-2 border-t border-border pt-4">
+        <span className="text-xs text-text-muted">Version {__APP_VERSION__}</span>
+        <Button className="px-3 py-1 text-xs" onClick={() => void useUpdateStore.getState().check(true)}>
+          Check for updates
+        </Button>
+      </div>
+    </div>
   );
 }
 

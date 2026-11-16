@@ -1,6 +1,7 @@
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { initialState, useAppStore } from "../../app/store";
+import { ClusterPicker } from "./ClusterPicker";
 import { Header } from "./Header";
 import { NamespacePicker } from "./NamespacePicker";
 
@@ -39,6 +40,76 @@ describe("connectContext", () => {
     });
     expect(await connectContext("prod")).toBe(true);
     expect(selectNamespace).toHaveBeenCalledWith("shop");
+  });
+});
+
+describe("ClusterPicker", () => {
+  const contexts = [
+    { name: "prod", cluster: "prod-cluster", user: "u", namespace: "shop", sourceFile: "/k" },
+    { name: "staging", cluster: "staging-cluster", user: "u", namespace: null, sourceFile: "/k" },
+  ];
+  const connected = () => ({ ...initialState().connection, context: "prod", state: "connected" as const });
+
+  it("lists the contexts, marks the connected one and connects on click", async () => {
+    const connect = vi.fn(async () => true);
+    const selectNamespace = vi.fn(async () => {});
+    useAppStore.setState({ contexts, connection: connected(), connect, selectNamespace });
+    render(<ClusterPicker />);
+    fireEvent.click(screen.getByRole("button", { name: /prod/ }));
+    const menu = screen.getByRole("dialog", { name: "Clusters" });
+    const prod = within(menu).getByRole("button", { name: /prod/ });
+    expect(within(prod).getByTestId("status-dot")).toHaveAttribute("data-status", "connected");
+    expect(within(within(menu).getByRole("button", { name: /staging/ })).queryByTestId("status-dot")).toBeNull();
+    fireEvent.click(within(menu).getByRole("button", { name: /staging/ }));
+    expect(connect).toHaveBeenCalledWith("staging");
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Clusters" })).toBeNull());
+  });
+
+  it("selects the context's default namespace after connecting", async () => {
+    const connect = vi.fn(async () => true);
+    const selectNamespace = vi.fn(async () => {});
+    useAppStore.setState({ contexts, connect, selectNamespace });
+    render(<ClusterPicker />);
+    fireEvent.click(screen.getByRole("button", { name: /choose cluster/i }));
+    fireEvent.click(within(screen.getByRole("dialog", { name: "Clusters" })).getByRole("button", { name: /prod/ }));
+    await waitFor(() => expect(selectNamespace).toHaveBeenCalledWith("shop"));
+  });
+
+  it("adds a kubeconfig through the file dialog", async () => {
+    const addKubeconfig = vi.fn(async () => {});
+    useAppStore.setState({ contexts, addKubeconfig });
+    render(<ClusterPicker />);
+    fireEvent.click(screen.getByRole("button", { name: /choose cluster/i }));
+    fireEvent.click(within(screen.getByRole("dialog", { name: "Clusters" })).getByRole("button", { name: /add kubeconfig/i }));
+    await waitFor(() => expect(addKubeconfig).toHaveBeenCalledWith("/tmp/extra.kubeconfig"));
+  });
+
+  it("says Add kubeconfig and opens the file dialog when there is no kubeconfig at all", async () => {
+    const addKubeconfig = vi.fn(async () => {});
+    useAppStore.setState({ contexts: [], contextsLoaded: true, addKubeconfig });
+    render(<ClusterPicker />);
+    const button = screen.getByRole("button", { name: /add kubeconfig/i });
+    expect(button).toBeInTheDocument();
+    fireEvent.click(button);
+    await waitFor(() => expect(addKubeconfig).toHaveBeenCalledWith("/tmp/extra.kubeconfig"));
+    expect(screen.queryByRole("dialog", { name: "Clusters" })).toBeNull();
+  });
+
+  it("opens on request, and does not open for a request made before it mounted", () => {
+    useAppStore.setState({ contexts, clusterPickerSeq: 1 });
+    render(<ClusterPicker />);
+    expect(screen.queryByRole("dialog", { name: "Clusters" })).toBeNull();
+    act(() => useAppStore.getState().openClusterPicker());
+    expect(screen.getByRole("dialog", { name: "Clusters" })).toBeInTheDocument();
+  });
+
+  it("closes on Escape", () => {
+    useAppStore.setState({ contexts });
+    render(<ClusterPicker />);
+    fireEvent.click(screen.getByRole("button", { name: /choose cluster/i }));
+    expect(screen.getByRole("dialog", { name: "Clusters" })).toBeInTheDocument();
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(screen.queryByRole("dialog", { name: "Clusters" })).toBeNull();
   });
 });
 
@@ -181,31 +252,28 @@ describe("Header", () => {
     expect(reconnect).toHaveBeenCalled();
   });
 
-  it("the context button toggles the navigator, with or without contexts", () => {
+  it("the navigator toggle collapses and expands the navigator", () => {
     const toggleSidebar = vi.fn(async () => {});
     useAppStore.setState({ contexts: [], connection: { ...initialState().connection }, toggleSidebar });
     const { unmount } = render(<Header />);
-    fireEvent.click(screen.getByRole("button", { name: /choose cluster/i }));
+    fireEvent.click(screen.getByRole("button", { name: /collapse navigator/i }));
     expect(toggleSidebar).toHaveBeenCalledTimes(1);
     unmount();
 
-    useAppStore.setState({
-      contexts: [{ name: "prod", cluster: "c", user: "u", namespace: null, sourceFile: "/k" }],
-      connection: { ...initialState().connection, context: "prod", state: "connected" }, toggleSidebar,
-    });
+    useAppStore.setState({ sidebarCollapsed: true });
     render(<Header />);
-    fireEvent.click(screen.getByRole("button", { name: /prod/ }));
+    fireEvent.click(screen.getByRole("button", { name: /expand navigator/i }));
     expect(toggleSidebar).toHaveBeenCalledTimes(2);
   });
 
-  it("the context button says whether the navigator is open", () => {
+  it("the navigator toggle says whether the navigator is open", () => {
     useAppStore.setState({ sidebarCollapsed: false });
     const { unmount } = render(<Header />);
-    expect(screen.getByRole("button", { name: /choose cluster/i })).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("button", { name: /collapse navigator/i })).toHaveAttribute("aria-expanded", "true");
     unmount();
     useAppStore.setState({ sidebarCollapsed: true });
     render(<Header />);
-    expect(screen.getByRole("button", { name: /choose cluster/i })).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByRole("button", { name: /expand navigator/i })).toHaveAttribute("aria-expanded", "false");
   });
 
   it("+ Create opens the create dialog, and is disabled until a namespace is selected", () => {

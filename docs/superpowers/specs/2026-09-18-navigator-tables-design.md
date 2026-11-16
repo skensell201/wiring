@@ -28,9 +28,11 @@ Nodes, Namespaces and Events as standalone views; Helm; CRDs; editing; column cu
 - Navigator collapses to a 48 px icon rail (toggle button at its bottom, state remembered in settings).
 - The context-picker modal remains only for the empty state (no contexts) — cluster switching moves into the Navigator.
 
+> **Superseded (v0.6.0).** The **Clusters** section left the Navigator: the cluster list is the header's cluster menu (the button that shows the connected cluster), with "+ Add kubeconfig…" as its last entry. The Navigator holds the resource tree only, and the header carries a separate button that collapses and expands it.
+
 ## 4. Navigator
 
-**Clusters** section: every kubeconfig context (`list_contexts`), the connected one highlighted with the connection dot; click → `connect` (same flow as the picker, incl. auto-selecting the context's default namespace); "+ Add kubeconfig…" at the bottom of the section.
+**Clusters** section: every kubeconfig context (`list_contexts`), the connected one highlighted with the connection dot; click → `connect` (same flow as the picker, incl. auto-selecting the context's default namespace); "+ Add kubeconfig…" at the bottom of the section. *(Moved to the header's cluster menu in v0.6.0.)*
 
 **Resource tree** (for the connected cluster / selected namespace):
 

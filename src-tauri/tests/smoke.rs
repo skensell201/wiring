@@ -1,10 +1,12 @@
 //! End-to-end: apply a fixture namespace, run a headless Session, assert the graph, then
 //! exercise the write path (update / conflict / create / delete / PodGroup delete), the rollout
 //! actions (scale / restart / history / rollback), log streaming (start / lines / stop / invalid kind),
-//! and, on docker-desktop only, custom resources (discovery / table / watch / edit / create / delete /
-//! CR owner on the graph) and Helm releases (list / details / hidden storage Secret). That phase
-//! creates `crd/wiringsmokes.wiringsmoke.example.com`, the only cluster-scoped object the test
-//! makes, and always deletes it, also when the run fails; on any other context it is skipped.
+//! and the custom resource phase (discovery / table / watch / edit / create / delete /
+//! CR owner on the graph) and the Helm phase (list / details / hidden storage Secret).
+//! That phase creates `crd/wiringsmokes.wiringsmoke.example.com`, the only cluster-scoped object
+//! the test makes, and always deletes it, also when the run fails; it runs against docker-desktop
+//! and wherever `WIRING_SMOKE_EXTRAS=1` is set (CI sets it on its own kind cluster), and is
+//! skipped on any other context.
 //! Run: WIRING_SMOKE_CONTEXT=docker-desktop cargo test --test smoke -- --ignored --nocapture
 
 use std::collections::HashSet;
@@ -707,10 +709,19 @@ impl Drop for CrdGuard {
     }
 }
 
-/// Creates the smoke CRD and its CR, or `None` (creating nothing) off docker-desktop.
+/// Creates the smoke CRD and its CR, or `None` (creating nothing) when the extras phase is off.
+///
+/// The phase makes the only cluster-scoped object the test creates, so it runs against
+/// docker-desktop (a throwaway local cluster) and wherever `WIRING_SMOKE_EXTRAS=1` says so —
+/// CI sets that on its own kind cluster. On any other context it is skipped, so running the
+/// test against a real cluster never touches it.
 fn install_smoke_crd(context: &str) -> Option<CrdGuard> {
-    if context != "docker-desktop" {
-        eprintln!("skipping the custom resource and Helm phase: it only runs against docker-desktop");
+    let forced = std::env::var("WIRING_SMOKE_EXTRAS").is_ok_and(|v| v == "1");
+    if context != "docker-desktop" && !forced {
+        eprintln!(
+            "skipping the custom resource and Helm phase: it only runs against docker-desktop \
+             or with WIRING_SMOKE_EXTRAS=1"
+        );
         return None;
     }
     // The guard exists before the CRD does, so a failing apply below still cleans up.

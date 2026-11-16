@@ -52,11 +52,13 @@ Download the latest installer from [**Releases**](https://github.com/skensell201
 | macOS (Apple Silicon and Intel) | `Wiring_<version>_universal.dmg` | The build is unsigned. After copying to Applications, run `xattr -d com.apple.quarantine /Applications/Wiring.app`, or right-click the app and choose **Open**. |
 | Windows 10/11 | `Wiring_<version>_x64_en-US.msi` or `Wiring_<version>_x64-setup.exe` | The build is unsigned. When SmartScreen appears, choose **More info → Run anyway**. |
 
+The Windows installer wears Wiring's own dark theme.
+
 <!-- #endregion install -->
 
 <!-- #region kubeconfig -->
 
-Wiring reads your kubeconfig from `~/.kube/config`, or from `KUBECONFIG` when it is set. You can also add a kubeconfig file from inside the app with **Add kubeconfig…**. A file without contexts is refused. If Wiring finds no contexts at all, it opens on a welcome screen. That screen lists each file it looked at and what it found there (not found, can't be read, no contexts), with **Add kubeconfig…** and **Rescan**.
+Wiring reads your kubeconfig from `~/.kube/config`, or from `KUBECONFIG` when it is set. You can also add a kubeconfig file from inside the app with **Add kubeconfig…**. A file without contexts is refused. If Wiring finds no contexts at all, it opens on a welcome screen. That screen lists each file it looked at and what it found there (not found, can't be read, no contexts), with **Add kubeconfig…** and **Rescan**. On Linux, where no system installer carries the brand, that first screen opens with the mark and one line of what Wiring is.
 
 <!-- #endregion kubeconfig -->
 
@@ -87,7 +89,7 @@ The graph updates live from Kubernetes watches:
 
 <!-- #region navigator -->
 
-The left sidebar lists every kubeconfig context and the resources of the selected namespace by category: Workloads, Config, Network (with Network Policies), Storage, Access Control (Service Accounts, Roles and Role Bindings, Cluster Roles and Cluster Role Bindings) and Cluster (Nodes), followed by Custom Resources and Helm. Each kind shows a live count and the worst status among its objects. The sidebar collapses to an icon rail.
+The left sidebar lists the resources of the selected namespace by category: Workloads, Config, Network (with Network Policies), Storage, Access Control (Service Accounts, Roles and Role Bindings, Cluster Roles and Cluster Role Bindings) and Cluster (Nodes), followed by Custom Resources and Helm. Each kind shows a live count and the worst status among its objects. The sidebar collapses to an icon rail. The clusters themselves are in the header: the button that shows the connected cluster opens a menu of your kubeconfig contexts, with **Add kubeconfig…** as its last entry.
 
 <!-- #endregion navigator -->
 
@@ -282,6 +284,7 @@ Checks (CI runs all of them on every push):
 ```bash
 pnpm typecheck
 pnpm test                                    # frontend unit tests (Vitest)
+pnpm test:coverage                           # the same suite, enforcing the coverage thresholds
 cd src-tauri
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
@@ -289,7 +292,15 @@ cargo test                                   # backend unit and IPC contract tes
 
 # Needs a live cluster and kubectl:
 WIRING_SMOKE_CONTEXT=docker-desktop cargo test --test smoke -- --ignored
+
+# The custom resource and Helm phases of the smoke test create a CRD, so they run against
+# docker-desktop and, with WIRING_SMOKE_EXTRAS=1, against a throwaway cluster of your own:
+WIRING_SMOKE_CONTEXT=kind-kind WIRING_SMOKE_EXTRAS=1 cargo test --test smoke -- --ignored
 ```
+
+CI builds and tests the backend on Linux, macOS and Windows, and runs the smoke test against a
+`kind` cluster on Linux: `kind` needs Docker for Linux containers, which the hosted macOS and
+Windows runners do not have.
 
 ### Documentation site
 
@@ -305,9 +316,9 @@ The site at [wiringk8s.xyz](https://wiringk8s.xyz) is built from this README and
 src/                     React frontend
   app/                   store (zustand), startup, event wiring, global keys
   features/
-    cluster/             header, namespace picker
+    cluster/             header, cluster menu, namespace picker
     onboarding/          welcome, connecting and connection-failure panes
-    navigator/           sidebar: clusters, the resource tree, Custom Resources, Helm
+    navigator/           sidebar: the resource tree, Custom Resources, Helm
     graph/               React Flow canvas, nodes, edges, layout, kind chips
     table/               per-kind and custom resource tables
     details/             details panel: Overview, YAML, Events, History
@@ -392,11 +403,13 @@ These are the implementation plans behind each feature:
 To release, push a tag that starts with `v`:
 
 ```bash
-git tag -a v0.5.1 -m "Wiring v0.5.1"
-git push origin v0.5.1
+git tag -a v0.6.0 -m "Wiring v0.6.0"
+git push origin v0.6.0
 ```
 
 The [release workflow](.github/workflows/release.yml) builds a universal macOS `.dmg` and the Windows `.msi` and `.exe` installers, then attaches them to a **draft** GitHub release. Review the draft and publish it. Bump the version in `package.json`, `src-tauri/tauri.conf.json` and `src-tauri/Cargo.toml` before tagging.
+
+The release's notes are the section of [`CHANGELOG.md`](CHANGELOG.md) for the tagged version: the workflow copies it into the release body, and the app shows those notes before it installs an update. Write them before the tag.
 
 After you publish the release, rebuild the website so its landing page shows the new version.
 
