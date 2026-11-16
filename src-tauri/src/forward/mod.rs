@@ -48,6 +48,18 @@ pub(crate) fn bind_loopback(port: u16) -> Result<TcpSocket, BindError> {
 pub(crate) fn bind_loopback(port: u16) -> Result<TcpSocket, BindError> {
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
     let other = BindError::Other;
+
+    // Windows lets a bind to 127.0.0.1:P succeed while another process holds 0.0.0.0:P, so
+    // there the port's owner is found by connecting to it: a wildcard listener accepts
+    // loopback connects, and a refused connect means nothing is listening there.
+    #[cfg(target_os = "windows")]
+    {
+        match TcpStream::connect_timeout(&addr, Duration::from_millis(250)) {
+            Err(e) if e.kind() == std::io::ErrorKind::ConnectionRefused => {}
+            _ => return Err(BindError::InUse),
+        }
+    }
+
     let socket = TcpSocket::new_v4().map_err(other)?;
     socket.set_reuseaddr(false).map_err(other)?;
     match socket.bind(addr) {
