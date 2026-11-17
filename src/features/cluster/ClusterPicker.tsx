@@ -1,4 +1,4 @@
-import { ChevronDown, LoaderCircle, Plus } from "lucide-react";
+import { ChevronDown, LoaderCircle, Plus, Server } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useShallow } from "zustand/react/shallow";
@@ -82,12 +82,12 @@ export function ClusterPicker() {
   return (
     <div className="no-drag relative">
       <button ref={button} type="button" aria-haspopup="dialog" aria-expanded={open} onClick={onClick}
-        className="flex h-9 items-center gap-2 rounded-xl border border-border-strong bg-surface px-4 text-sm font-medium text-text-hi hover:bg-muted">
-        <span aria-hidden>⎈</span>
+        className="flex h-9 items-center gap-2 rounded-xl px-2.5 text-sm font-medium text-text-hi hover:bg-surface">
+        <Server aria-hidden className="size-4 text-text-muted" />
         <span className="max-w-56 truncate">{label}</span>
         {connecting !== null
           ? <span role="img" aria-label="Connecting" className="inline-flex align-middle"><LoaderCircle aria-hidden className="size-3.5 text-text-muted motion-safe:animate-spin" /></span>
-          : serverVersion ? <span className="text-xs font-normal text-text-muted">{serverVersion}</span> : null}
+          : serverVersion ? <span className="rounded-md bg-surface px-1.5 py-0.5 text-[11px] font-normal text-text-muted">{serverVersion}</span> : null}
         {!noContexts && <ChevronDown aria-hidden className="size-4 text-text-muted" />}
       </button>
       {open && createPortal(

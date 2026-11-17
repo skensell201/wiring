@@ -111,6 +111,8 @@ The graph updates live from Kubernetes watches:
 
 The left sidebar lists the resources of the selected namespace by category: Workloads, Config, Network (with Network Policies), Storage, Access Control (Service Accounts, Roles and Role Bindings, Cluster Roles and Cluster Role Bindings) and Cluster (Nodes), followed by Custom Resources and Helm. Each kind shows a live count and the worst status among its objects. The sidebar collapses to an icon rail, from the button in its footer, where the running version stands. The clusters themselves are in the header: the button that shows the connected cluster opens a menu of your kubeconfig contexts, with **Add kubeconfig…** as its last entry.
 
+The title bar reads left to right: the brand in a column as wide as the sidebar, whose right edge is the divider that continues the sidebar's border; then the cluster and namespace pickers; the search field in the middle; and the session's actions on the right. Collapsed, the brand's column is as narrow as the icon rail and holds the mark alone.
+
 <!-- #endregion navigator -->
 
 <!-- #region rbac -->

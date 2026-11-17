@@ -1,4 +1,4 @@
-import { Check, ChevronDown } from "lucide-react";
+import { Box, Check, ChevronDown } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
 import { createPortal } from "react-dom";
 import { useShallow } from "zustand/react/shallow";
@@ -8,6 +8,8 @@ import { scopeLabel } from "../../shared/scope";
 import { Button } from "../../shared/ui/Button";
 
 const FIELD = "no-drag h-9 rounded-xl border border-border-strong bg-transparent px-3 text-sm font-medium text-text-hi outline-none focus:border-accent";
+/** The button wears no border: the bar's own hairlines carry the shape. */
+const TOGGLE = "no-drag flex h-9 items-center gap-2 rounded-xl px-2.5 text-sm font-medium text-text-hi hover:bg-surface";
 const ROW = "flex h-8 min-w-0 flex-1 items-center gap-2 rounded-lg px-2 text-left text-sm text-text-hi hover:bg-surface focus:bg-surface focus:outline-none";
 const WIDTH = 288;
 const MARGIN = 8;
@@ -128,7 +130,8 @@ export function NamespacePicker() {
 
   return (
     <div className="no-drag relative">
-      <button ref={button} type="button" aria-label="Namespace" aria-haspopup="dialog" aria-expanded={open} className={`${FIELD} flex items-center gap-2`} onClick={toggleOpen}>
+      <button ref={button} type="button" aria-label="Namespace" aria-haspopup="dialog" aria-expanded={open} className={TOGGLE} onClick={toggleOpen}>
+        <Box aria-hidden className="size-4 text-text-muted" />
         <span className="max-w-56 truncate">{scopeLabel(scope, namespaces, 2) || "namespace…"}</span>
         <ChevronDown className="size-4 text-text-muted" />
       </button>
