@@ -3,6 +3,16 @@
 The notes of every release. The release workflow copies the section of the tagged version into
 the GitHub release, and the app shows those notes before it installs an update.
 
+## 0.6.3
+
+- The title bar is one row across the window now. Nothing crosses it: the sidebar's right border
+  starts at the bar's bottom line instead of cutting through it, and on macOS the window's
+  traffic lights keep their own room at the left, whatever the navigator does.
+- The brand moved to the top of the sidebar's column: the mark and the wordmark when the sidebar
+  is open, the mark alone when it collapses to the icon rail.
+- The check for updates left the empty state and stands in the sidebar's footer next to the
+  version, so it is there with a cluster connected too.
+
 ## 0.6.2
 
 - The title bar starts with the brand now. The brand sits in a column as wide as the navigator,
