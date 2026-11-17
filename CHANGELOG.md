@@ -3,6 +3,19 @@
 The notes of every release. The release workflow copies the section of the tagged version into
 the GitHub release, and the app shows those notes before it installs an update.
 
+## 0.6.2
+
+- The title bar starts with the brand now. The brand sits in a column as wide as the navigator,
+  and the divider between it and the rest of the bar continues the panel's border: the two cannot
+  drift apart when the panel collapses to a rail. Collapsed, the column is as narrow as the rail
+  and holds the mark alone.
+- The bar reads left to right: the brand, the cluster and namespace pickers, the search field in
+  the middle, and the session's actions on the right.
+- The pickers lost their borders and gained the icons the bar reads better with, the server's
+  version sits in a chip, and the session's state says what it is instead of a bare dot.
+- On macOS the window's traffic lights own the bar's left corner, so there the mark moves into
+  the rail when the navigator is collapsed.
+
 ## 0.6.1
 
 - The MSI carries the icon again. The .ico files held PNG images, and the Windows Installer
