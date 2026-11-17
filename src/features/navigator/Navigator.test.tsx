@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { applySnapshot, initialState, useAppStore } from "../../app/store";
 import { invoke } from "../../shared/ipc/tauri";
 import type { GraphNode } from "../../shared/ipc/types";
+import { useUpdateStore } from "../update/updateStore";
 import { Navigator } from "./Navigator";
 
 vi.mock("../../shared/ipc/tauri", () => ({ invoke: vi.fn(async () => null), listen: vi.fn(async () => () => {}), Channel: class { onmessage: (m: unknown) => void = () => {}; } }));
@@ -122,6 +123,28 @@ describe("Navigator rail", () => {
     useAppStore.setState({ sidebarCollapsed: true });
     render(<Navigator />);
     expect(screen.queryByText("Version 9.9.9")).toBeNull();
+  });
+
+  it("carries the brand: the wordmark expanded, the mark alone in the rail", () => {
+    useAppStore.setState({ contexts, connection: connected() });
+    const { unmount } = render(<Navigator />);
+    expect(screen.getByText("Wiring")).toBeInTheDocument();
+    expect(screen.getByTestId("brand-mark")).toBeInTheDocument();
+    unmount();
+    useAppStore.setState({ sidebarCollapsed: true });
+    render(<Navigator />);
+    expect(screen.queryByText("Wiring")).toBeNull();
+    expect(screen.getByTestId("brand-mark")).toBeInTheDocument();
+  });
+
+  it("checks for updates from the footer's button, next to the version", async () => {
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => (cmd === "app_version" ? "9.9.9" : null) as never);
+    const check = vi.fn(async () => {});
+    useUpdateStore.setState({ check });
+    useAppStore.setState({ contexts, connection: connected() });
+    render(<Navigator />);
+    fireEvent.click(await screen.findByRole("button", { name: /check for updates/i }));
+    expect(check).toHaveBeenCalledWith(true);
   });
 
 describe("Navigator across namespaces", () => {

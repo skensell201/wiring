@@ -264,17 +264,17 @@ describe("Header", () => {
     expect(screen.queryByRole("button", { name: /navigator/i })).not.toBeInTheDocument();
   });
 
-  it("keeps the brand in the bar's left column and swaps the wordmark for the mark when the navigator collapses", () => {
+  it("keeps the brand out of the title bar: the bar is one row across the window", () => {
+    // The navigator's column carries the brand, so the bar has no vertical line of its own and
+    // the window's traffic lights keep their own room on macOS.
     useAppStore.setState({ sidebarCollapsed: false });
     const { unmount } = render(<Header />);
-    expect(screen.getByText("Wiring")).toBeInTheDocument();
-    expect(screen.getByTestId("brand-mark")).toBeInTheDocument();
+    expect(screen.queryByText("Wiring")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("brand-mark")).not.toBeInTheDocument();
     unmount();
     useAppStore.setState({ sidebarCollapsed: true });
     render(<Header />);
-    // Collapsed, the column is as wide as the rail and holds the mark alone.
     expect(screen.queryByText("Wiring")).not.toBeInTheDocument();
-    expect(screen.getByTestId("brand-mark")).toBeInTheDocument();
   });
 
   it("+ Create opens the create dialog, and is disabled until a namespace is selected", () => {

@@ -7,24 +7,23 @@ import { Button } from "../../shared/ui/Button";
 import { Dot } from "../../shared/ui/Dot";
 import { UpdatePill } from "../update/UpdatePill";
 import { ForwardsIndicator } from "../forward/ForwardsIndicator";
-import { NAVIGATOR_RAIL_WIDTH, NAVIGATOR_WIDTH } from "../navigator/sizes";
-import { Brand } from "./Brand";
 import { ClusterPicker } from "./ClusterPicker";
 import { NamespacePicker } from "./NamespacePicker";
 
-/** The room the window's traffic lights take in the bar's left corner on macOS. The class name is
- *  a literal: Tailwind finds classes in the source text, not in values built at runtime. */
-const MAC_CORNER = "pl-[88px]";
+/** The room the window's traffic lights take in the bar's left corner on macOS. It is fixed:
+ *  the lights belong to the window, not to the navigator, so nothing moves when the navigator
+ *  collapses. The class name is a literal: Tailwind finds classes in the source text, not in
+ *  values built at runtime. */
+const MAC_CORNER = "pl-[84px]";
 
 /** What the session is doing, as the bar words it. */
 const STATE_TEXT = { connected: "Connected", degraded: "Reconnecting…", disconnected: "Disconnected" } as const;
 
 export function Header() {
-  const { connection, search, setSearch, reconnect, openCreate, collapsed } = useAppStore(
+  const { connection, search, setSearch, reconnect, openCreate } = useAppStore(
     useShallow((s) => ({
       connection: s.connection, search: s.search,
       setSearch: s.setSearch, reconnect: s.reconnect, openCreate: s.openCreate,
-      collapsed: s.sidebarCollapsed,
     })),
   );
   const searchRef = useRef<HTMLInputElement>(null);
@@ -43,29 +42,13 @@ export function Header() {
   // While a connect is in flight the old session (if any) is going away: its namespaces and Create don't apply.
   const session = connection.context !== null && connection.connecting === null;
 
-  // The brand column is as wide as the navigator, and its right border is the divider between the
-  // brand and the rest of the bar: the line continues the panel's border below it, so the two
-  // never drift apart as the panel collapses to a rail.
-  const brandColumn = collapsed
-    ? `${NAVIGATOR_RAIL_WIDTH} justify-center`
-    : `${NAVIGATOR_WIDTH} gap-2.5 ${isMac ? `${MAC_CORNER} pr-4` : "px-4"}`;
-
-  // A collapsed column is 48 px wide, which the macOS traffic lights do not fit in. There the
-  // mark moves into the collapsed rail (the Navigator draws it) and the column stays empty.
-  const showBrand = !collapsed || !isMac;
-
-  // The lights reach past the collapsed column on macOS, so the context moves right of them.
-  const contextPad = isMac && collapsed ? "pl-9" : "pl-4";
-
   const state = connection.context ? connection.state : "disconnected";
 
   return (
-    <header className="drag-region flex h-16 shrink-0 items-stretch border-b border-border bg-space/80 backdrop-blur-md">
-      <div className={`flex shrink-0 items-center border-r border-border ${brandColumn}`}>
-        {showBrand && <Brand collapsed={collapsed} />}
-      </div>
-
-      <div className={`flex min-w-0 shrink-0 items-center gap-2 pr-4 ${contextPad}`}>
+    // The bar spans the whole window and the navigator starts below it, so the panel's right
+    // border begins at the bar's bottom line instead of crossing it: a T, not a cross.
+    <header className="drag-region flex h-16 shrink-0 items-center border-b border-border bg-space/80 backdrop-blur-md">
+      <div className={`flex min-w-0 shrink-0 items-center gap-2 pr-4 ${isMac ? MAC_CORNER : "pl-4"}`}>
         <ClusterPicker />
         {session && (
           <>

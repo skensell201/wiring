@@ -109,9 +109,9 @@ The graph updates live from Kubernetes watches:
 
 <!-- #region navigator -->
 
-The left sidebar lists the resources of the selected namespace by category: Workloads, Config, Network (with Network Policies), Storage, Access Control (Service Accounts, Roles and Role Bindings, Cluster Roles and Cluster Role Bindings) and Cluster (Nodes), followed by Custom Resources and Helm. Each kind shows a live count and the worst status among its objects. The sidebar collapses to an icon rail, from the button in its footer, where the running version stands. The clusters themselves are in the header: the button that shows the connected cluster opens a menu of your kubeconfig contexts, with **Add kubeconfig…** as its last entry.
+The left sidebar lists the resources of the selected namespace by category: Workloads, Config, Network (with Network Policies), Storage, Access Control (Service Accounts, Roles and Role Bindings, Cluster Roles and Cluster Role Bindings) and Cluster (Nodes), followed by Custom Resources and Helm. Each kind shows a live count and the worst status among its objects. The sidebar collapses to an icon rail, from the button in its footer, where the running version and the check for updates stand. The clusters themselves are in the header: the button that shows the connected cluster opens a menu of your kubeconfig contexts, with **Add kubeconfig…** as its last entry.
 
-The title bar reads left to right: the brand in a column as wide as the sidebar, whose right edge is the divider that continues the sidebar's border; then the cluster and namespace pickers; the search field in the middle; and the session's actions on the right. Collapsed, the brand's column is as narrow as the icon rail and holds the mark alone.
+The title bar runs across the whole window: the window's traffic lights keep their own room at its left on macOS, then come the cluster and namespace pickers, the search field in the middle, and the session's actions on the right. The sidebar starts below the bar, so its right border meets the bar's bottom line instead of crossing it. The brand stands at the top of the sidebar: the mark and the wordmark when it is open, the mark alone when it collapses to the icon rail.
 
 <!-- #endregion navigator -->
 
